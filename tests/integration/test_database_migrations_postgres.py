@@ -78,6 +78,10 @@ def migration_database():
 
 
 def test_fresh_migration_is_repeatable_and_verifiable(migration_database):
+    expected_versions = [
+        migration.version for migration in load_migration_catalog()
+    ]
+    expected_latest = expected_versions[-1]
     with closing(psycopg2.connect(migration_database)) as connection:
         before = migration_status(connection)
         first = migrate_database(connection, actor="integration-test")
@@ -111,12 +115,14 @@ def test_fresh_migration_is_repeatable_and_verifiable(migration_database):
     assert before.state == "empty"
     assert before.current_version == 0
     assert first.before_version == 0
-    assert first.after_version == 3
-    assert [migration.version for migration in first.applied] == [1, 2, 3]
+    assert first.after_version == expected_latest
+    assert [
+        migration.version for migration in first.applied
+    ] == expected_versions
     assert not first.adopted_baseline
     assert after.current
-    assert after.current_version == 3
-    assert second.before_version == second.after_version == 3
+    assert after.current_version == expected_latest
+    assert second.before_version == second.after_version == expected_latest
     assert second.applied == ()
 
 
@@ -172,7 +178,8 @@ def test_concurrent_migrators_serialize_and_apply_each_version_once(
 def test_unversioned_schema_requires_explicit_verified_adoption(
     migration_database,
 ):
-    baseline = load_migration_catalog()[0]
+    catalog = load_migration_catalog()
+    baseline = catalog[0]
     with closing(psycopg2.connect(migration_database)) as connection:
         with connection, connection.cursor() as cursor:
             cursor.execute(baseline.sql)
@@ -187,10 +194,11 @@ def test_unversioned_schema_requires_explicit_verified_adoption(
         status = verify_database_current(connection)
 
     assert adopted.adopted_baseline
-    assert len(adopted.applied) == 3
-    assert adopted.applied[0].adopted
-    assert not adopted.applied[1].adopted
-    assert not adopted.applied[2].adopted
+    assert len(adopted.applied) == len(catalog)
+    assert [migration.adopted for migration in adopted.applied] == [
+        True,
+        *([False] * (len(catalog) - 1)),
+    ]
     assert status.current
     assert status.applied[0].adopted
 

@@ -22,6 +22,7 @@ See:
 - [Feature parity contract](docs/feature-parity.md)
 - [Target architecture](docs/architecture.md)
 - [Delivery roadmap](docs/roadmap.md)
+- [Single-server deployment](docs/deployment.md)
 
 ## How it works
 
@@ -71,7 +72,8 @@ Requirements:
 
 ```bash
 cp .env.example .env
-# Fill in OPENAI_API_KEY, the applicable SCM token, and webhook credentials.
+# Fill in POSTGRES_PASSWORD, DIFFUSE_API_TOKEN, the model credentials,
+# and the applicable SCM token and webhook credentials.
 
 docker compose up -d --build
 
@@ -824,14 +826,29 @@ files are disabled.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest
+pip install --no-deps -e .
+pytest -m "not integration"
 ruff check .
+pip-audit -r requirements.lock --disable-pip
 ```
 
 With a disposable pgvector database available:
 
 ```bash
 POSTGRES_TEST_DATABASE_URL=postgresql://... pytest -m integration
+```
+
+`tests/integration/conftest.py` also routes application database connections to
+that disposable URL. Production images install the hash-locked
+`requirements.lock`. After intentionally changing runtime dependency ranges,
+regenerate and review it with:
+
+```bash
+pip-compile requirements.txt \
+  --output-file=requirements.lock \
+  --generate-hashes \
+  --allow-unsafe \
+  --strip-extras
 ```
 
 To run the API directly while keeping Postgres in Docker:
