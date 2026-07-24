@@ -1,0 +1,6 @@
+<svg width="375" height="375" viewBox="0 0 375 375" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="diffuse">
+  <path d="M281.25 0V93.75H93.75C120.994 39.1791 183.494 0 281.25 0Z" fill="currentColor"/>
+  <path d="M375 281.25H281.25V93.75C335.821 120.994 375 183.494 375 281.25Z" fill="currentColor"/>
+  <path d="M93.75 375V281.25H281.25C254.006 335.821 191.506 375 93.75 375Z" fill="currentColor"/>
+  <path d="M0 93.75H93.75V281.25C39.1791 254.006 0 191.506 0 93.75Z" fill="currentColor"/>
+</svg>
