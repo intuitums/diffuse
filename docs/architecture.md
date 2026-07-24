@@ -1,0 +1,639 @@
+# Diffuse target architecture
+
+## Direction
+
+Diffuse starts as a modular monolith with separately runnable workers. Service
+boundaries are explicit from the beginning so large installations can scale
+webhooks, indexing, review, sandbox, and API workloads independently without
+forcing small installations to operate a distributed system.
+
+The review engine is native to Diffuse so review state, evidence, future
+conversation and learning, policy, and observability can share one coherent
+data model. Review generation and SCM publication are separate durable stages.
+
+PostgreSQL schema changes are also durable workflow boundaries. Version 1 is a
+frozen packaged baseline; subsequent migrations are consecutive append-only
+SQL files. A migrator holds one transaction-scoped advisory lock, applies all
+pending versions atomically, and records immutable checksums plus operator
+identity. A populated unversioned database requires an explicit adoption
+command and must first satisfy every baseline table/column and pgvector check.
+The supported Compose profile gates API and worker startup on a successful
+migration job.
+
+Accepted architecture decisions are recorded under [`docs/adr`](adr/).
+
+## Logical components
+
+```text
+GitHub / GitLab / CLI / MCP / Web app
+                  |
+             API gateway
+        +---------+----------+
+        |                    |
+  webhook ingress       control-plane API
+        |                    |
+        +------ durable workflows ------+
+                     |
+        +------------+-------------+----------------+
+        |            |             |                |
+  repository      indexer      review engine   runtime validator
+   manager     + summarizer        |             + sandbox
+        |            |             |
+        +------ code intelligence -+
+                     |
+       PostgreSQL + pgvector / cache / object store
+                     |
+           model and embedding gateway
+```
+
+### Control plane
+
+- Web UI and versioned REST API. The v1 REST foundation already exposes
+  repository/index state, PRs, reviews, findings, analytics, and code
+  search/Q&A plus idempotent repository onboarding, reindexing, and review
+  requests; settings, identity, and broader administrative mutations remain.
+- Organizations, teams, users, roles, repositories, integrations, policies,
+  rules, model settings, audit events, analytics, and operational state.
+- OAuth/OIDC/SAML and scoped service-token authentication.
+
+### SCM adapters
+
+- One normalized interface for GitHub Cloud/Enterprise and GitLab
+  Cloud/Self-Managed.
+- App installation and OAuth credentials are encrypted and never placed in job
+  payloads or logs.
+- Normalized repositories, commits, diffs, checks, reviews, inline threads,
+  reactions, merge requests, and webhook events.
+- Every event has a provider delivery ID and an idempotency record.
+- The foundation verifies GitHub HMAC webhooks and GitLab Standard Webhooks
+  HMAC/timestamp envelopes, with explicit legacy-token fallback only when no
+  signature headers are present. GitLab instance headers are exact-origin
+  allowlisted before they can select an API endpoint.
+- GitLab MR webhooks are insufficient for safe review identity on their own.
+  Ingress enriches them from the target instance's merge-request and diff
+  version APIs, persists the base/head and fork source-project identity, and
+  returns a retryable failure while GitLab is still preparing those facts.
+
+### Repository manager
+
+- The initial implementation registers explicit GitHub/GitLab HTTPS
+  repositories and maintains ID-addressed bare mirrors in a private shared
+  volume.
+- CLI and REST onboarding allow only the configured primary SCM origin or an
+  explicit exact-origin provider allowlist before askpass credentials can
+  reach the host.
+- Git credentials reach subprocesses only through a non-interactive askpass
+  environment; clone URLs, arguments, database rows, and job payloads remain
+  credential-free.
+- Authenticated GitHub and GitLab default-branch pushes enqueue exact commits.
+  Workers fetch under a repository lock and index from ephemeral detached
+  worktrees.
+- Enforces repository/tenant authorization before fetch or retrieval.
+- Schedules initial indexing, push deltas, deletion, and integrity repair.
+- Emits immutable commit snapshots so a review and its citations are
+  reproducible.
+
+### Code-intelligence pipeline
+
+1. Discover tracked files and repository instruction/context files.
+2. Parse files with versioned language adapters. The foundation uses Python's
+   native AST plus locally installed Tree-sitter wheels for JavaScript/JSX,
+   TypeScript/TSX, Go, Java, Ruby, Rust, PHP, C, and C++; workers never download
+   executable grammars at parse time.
+3. Assign stable IDs to files, symbols, and relationships.
+4. Store graph nodes/edges and symbol-aware code chunks.
+5. Generate file/symbol/repository summaries.
+6. Embed code, docs, paths, summaries, and rules through the model gateway.
+7. Link imports, calls, inheritance, usage, tests, schemas, and cross-repo
+   contracts.
+8. Atomically activate the completed index snapshot.
+
+An index snapshot records an index-format identifier derived from the adapter
+schema, Python runtime, Tree-sitter runtime, and every installed grammar
+version. Retrieval refuses a snapshot built by an incompatible format, while
+unchanged chunk embeddings may still be copied when their exact boundaries and
+content hashes match. The format also identifies the repository-policy schema.
+Strict `.diffuse` layers—or a root `greptile.json` compatibility import when no
+native root policy exists—referenced context, and common instruction files are
+written in the same activation transaction; snapshot readiness includes their
+expected row counts and content fingerprint. Imported strictness becomes a
+code-enforced post-verification severity floor. Description, summary-comment,
+and fix-guidance preferences map losslessly; unsupported ignore semantics and
+unknown fields fail indexing explicitly.
+
+Retrieval combines:
+
+- exact path/symbol and lexical search;
+- vector similarity;
+- graph expansion over callers, callees, dependencies, tests, and contracts;
+- explicit configuration/context files;
+- approved team memory and rules; and
+- authorized cross-repository clusters.
+
+Every result carries repository, commit, path, line range, retrieval reason,
+score, and provenance.
+
+The foundation stores a weighted PostgreSQL `tsvector` beside each immutable
+chunk: paths and symbol names receive the highest weight, followed by content.
+Review retrieval extracts only bounded code identifiers from changed lines,
+excludes changed files from reference candidates, and uses weighted reciprocal
+rank fusion across graph, lexical, and thresholded semantic channels. Combined
+channel provenance is passed to the review engine with the pinned snapshot ID.
+
+Cross-repository review context has two inputs: cascading, version-controlled
+`context.repos` and operator-managed repository clusters. Every referenced
+repository must already be onboarded and share the primary repository's SCM
+provider and exact base host. Explicit entries are strict: disabled, missing,
+or incompatibly indexed entries fail closed. Cluster-only members that are
+temporarily disabled or not indexed are omitted. The union is deterministic,
+deduplicated, and limited to seven related repositories.
+
+Before a review run is created, the worker resolves each selected repository to
+one compatible active snapshot and fingerprints the ordered plan. The review
+stores every related repository ID/name, snapshot ID, commit, relationship
+source, cluster IDs, and ordinal in `review_run_context_snapshots`. Retrieval
+embeds the filtered diff once. The primary snapshot contributes graph, lexical,
+and semantic candidates; related snapshots contribute read-only lexical and
+semantic candidates. Fusion keys include repository identity, formatted
+context uses `owner/repo::path`, and the review verifier still permits findings
+only on changed primary-repository lines. Cluster shell access is the current
+operator authorization boundary; tenant/RBAC enforcement and cross-repository
+graph edges remain future work.
+
+Before retrieval, the worker resolves root-to-leaf policy for every changed
+path from that pinned snapshot. Disabled and ignored files are removed before
+the retrieval query is embedded. Review passes, confidence floors, custom
+rules, and guidance remain path-scoped; summary-only mode is conservative
+across the review. The review-run identity fingerprints the snapshot plus the
+effective path policy, making retries and publications reproducible. A review
+disabled for every changed path is stored as `skipped` and creates no SCM
+publication.
+
+Normalized pull-request events carry bounded author, target/source branch,
+draft, label, title, description, authoritative changed-file count, and
+trigger-origin metadata. Provider-reported creation, close, and merge
+timestamps remain distinct from receipt and generic update time. Every
+non-duplicate delivery that reaches an onboarded PR appends a
+`pull_request_lifecycle_events` record, including stale deliveries that must
+not replace current state. The current PR projection clears terminal
+timestamps on reopen, preserves the authoritative creation timestamp, and
+never invents a missing merge time from webhook receipt. This metadata is
+part of both the workflow idempotency key and review context fingerprint, so a
+ready transition, label change, or manual request at the same commit cannot
+reuse a prior skipped decision. Automatic trigger policy is evaluated before
+retrieval; denials are persisted with machine-readable reasons. Newer
+same-revision metadata events supersede older queued decisions and running work
+checks for newer jobs at every heartbeat.
+
+Signed GitHub issue-comment events support deliberate `@diffuse` review
+requests from human owners, members, and collaborators. The handler retrieves
+fresh metadata for the open PR from the configured GitHub API and assigns the
+comment ID as a unique manual trigger. Manual triggers bypass automatic
+filters, while repository path disablement and review safety constraints still
+apply.
+
+Eligible reviews can opt into a `Diffuse code review` GitHub check through the
+same cascading repository policy. The check is created against the normalized
+head SHA before model work begins. Its PostgreSQL record and stable
+`external_id` key recover both local retry and the remote-create crash window.
+Verified findings at configured blocking severities produce failure; other
+published reviews produce success. Superseded work is cancelled, exhausted
+workflow retries fail, and only RIGHT-side changed lines become GitHub check
+annotations. Check output neutralizes repository-authored mentions before
+publication.
+
+For a new head, the worker compares the last published review commit with the
+normalized current head and records every touched old/new path. Verified
+findings are deterministically matched to durable pull-request lineages using
+exact fingerprints followed by bounded same-path/category text similarity.
+Matched active findings remain open, matched addressed findings reopen, and an
+unmatched active finding is addressed only when its file was touched.
+
+Lineage events are written as provisional review evidence. They become active
+in the same transaction that marks the commit-pinned review publication
+durable; superseded and exhausted unpublished reviews discard them. Only new
+lineages receive new inline comments. The provider root-note and thread
+identities are stored, while addressed/reopened events create independently
+retryable thread operations. Hidden operation markers recover reply crash
+windows. GitHub GraphQL mutations and GitLab discussion mutations resolve or
+reopen the bot-owned thread. Status checks evaluate all active lineages rather
+than only findings emitted by the latest model invocation.
+
+Signed GitHub `pull_request_review_comment` and authenticated GitLab `Note
+Hook` events normalize explicit `@diffuse` questions from authorized
+repository members. GitLab authors are checked through the inherited project
+membership endpoint and must have Developer access or higher. Ingress queues a
+question only when its root comment belongs to a stored Diffuse finding thread
+for that exact repository and pull request. Bots, Diffuse-authored markers,
+acknowledgements, unrelated roots, comments without the mention, and `[Human
+discussion only]` are ignored. Cascading path policy can disable
+`respond_to_comments`.
+
+Conversation jobs are pinned to the PR head carried by the signed event and
+serialized by root thread. An older queued retry blocks later turns so history
+cannot be reordered. The worker retrieves from one compatible immutable
+snapshot using the question, finding, and exact file/line as a hybrid query;
+the prompt also includes the original diff hunk and a bounded history of
+published turns. Structured model references are retained only when their
+exact range exists in the finding or retrieved chunks. Generated output,
+usage, model, snapshot, and publication attempts are durable. A hidden
+per-question marker recovers the provider reply-create crash window before the
+same GitHub or GitLab thread is called again.
+
+### Native review engine
+
+The review workflow is stateful and multi-turn:
+
+1. Normalize PR metadata and diff into changed symbols and line ranges.
+2. Resolve applicable organization/team/repository/directory policy.
+3. Build an impact set through graph traversal and hybrid retrieval.
+4. Run specialized passes for logic, security, performance, architecture,
+   tests/contracts, and configured rules.
+5. Verify candidate findings against source context and deduplicate them.
+6. Assign category, severity, confidence, evidence, and suggested fix.
+7. Build the summary, risk score, issue table, optional diagrams, and status.
+8. Publish/update SCM comments idempotently.
+9. Track replies, reactions, subsequent commits, and addressed state.
+
+Model output is parsed into a versioned schema. Raw model text is never posted
+directly as an SCM action.
+
+GitHub publication attaches eligible findings to exact diff lines and creates
+Checks annotations. GitLab publication uses the API-authoritative
+base/head/start version to attach each eligible finding to an exact added or
+removed line, posts a revision-pinned MR summary, and optionally updates a
+source-project commit status. Either provider can instead place the complete
+summary in one reserved PR/MR-description region while preserving text outside
+that region. The mutation revalidates the open exact head and retries by
+replacement rather than append; ingress ignores an edit only when stripping
+the managed region proves that human-authored text is unchanged. Invalid or
+temporarily unavailable positions fall back to complete finding details on an
+enabled summary surface. Hidden review/finding markers and managed-region
+markers recover remote-create crash windows. Top-level GitHub and GitLab
+comments whose line starts with `@diffuse` create distinct manual review events
+only after provider-native repository authorization and current metadata
+enrichment.
+
+#### Review readiness and footer identity
+
+The published merge-readiness score is deterministic rather than another
+unverified model claim. Diffuse maps independently verified 0–10 risk to a
+0–5 confidence score, then only lowers the result for finding volume,
+incomplete coverage, ignored paths, or zero reviewed files. Automatic approval
+requires exactly 5/5 in addition to a zero-risk, zero-finding, fully covered
+review.
+
+The first publication attempt serializes on the durable pull-request row and
+assigns the next positive review number. The number is stored on the review
+run, protected by a per-pull-request uniqueness constraint, and reused by every
+publication retry. GitHub output links the exact reviewed SHA and advertises
+the already-authorized `@diffuse review` command; neither display state is
+inferred from a count of eventually consistent remote comments.
+
+#### Grounded change diagrams
+
+Diagram generation is a separate structured stage and runs only when a
+reviewable change crosses a deterministic complexity floor: at least 40
+changed lines, or at least 12 changed lines spanning two files. The stage sees
+bounded reviewable diff chunks and bounded retrieved context, treats both as
+untrusted data, and can return no diagram. It selects one of sequence,
+entity-relation, class, or flow based on relationships demonstrated by the
+change.
+
+Trusted validation requires the Mermaid directive to match the declared type
+and enforces character, line, and line-width limits. Markdown fences, init
+directives, click handlers, callbacks, URLs, HTML payloads, and Mermaid styling
+directives are rejected. Only validated source is persisted and published.
+Cascading path policy can disable diagrams; one disabled touched scope vetoes
+the PR-level diagram. Collapse and default-open preferences are resolved into
+the immutable review report so retry rendering cannot drift with later config.
+
+#### Immutable output presentation
+
+Summary, issues-table, confidence-score, and diagram presentation resolves for
+every reviewable changed path. A section is included only when every touched
+scope includes it, becomes collapsible when any scope requests collapse, and
+starts open only when every scope requests default-open. Footer visibility
+uses the same conservative all-scopes rule. These values are copied onto the
+durable review report rather than re-reading repository configuration during
+publication retries.
+
+Description targeting, top-level summary visibility, and agent-fix visibility
+use the same immutable report contract. If any reviewable scope requests a
+managed description, that target wins for the PR/MR. Any scope can
+conservatively suppress the summary comment or published fix guidance.
+Suppressing fix guidance never removes the durable suggested fix or MCP
+finding data.
+
+Presentation settings affect SCM display only. They never alter verified risk,
+confidence, findings, status checks, automatic approval, lineage, or feedback
+memory. If inline comments cannot be attached—or summary-only mode intentionally
+suppresses them—validated finding details are rendered in the summary even
+when the optional issues table is hidden.
+
+#### Classified security review
+
+The dedicated security pass uses an explicit trust-boundary threat model and
+classifies every security finding:
+
+- `vulnerability` means the current snapshot contains an attacker-controlled
+  source, a reachable path, and a security-relevant sink or invariant break.
+- `preventative` means the current snapshot is not exploitable, but a concrete
+  future trust-boundary or caller change would make the changed code unsafe.
+
+Preventative review is disabled by default and can be enabled per cascading
+path with an independent confidence floor. The effective threshold is the
+stricter of that floor and the ordinary review threshold. Preventative
+findings are limited to medium or low severity; model output that labels one
+critical or high is rejected rather than silently rewritten. Candidate
+generation and independent verification both receive the classification
+contract, while deterministic policy filters enforce it after model output.
+
+Classification is part of candidate deduplication, durable fingerprints, and
+finding-lineage matching. It is stored on findings and copied into feedback
+and learning evidence so a later model cannot reinterpret a preventative
+observation as a current vulnerability. GitHub comments, summary tables, and
+check annotations visibly distinguish the two classes.
+
+#### Conservative automatic approval
+
+Automatic approval is a separate, default-off action after review publication;
+a successful status check alone does not authorize it. Diffuse resolves
+auto-approval policy for every old and new changed path. Every scope must
+enable the action, the strictest risk ceiling and smallest file limit win,
+exclusions accumulate, and each applicable inclusion set must match.
+
+Eligibility requires authoritative metadata, a complete diff, full review
+coverage with no ignored files, zero current findings and risk, and no active
+finding lineage from an earlier commit. An explainable deterministic classifier
+assigns inherent low, medium, high, or critical change risk separately from
+defect severity. Critical surfaces—auth, public APIs, secrets, billing,
+payments, schemas/migrations, CI, and infrastructure—can never be
+auto-approved. Hard diff-size budgets also become critical rather than being
+silently truncated.
+
+Every requested decision is immutable and durable on the review run. Both
+publishers first verify that the PR/MR remains open, non-draft, and on the
+reviewed head. Eligible GitHub publication uses an exact `commit_id` and hidden
+idempotency marker. Eligible GitLab publication waits for
+`detailed_merge_status` and the matching diff version's `patch_id_sha` to show
+that approval reset processing is complete, identifies the token user, and
+posts `/approve` with the exact reviewed SHA. The response must include that
+user in `approved_by`; an exact-SHA duplicate is recovered from `/approvals`.
+A changed head or GitLab `409` cancels the action without retrying stale
+approval.
+
+### Learning and memory
+
+- Signed/authenticated provider comment webhooks store authorized replies only
+  when their root maps to a Diffuse finding in the exact repository and pull
+  request.
+- Workers periodically enqueue low-priority `sync_review_feedback` jobs. A sync
+  lists GitHub reactions or GitLab award emoji on the root finding note,
+  verifies each actor is a GitHub collaborator or GitLab Developer-or-higher
+  member, retains only 👍/👎, and appends observed/withdrawn transitions.
+- Published addressed/reopened lineage transitions become commit-outcome
+  signals in the same database transaction as review publication.
+- Store source IDs, delivery hashes, actor authority, category/severity/security
+  classification snapshots, and immutable signal transitions. Other emoji,
+  bots, outsiders, unrelated roots, and `[Human discussion only]` replies do
+  not train memory.
+- Maintain inspectable repository-scoped signals with linked pull request,
+  finding, category, severity, and path provenance.
+- After a configurable evidence and distinct-PR threshold, enqueue low-priority
+  `generate_suggested_rules` jobs against an exact evidence fingerprint. If
+  evidence changes before generation, mark the run stale and reschedule rather
+  than learning from a mixed snapshot.
+- Require every generated suggestion to cite a minimum number of feedback
+  events and pull requests. Consolidate exact and near-identical candidates,
+  but keep generated suggestions separate from active rules.
+- Record immutable proposal, evidence, edit, approval, rejection, deactivation,
+  and reactivation events. Operator approval is the only transition that makes
+  a suggestion affect review output.
+- Merge active learned rules into the path-resolved policy beneath
+  repository-authored rules, include their versions in the policy fingerprint,
+  and snapshot every applied version on the review run.
+- Apply hard policy floors so critical, security, and correctness categories
+  cannot be suppressed by preference learning. The current foundation does not
+  perform automatic noise suppression.
+
+### Runtime validator
+
+- Creates an isolated, short-lived sandbox from the reviewed commit.
+- Uses repository-provided setup metadata and a constrained agent to generate
+  targeted tests.
+- Executes with resource, network, filesystem, and time limits.
+- Redacts secrets and treats repository code as untrusted.
+- Stores commands, generated tests, exit codes, logs, traces, screenshots, and
+  recordings as immutable evidence objects.
+
+Production backends may use Firecracker, Kubernetes Jobs with a hardened
+runtime, or another policy-compliant sandbox. Running arbitrary PR code inside
+the API or review container is prohibited.
+
+### Developer surfaces
+
+- The unified CLI manages repository onboarding/lifecycle, cross-repository
+  clusters, learned-rule moderation, and local review. Local review uses the
+  working-tree merge base, self-hosted active snapshot, cross-repository
+  context, cascading policy, approved learned rules, and native verifier. It
+  emits human, inline-diff, versioned JSON, or terminal-safe agent text. A
+  Git-common-dir state record permits failed/interrupted requests to restart
+  only when every immutable input identity still matches.
+- Complete the CLI with remote API authentication, hosted execution,
+  partial-stage continuation, and shell completion.
+- The MCP foundation is mounted at `/mcp` using stateless JSON Streamable HTTP,
+  constant-time validation of an installation-wide recovery credential or a
+  non-recoverable durable service token, explicit host allowlisting, and the
+  same PostgreSQL source of truth as workers. Repository claims are enforced
+  again in every PostgreSQL projection. Inspection tools project repositories,
+  durable PR lifecycle state, review reports, current finding lineages/search,
+  operator context, and feedback-derived context. A thin compatibility adapter
+  resolves the public `name`/`remote`/`defaultBranch`/`remoteUrl` repository
+  descriptor under the token's repository claims before querying by internal
+  ID. Public camelCase parameters and PR/comment search aliases stay at the MCP
+  boundary; storage and worker APIs remain Diffuse-native. Explicit write scope
+  gates authoritative GitHub/GitLab re-runs and audited context creation/
+  update/deletion. Provider dispatch occurs only after repository-claim
+  resolution; each re-run re-fetches current provider state, and GitLab also
+  verifies the encoded project path, numeric project identity, and canonical
+  web URL before resolving the current MR. Operator-context updates compare the
+  caller's `expectedUpdatedAt`
+  with the locked row, keep identical retries as no-ops, and record safe hashed
+  deltas. Deletes preserve an audit tombstone and do not alter context snapshots
+  already attached to review runs. Learned rules remain on their separate
+  evidence-backed version/approval lifecycle.
+- The REST foundation is mounted under `/api/v1` before the MCP catch-all and
+  uses the same shared bearer authenticator and repository-scoped PostgreSQL
+  projections. `diffuse:api:read` gates repository/index, PR, review, finding,
+  analytics, and code-search reads. Model-backed Q&A additionally requires
+  `diffuse:api:generate`. A manual review request requires read and write
+  scopes, resolves the repository grant before provider dispatch, re-fetches
+  the current open PR/MR head, and enters the same audited durable queue as
+  MCP. Required idempotency keys are stored only as actor/operation-scoped
+  hashes; a request fingerprint detects conflicting reuse, a bounded lease
+  coordinates concurrent attempts, and the normalized provider event is
+  persisted before enqueue so a crash retry cannot drift. Missing and
+  unauthorized objects share one 404 response, request bodies reject unknown
+  fields, pagination is bounded, and failures use Problem Details. The
+  bootstrap credential retains recovery access, while routine clients use
+  hashed, expiring, revocable service tokens.
+- REST repository creation requires administrative and all-repositories
+  authority. It registers a non-conflicting enabled repository, verifies clone
+  access through the locked credential-safe mirror, snapshots the resolved
+  default-branch push event, and queues that exact commit. Reindexing requires
+  read/write scope and the repository grant. Both mutations use longer bounded
+  leases for clone/fetch, deterministic provider delivery IDs, the same
+  transactional push-event queue as webhooks, exact response replay, and
+  one audit event per accepted delivery.
+- Source search resolves the caller-authorized repository descriptor to one
+  compatible active index, freezes its exact snapshot plan, and then runs a
+  first-class text query through lexical, vector, and graph-neighbor channels.
+  Optional cluster context is intersected with the token's repository claims.
+  Literal path prefixes constrain seeds and graph results. Every result includes
+  repository-qualified lines, snapshot/commit identity, retrieval provenance,
+  and an SCM-specific immutable commit permalink.
+- Repository Q&A requires a separate generation scope. The model receives only
+  bounded untrusted source excerpts and must return structured claims with exact
+  repository/path/range citations. Diffuse retains a claim only when every
+  citation maps unambiguously inside the supplied evidence; otherwise the whole
+  claim is discarded. Zero grounded claims fails closed as insufficient
+  evidence. Query/plan/source fingerprints and model/token provenance make the
+  response inspectable even if a newer snapshot activates concurrently.
+- Review analytics use the same repository-claim injection as every MCP read.
+  The query accepts a required half-open UTC-normalized window of at most 366
+  days and optionally resolves one public repository descriptor under those
+  claims. Review attempts are counted once even when a run has many findings;
+  applied findings are grouped separately by durable lineage. Current address,
+  open-critical/security, reaction, and context-reply state is projected only
+  for lineages selected by published runs in the window and is labeled with
+  the database transaction's `asOf` time. An optional exact author filter is
+  applied inside the same authorized SQL scope. Source-created PR cohorts
+  provide reviewed/unreviewed counts; source-merged cohorts provide exact
+  mean/median open-to-merge duration and UTC trends. The lifecycle ledger
+  exposes merge-timestamp completeness, so missing provider data is visible
+  rather than replaced with receipt time. The response defines every
+  denominator and refuses to infer historical policy eligibility or monetary
+  cost from missing versioned facts.
+- Extend MCP with organization/team RBAC, generation rate/usage policy, report
+  export/scheduling, and historical policy-eligibility/cost inputs.
+- The agent-handoff foundation projects one current finding or all current
+  findings from a published review into a revision-pinned, repository-scoped
+  MCP bundle for Codex, Claude Code, Conductor, Cursor, Devin, and generic MCP
+  clients. It refuses stale base/head revisions, closed PRs, addressed
+  lineages, and superseded finding occurrences. GitHub review output names the
+  exact handoff call. Add the optional local custom-URL bridge and per-user
+  agent launch configuration for literal one-click buttons.
+- Thread conversation and clarification in the SCM.
+
+## Durable workflow model
+
+The initial implementation uses PostgreSQL jobs and attempts. GitHub and GitLab
+ingress record a provider/host-scoped delivery and queue an exact PR/MR or
+default-branch revision in one transaction. Workers claim with `FOR UPDATE SKIP
+LOCKED`, leases, bounded exponential retry, and terminal failed/dead states.
+Repeated deliveries and revisions are deduplicated, newer revisions supersede
+older queued work, and jobs sharing one PR, review-thread, feedback-thread, or
+ref scope cannot run concurrently.
+
+The complete workflow contract still requires:
+
+- cancellation and supersession when a newer commit arrives;
+- per-tenant/repository concurrency and provider rate limits;
+- resumable multi-stage indexing/review/sandbox workflows; and
+- an operator UI/API for inspection and replay.
+
+The PostgreSQL implementation can remain the small-installation backend. A
+production profile may use a dedicated workflow engine as long as the domain
+contract remains portable.
+
+## Core data model
+
+- `organizations`, `teams`, `users`, `memberships`, `roles`
+- `scm_connections`, `repositories`, `repository_access`
+- `commits`, `index_snapshots`, `index_jobs`
+- `files`, `symbols`, `symbol_relationships`, `code_chunks`, `embeddings`
+- `repository_clusters`, `repository_cluster_members`
+- `repository_policy_layers`, `repository_guidance_documents`
+- `rules`, `context_files`, `memory_signals`, `learned_rules`,
+  `custom_contexts`, `suggested_rule_evidence`, `learned_rule_events`
+- `pull_requests`, `review_runs`, `review_check_runs`, `review_findings`,
+  `finding_lineages`, `finding_lineage_events`, `finding_threads`,
+  `finding_thread_operations`, `review_conversation_messages`,
+  `review_feedback_sync_states`, `review_feedback_events`,
+  `review_auto_approvals`,
+  `suggested_rule_learning_states`, `suggested_rule_generation_runs`,
+  `review_run_learned_rules`, `review_run_custom_contexts`,
+  `review_run_context_snapshots`
+- `finding_resolutions`
+- `runtime_runs`, `runtime_artifacts`
+- `workflow_jobs`, `workflow_attempts`
+- `api_tokens`, `audit_events`, `usage_events`
+
+The target tenant-owned rows carry an organization identifier. The initial
+service-token tables are installation-scoped until the organization model is
+introduced. Repository- and
+commit-scoped records use foreign keys rather than a free-form `owner/repo`
+string. Deletion is explicit and cascades through code, embeddings, review
+history, and artifacts according to configured retention policy.
+
+## Deployment profiles
+
+### Developer
+
+- One API process, one worker, PostgreSQL + pgvector.
+- Local filesystem object storage.
+- Local CLI authentication.
+
+### Docker Compose
+
+- Reverse proxy, web/API, webhook ingress, general worker, index worker,
+  review worker, PostgreSQL + pgvector, Redis-compatible cache, and
+  S3-compatible object storage.
+- Designed for a small team on one trusted Linux host.
+
+### Kubernetes
+
+- Independently autoscaled stateless services and workers.
+- Managed PostgreSQL/pgvector, Redis-compatible cache, and object storage.
+- Dedicated sandbox node pool, network policies, pod security standards,
+  external secrets, ingress TLS, and migration jobs.
+
+### Air-gapped
+
+- Mirrored, signed images and model artifacts.
+- Local SCM endpoints and OpenAI-compatible inference endpoints.
+- Offline install/upgrade bundle, SBOMs, migration plan, and rollback
+  instructions.
+- No license, telemetry, font, analytics, or asset dependency on the public
+  internet.
+
+## Security invariants
+
+1. Verify webhook signatures before parsing or enqueueing.
+2. Treat repositories, diffs, configuration, model output, and runtime output
+   as untrusted input.
+3. Enforce authorization in the data access layer, not only in handlers/UI.
+4. Never place credentials or source text in routine logs.
+5. Encrypt stored provider credentials with a rotatable key-encryption key.
+6. Restrict SCM and model egress; defend URL fetches against SSRF.
+7. Run PR code only in disposable sandbox isolation with no control-plane
+   credentials.
+8. Record administrative and review-mutating actions in the audit log.
+9. Make repository revocation and deletion testable end-to-end.
+10. Sign release images and publish dependency and container SBOMs.
+
+## Evaluation gates
+
+Each review-engine release must pass versioned evaluations for:
+
+- changed-symbol and graph-edge extraction;
+- caller/dependency/test retrieval recall;
+- citation correctness;
+- correctness/security finding recall;
+- false-positive and nitpick rate;
+- duplicate/conflicting findings;
+- rule adherence and scope inheritance;
+- feedback-learning behavior and protected-category floors;
+- SCM idempotency; and
+- sandbox escape and secret-exposure defenses.
