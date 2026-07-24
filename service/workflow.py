@@ -21,6 +21,17 @@ from service.scm import (
 ERROR_CODE_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
+class NonRetryableError(ValueError):
+    """A job failure that retrying cannot resolve.
+
+    Reserved for deterministic faults — an unsupported provider or job type, or
+    a payload whose identity does not match the job it was claimed for. Every
+    other failure is treated as transient and retried under the job's backoff
+    policy, because retrying a transient fault is cheap and permanently failing
+    a recoverable one is not.
+    """
+
+
 class RepositoryNotOnboardedError(LookupError):
     pass
 
@@ -1081,7 +1092,7 @@ def claim_workflow_job(
                     AND running.status = 'running'
               )
             ORDER BY queued.priority DESC, queued.available_at, queued.id
-            FOR UPDATE SKIP LOCKED
+            FOR UPDATE OF queued SKIP LOCKED
             LIMIT 1
             """
         )

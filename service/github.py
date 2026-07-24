@@ -15,6 +15,7 @@ from fastapi import HTTPException, status
 from service.review_interaction import (
     ManualReviewRequest,
     conversation_question,
+    is_diffuse_generated,
     is_human_only_discussion,
     is_manual_review_trigger,
 )
@@ -24,6 +25,7 @@ from service.scm import (
     ReviewConversationEvent,
     ReviewFeedbackCommentEvent,
     normalize_base_url,
+    scm_api_timeout_seconds,
 )
 
 GITHUB_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -312,6 +314,7 @@ def normalize_review_conversation_event(
         or not str(root_value).isdigit()
         or actor_type.casefold() == "bot"
         or author_association not in MANUAL_TRIGGER_ASSOCIATIONS
+        or is_diffuse_generated(body)
     ):
         return None
     question = conversation_question(body)
@@ -402,6 +405,7 @@ def normalize_review_feedback_comment_event(
         or actor_type.casefold() == "bot"
         or author_association not in MANUAL_TRIGGER_ASSOCIATIONS
         or is_human_only_discussion(body)
+        or is_diffuse_generated(body)
     ):
         return None
 
@@ -479,7 +483,7 @@ async def fetch_manual_pull_request_event(
         return value
 
     if client is None:
-        async with httpx.AsyncClient(timeout=20.0) as owned_client:
+        async with httpx.AsyncClient(timeout=scm_api_timeout_seconds()) as owned_client:
             pull_request = await fetch(owned_client)
     else:
         pull_request = await fetch(client)
@@ -594,7 +598,7 @@ async def _fetch_diff_url(
 
     if client is not None:
         return await fetch(client)
-    async with httpx.AsyncClient(timeout=20.0) as owned_client:
+    async with httpx.AsyncClient(timeout=scm_api_timeout_seconds()) as owned_client:
         return await fetch(owned_client)
 
 

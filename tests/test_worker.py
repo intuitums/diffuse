@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 
 from repository_policy.models import (
     PolicyLayer,
@@ -44,7 +45,7 @@ from service.scm import (
     PushEvent,
     ReviewConversationEvent,
 )
-from service.workflow import WorkflowJob
+from service.workflow import NonRetryableError, WorkflowJob
 
 
 def _event(**overrides) -> PullRequestEvent:
@@ -1085,3 +1086,79 @@ async def test_terminal_review_failure_completes_existing_status_check(monkeypat
             "its retry policy."
         ),
     )
+
+
+def _capture_failure_classification(monkeypatch, job, error):
+    """Drive run_once through a failing job and capture how it was classified."""
+    recorded: dict = {}
+
+    def fail(_job_id, _worker_id, *, retryable):
+        recorded["retryable"] = retryable
+        return "queued" if retryable else "failed"
+
+    monkeypatch.setattr(worker, "_claim", lambda *_args: job)
+    monkeypatch.setattr(worker, "process_job", AsyncMock(side_effect=error))
+    monkeypatch.setattr(worker, "_fail", fail)
+    monkeypatch.setattr(
+        worker,
+        "_mark_native_review_terminal_failed",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(worker, "_complete_existing_job_check", AsyncMock())
+    return recorded
+
+
+@pytest.mark.anyio
+async def test_malformed_model_output_is_retried(monkeypatch):
+    """A truncated or drifting model response is transient, not terminal."""
+    job = _job(_event())
+    error = ValidationError.from_exception_data("CandidateBatch", [])
+    recorded = _capture_failure_classification(monkeypatch, job, error)
+
+    assert await worker.run_once("worker-1")
+
+    assert isinstance(error, ValueError)
+    assert recorded == {"retryable": True}
+
+
+@pytest.mark.anyio
+async def test_deterministic_faults_are_not_retried(monkeypatch):
+    job = _job(_event())
+    recorded = _capture_failure_classification(
+        monkeypatch,
+        job,
+        NonRetryableError("Workflow job identity does not match its payload"),
+    )
+
+    assert await worker.run_once("worker-1")
+
+    assert recorded == {"retryable": False}
+
+
+@pytest.mark.anyio
+async def test_non_retryable_failure_check_does_not_claim_exhausted_retries(
+    monkeypatch,
+):
+    event = _event()
+    job = _job(event)
+    finalize = AsyncMock()
+
+    monkeypatch.setattr(worker, "_claim", lambda *_args: job)
+    monkeypatch.setattr(
+        worker,
+        "process_job",
+        AsyncMock(side_effect=NonRetryableError("Unsupported SCM provider: svn")),
+    )
+    monkeypatch.setattr(worker, "_fail", lambda *_args, **_kwargs: "failed")
+    monkeypatch.setattr(
+        worker,
+        "_mark_native_review_terminal_failed",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(worker, "_complete_existing_job_check", finalize)
+
+    assert await worker.run_once("worker-1")
+
+    message = finalize.await_args.kwargs["message"]
+    assert "exhausting" not in message
+    assert "retrying cannot resolve" in message
