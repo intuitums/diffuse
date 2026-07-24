@@ -641,6 +641,7 @@ def schedule_due_feedback_sync_jobs(
     conn,
     *,
     api_base_url: str,
+    github_scm_base_url: str = "https://github.com",
     gitlab_scm_base_url: str = "https://gitlab.com",
     gitlab_api_base_url: str = "https://gitlab.com/api/v4",
     interval_seconds: int = 900,
@@ -694,13 +695,18 @@ def schedule_due_feedback_sync_jobs(
         )
         rows = cursor.fetchall()
         for row in rows:
-            provider_api_base_url = (
-                api_base_url
-                if row["scm_provider"] == "github"
-                else gitlab_api_base_url
-                if row["scm_base_url"] == gitlab_scm_base_url
-                else f"{row['scm_base_url']}/api/v4"
-            )
+            if row["scm_provider"] == "github":
+                provider_api_base_url = (
+                    api_base_url
+                    if row["scm_base_url"] == github_scm_base_url
+                    else f"{row['scm_base_url']}/api/v3"
+                )
+            else:
+                provider_api_base_url = (
+                    gitlab_api_base_url
+                    if row["scm_base_url"] == gitlab_scm_base_url
+                    else f"{row['scm_base_url']}/api/v4"
+                )
             event = FeedbackSyncEvent(
                 provider=row["scm_provider"],
                 scm_base_url=row["scm_base_url"],

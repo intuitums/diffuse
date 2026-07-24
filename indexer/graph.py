@@ -194,7 +194,9 @@ class _PythonGraphVisitor(ast.NodeVisitor):
         for alias in node.names:
             local_name = alias.asname or alias.name.split(".", 1)[0]
             if len(self.scope) == 1:
-                self.import_aliases[local_name] = alias.name
+                self.import_aliases[local_name] = (
+                    alias.name if alias.asname else local_name
+                )
             self._add_relationship(
                 target_name=alias.name,
                 kind="imports",

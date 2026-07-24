@@ -88,7 +88,6 @@ SKIP_EXTENSIONS = {
     ".jpg",
     ".lock",
     ".map",
-    ".min.js",
     ".o",
     ".pdf",
     ".png",
@@ -108,6 +107,7 @@ SENSITIVE_FILENAMES = {
     "service_account.json",
 }
 ENV_TEMPLATE_SUFFIXES = (".example", ".sample", ".template")
+SKIP_FILENAME_SUFFIXES = (".min.js", ".min.css")
 
 
 @dataclass(frozen=True)
@@ -142,6 +142,7 @@ def _is_candidate(path: Path, repo_root: Path) -> bool:
         and stat.st_size <= MAX_FILE_BYTES
         and not any(part in SKIP_DIRS for part in relative.parts[:-1])
         and path.suffix.lower() not in SKIP_EXTENSIONS
+        and not path.name.lower().endswith(SKIP_FILENAME_SUFFIXES)
         and not _is_sensitive(relative)
     )
 

@@ -213,7 +213,7 @@ def build_retrieval_query(diff_text: str) -> str:
         if (
             line.startswith(("diff --git ", "@@"))
             or line.startswith(("+", "-"))
-            and not line.startswith(("+++", "---"))
+            and not line.startswith(("+++ ", "--- "))
         ):
             meaningful_lines.append(line)
 
@@ -236,10 +236,10 @@ def extract_lexical_terms(diff_text: str) -> tuple[str, ...]:
         if line.startswith(("+++ ", "--- ")):
             weight = 1
             value = line[4:]
-        elif line.startswith("+") and not line.startswith("+++"):
+        elif line.startswith("+") and not line.startswith("+++ "):
             weight = 4
             value = line[1:]
-        elif line.startswith("-") and not line.startswith("---"):
+        elif line.startswith("-") and not line.startswith("--- "):
             weight = 3
             value = line[1:]
         if not weight:

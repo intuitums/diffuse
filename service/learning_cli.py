@@ -77,7 +77,7 @@ def _moderate(args: argparse.Namespace) -> None:
             conn,
             repository_id=args.repository_id,
             learned_rule_id=args.rule_id,
-            action=args.command,
+            action=args.learning_command,
             actor_login=args.actor,
             actor_authority="OPERATOR",
             event_key=args.event_key or f"operator:{uuid.uuid4()}",

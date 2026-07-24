@@ -228,6 +228,10 @@ def _schedule_feedback_syncs() -> int:
         return schedule_due_feedback_sync_jobs(
             conn,
             api_base_url=api_base_url,
+            github_scm_base_url=os.environ.get(
+                "GITHUB_WEB_URL",
+                "https://github.com",
+            ),
             gitlab_scm_base_url=os.environ.get(
                 "GITLAB_WEB_URL",
                 "https://gitlab.com",
