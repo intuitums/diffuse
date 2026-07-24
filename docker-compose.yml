@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: diffuse
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-diffuse-dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: diffuse
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U diffuse -d diffuse"]
@@ -15,10 +15,19 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "127.0.0.1:5432:5432"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 1m
 
   migrate:
     build: .
     restart: "no"
+    init: true
+    security_opt:
+      - no-new-privileges:true
     command: ["diffuse", "database", "migrate"]
     depends_on:
       db:
@@ -26,24 +35,57 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:-diffuse-dev}@db:5432/diffuse
+      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   app:
     build: .
     restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       migrate:
         condition: service_completed_successfully
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:-diffuse-dev}@db:5432/diffuse
+      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
+      DIFFUSE_API_TOKEN: ${DIFFUSE_API_TOKEN:?Set DIFFUSE_API_TOKEN in .env}
+      DIFFUSE_PUBLIC_URL: ${DIFFUSE_PUBLIC_URL:?Set DIFFUSE_PUBLIC_URL in .env}
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - repository_data:/var/lib/diffuse/repositories
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5).read()
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 30s
 
   worker:
     build: .
     restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
     command: ["python", "-m", "service.worker"]
     depends_on:
       migrate:
@@ -51,9 +93,15 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:-diffuse-dev}@db:5432/diffuse
+      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
     volumes:
       - repository_data:/var/lib/diffuse/repositories
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 30s
 
 volumes:
   pgdata:
