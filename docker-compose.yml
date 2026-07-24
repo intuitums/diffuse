@@ -1,0 +1,60 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: diffuse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-diffuse-dev}
+      POSTGRES_DB: diffuse
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U diffuse -d diffuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  migrate:
+    build: .
+    restart: "no"
+    command: ["diffuse", "database", "migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:-diffuse-dev}@db:5432/diffuse
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:-diffuse-dev}@db:5432/diffuse
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "service.worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:-diffuse-dev}@db:5432/diffuse
+    volumes:
+      - repository_data:/var/lib/diffuse/repositories
+
+volumes:
+  pgdata:
+  repository_data:
