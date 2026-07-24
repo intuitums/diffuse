@@ -428,6 +428,7 @@ async def test_worker_checks_revision_before_review_and_completes(monkeypatch):
             "worker-1",
             policy,
             frozenset({"app.py"}),
+            {},
         )
     ]
     worker.publish_github_review.assert_awaited_once_with(

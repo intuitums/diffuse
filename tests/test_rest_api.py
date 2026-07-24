@@ -172,6 +172,7 @@ async def test_rest_repository_onboarding_fetches_exact_commit_and_replays(
                     requested_at=requested_at,
                     operation_data=None,
                     response=completed if cached else None,
+                    lease_generation=1,
                 ),
             )
         if callback is rest_api._set_repository_index_syncing:
@@ -331,6 +332,7 @@ async def test_rest_repository_reindex_recovers_saved_event_without_refetching(
                     requested_at=requested_at,
                     operation_data=event.to_payload(),
                     response=None,
+                    lease_generation=1,
                 ),
             )
         if callback is rest_api.enqueue_repository_index_trigger:
@@ -402,6 +404,7 @@ async def test_rest_repository_reindex_records_fetch_failure_and_releases_lease(
                     requested_at=requested_at,
                     operation_data=None,
                     response=None,
+                    lease_generation=1,
                 ),
             )
         if callback in {
@@ -499,6 +502,7 @@ async def test_rest_review_trigger_revalidates_enqueues_and_replays(monkeypatch)
                     requested_at=requested_at,
                     operation_data=None,
                     response=completed if cached else None,
+                    lease_generation=1,
                 ),
             )
         if callback is rest_api._save_review_trigger_event:

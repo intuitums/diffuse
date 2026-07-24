@@ -254,6 +254,15 @@ def queue_rule_learning_job(
             (event.scope_key,),
         )
         if cursor.fetchone():
+            cursor.execute(
+                """
+                UPDATE suggested_rule_learning_states
+                SET next_evaluation_at = now() + interval '60 seconds',
+                    updated_at = now()
+                WHERE repository_id = %s
+                """,
+                (repository_id,),
+            )
             return RuleLearningEnqueueResult(None, "already_scheduled")
 
         cursor.execute(

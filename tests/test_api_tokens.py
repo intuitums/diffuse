@@ -7,6 +7,7 @@ from service.api_tokens import (
     MCP_READ_SCOPE,
     ServiceTokenRecord,
     api_token_sha256,
+    create_service_token,
     validate_api_token,
 )
 
@@ -28,6 +29,21 @@ def test_service_token_validation_and_hashing_are_strict():
     ):
         with pytest.raises(ValueError, match="visible ASCII"):
             validate_api_token(invalid)
+
+
+def test_service_token_rejects_bootstrap_secret_reuse(monkeypatch):
+    credential = "b" * 48
+    monkeypatch.setenv("DIFFUSE_API_TOKEN", credential)
+
+    with pytest.raises(ValueError, match="must not reuse DIFFUSE_API_TOKEN"):
+        create_service_token(
+            None,
+            name="looks-scoped",
+            token=credential,
+            scopes=(MCP_READ_SCOPE,),
+            all_repositories=True,
+            actor="operator",
+        )
 
 
 def test_token_metadata_output_never_contains_credential_material():

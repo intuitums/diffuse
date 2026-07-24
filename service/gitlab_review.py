@@ -195,20 +195,16 @@ async def fetch_gitlab_pull_request_update_diff(
         except httpx.HTTPStatusError as error:
             if error.response.status_code not in {400, 404, 422}:
                 raise
-            return await fetch_gitlab_merge_request_diff(
-                event,
-                client=active_client,
-            )
+            # Fail closed for finding continuity: a full MR diff would treat
+            # untouched files as changed and falsely address open findings.
+            return ""
         try:
             value = httpx.Response(200, content=content).json()
         except ValueError as error:
             raise RuntimeError("GitLab returned a non-JSON comparison") from error
         rendered = _comparison_diff(value, event)
         if rendered is None:
-            return await fetch_gitlab_merge_request_diff(
-                event,
-                client=active_client,
-            )
+            return ""
         return rendered
 
     if client is not None:

@@ -56,8 +56,8 @@ rename to new.py
 """
 
     assert parse_changed_line_ranges(diff) == {
-        "old.py": [(10, 12), (30, 30)],
-        "new.py": [(20, 20), (40, 41)],
+        "old.py": [(10, 12)],
+        "new.py": [(40, 41)],
     }
 
 

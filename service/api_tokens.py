@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -175,6 +176,16 @@ def create_service_token(
 ) -> ServiceTokenRecord:
     normalized_name = _name(name)
     token_hash = api_token_sha256(token)
+    bootstrap = os.environ.get("DIFFUSE_API_TOKEN", "")
+    try:
+        bootstrap_hash = api_token_sha256(bootstrap) if bootstrap else None
+    except ValueError:
+        bootstrap_hash = None
+    if bootstrap_hash is not None and token_hash == bootstrap_hash:
+        raise ValueError(
+            "Service tokens must not reuse DIFFUSE_API_TOKEN; "
+            "bootstrap authentication would ignore scoped grants and revocation"
+        )
     normalized_scopes = _scopes(scopes)
     normalized_repositories = _repository_ids(
         repository_ids,

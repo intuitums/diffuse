@@ -606,6 +606,7 @@ def _save_repository_index_event(
     authorized_repository_ids: frozenset[int] | None,
     repository: RegisteredRepository,
     reservation_id: int,
+    lease_generation: int,
     actor_identity: str,
     event: PushEvent,
 ) -> None:
@@ -633,6 +634,7 @@ def _save_repository_index_event(
         conn,
         reservation_id=reservation_id,
         actor_identity=actor_identity,
+        lease_generation=lease_generation,
         operation_data=event.to_payload(),
     )
 
@@ -643,6 +645,7 @@ def _complete_repository_operation(
     authorized_repository_ids: frozenset[int] | None,
     repository_id: int,
     reservation_id: int,
+    lease_generation: int,
     actor_identity: str,
     response: dict[str, object],
 ) -> dict[str, object]:
@@ -654,6 +657,7 @@ def _complete_repository_operation(
         conn,
         reservation_id=reservation_id,
         actor_identity=actor_identity,
+        lease_generation=lease_generation,
         response=response,
     )
 
@@ -664,6 +668,7 @@ def _release_repository_operation(
     authorized_repository_ids: frozenset[int] | None,
     repository_id: int,
     reservation_id: int,
+    lease_generation: int,
     actor_identity: str,
 ) -> None:
     _authorize_repository_operation(
@@ -674,6 +679,7 @@ def _release_repository_operation(
         conn,
         reservation_id=reservation_id,
         actor_identity=actor_identity,
+        lease_generation=lease_generation,
     )
 
 
@@ -683,6 +689,7 @@ def _fail_repository_index_operation(
     authorized_repository_ids: frozenset[int] | None,
     repository_id: int,
     reservation_id: int,
+    lease_generation: int,
     actor_identity: str,
 ) -> None:
     _authorize_repository_operation(
@@ -699,6 +706,7 @@ def _fail_repository_index_operation(
         conn,
         reservation_id=reservation_id,
         actor_identity=actor_identity,
+        lease_generation=lease_generation,
     )
 
 
@@ -707,6 +715,7 @@ async def _release_repository_operation_safely(
     *,
     repository_id: int,
     reservation_id: int,
+    lease_generation: int,
     actor_identity: str,
 ) -> None:
     with suppress(RestApiError):
@@ -715,6 +724,7 @@ async def _release_repository_operation_safely(
             _release_repository_operation,
             repository_id=repository_id,
             reservation_id=reservation_id,
+            lease_generation=lease_generation,
             actor_identity=actor_identity,
         )
 
@@ -755,6 +765,7 @@ async def _execute_repository_index_operation(
                         _fail_repository_index_operation,
                         repository_id=repository.id,
                         reservation_id=reservation.id,
+                        lease_generation=reservation.lease_generation,
                         actor_identity=actor_identity,
                     )
                 raise RestApiError(
@@ -780,6 +791,7 @@ async def _execute_repository_index_operation(
                 _save_repository_index_event,
                 repository=repository,
                 reservation_id=reservation.id,
+                lease_generation=reservation.lease_generation,
                 actor_identity=actor_identity,
                 event=event,
             )
@@ -799,6 +811,7 @@ async def _execute_repository_index_operation(
             _complete_repository_operation,
             repository_id=repository.id,
             reservation_id=reservation.id,
+            lease_generation=reservation.lease_generation,
             actor_identity=actor_identity,
             response=_versioned(result),
         )
@@ -808,6 +821,7 @@ async def _execute_repository_index_operation(
             principal,
             repository_id=repository.id,
             reservation_id=reservation.id,
+            lease_generation=reservation.lease_generation,
             actor_identity=actor_identity,
         )
         raise
@@ -822,6 +836,7 @@ async def _execute_repository_index_operation(
             principal,
             repository_id=repository.id,
             reservation_id=reservation.id,
+            lease_generation=reservation.lease_generation,
             actor_identity=actor_identity,
         )
         raise RestApiError(
@@ -1060,6 +1075,7 @@ def _save_review_trigger_event(
     authorized_repository_ids: frozenset[int] | None,
     repository_id: int,
     reservation_id: int,
+    lease_generation: int,
     actor_identity: str,
     event: PullRequestEvent,
 ) -> None:
@@ -1074,6 +1090,7 @@ def _save_review_trigger_event(
         conn,
         reservation_id=reservation_id,
         actor_identity=actor_identity,
+        lease_generation=lease_generation,
         operation_data=event.to_payload(),
     )
 
@@ -1084,6 +1101,7 @@ def _complete_review_trigger(
     authorized_repository_ids: frozenset[int] | None,
     repository_id: int,
     reservation_id: int,
+    lease_generation: int,
     actor_identity: str,
     response: dict[str, object],
 ) -> dict[str, object]:
@@ -1098,6 +1116,7 @@ def _complete_review_trigger(
         conn,
         reservation_id=reservation_id,
         actor_identity=actor_identity,
+        lease_generation=lease_generation,
         response=response,
     )
 
@@ -1108,6 +1127,7 @@ def _release_review_trigger(
     authorized_repository_ids: frozenset[int] | None,
     repository_id: int,
     reservation_id: int,
+    lease_generation: int,
     actor_identity: str,
 ) -> None:
     if (
@@ -1119,6 +1139,7 @@ def _release_review_trigger(
         conn,
         reservation_id=reservation_id,
         actor_identity=actor_identity,
+        lease_generation=lease_generation,
     )
 
 
@@ -1127,6 +1148,7 @@ async def _release_review_trigger_safely(
     *,
     repository_id: int,
     reservation_id: int,
+    lease_generation: int,
     actor_identity: str,
 ) -> None:
     with suppress(RestApiError):
@@ -1135,6 +1157,7 @@ async def _release_review_trigger_safely(
             _release_review_trigger,
             repository_id=repository_id,
             reservation_id=reservation_id,
+            lease_generation=lease_generation,
             actor_identity=actor_identity,
         )
 
@@ -1199,6 +1222,7 @@ async def trigger_pull_request_review(
                     principal,
                     repository_id=repository_id,
                     reservation_id=reservation.id,
+                    lease_generation=reservation.lease_generation,
                     actor_identity=actor_identity,
                 )
                 raise RestApiError(
@@ -1214,6 +1238,7 @@ async def trigger_pull_request_review(
                 _save_review_trigger_event,
                 repository_id=repository_id,
                 reservation_id=reservation.id,
+                lease_generation=reservation.lease_generation,
                 actor_identity=actor_identity,
                 event=event,
             )
@@ -1236,6 +1261,7 @@ async def trigger_pull_request_review(
             _complete_review_trigger,
             repository_id=repository_id,
             reservation_id=reservation.id,
+            lease_generation=reservation.lease_generation,
             actor_identity=actor_identity,
             response=_versioned(result),
         )
@@ -1245,6 +1271,7 @@ async def trigger_pull_request_review(
             principal,
             repository_id=repository_id,
             reservation_id=reservation.id,
+            lease_generation=reservation.lease_generation,
             actor_identity=actor_identity,
         )
         raise
@@ -1253,6 +1280,7 @@ async def trigger_pull_request_review(
             principal,
             repository_id=repository_id,
             reservation_id=reservation.id,
+            lease_generation=reservation.lease_generation,
             actor_identity=actor_identity,
         )
         raise RestApiError(
@@ -1266,6 +1294,7 @@ async def trigger_pull_request_review(
             principal,
             repository_id=repository_id,
             reservation_id=reservation.id,
+            lease_generation=reservation.lease_generation,
             actor_identity=actor_identity,
         )
         raise RestApiError(
@@ -1279,6 +1308,7 @@ async def trigger_pull_request_review(
             principal,
             repository_id=repository_id,
             reservation_id=reservation.id,
+            lease_generation=reservation.lease_generation,
             actor_identity=actor_identity,
         )
         raise RestApiError(

@@ -223,11 +223,10 @@ def _claim(worker_id: str) -> WorkflowJob | None:
 def _schedule_feedback_syncs() -> int:
     interval_seconds = int(os.environ.get("FEEDBACK_SYNC_INTERVAL_SECONDS", "900"))
     batch_size = int(os.environ.get("FEEDBACK_SYNC_BATCH_SIZE", "20"))
-    api_base_url = os.environ.get("GITHUB_API_URL", "https://api.github.com")
     with closing(get_conn()) as conn, conn:
         return schedule_due_feedback_sync_jobs(
             conn,
-            api_base_url=api_base_url,
+            api_base_url=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
             github_scm_base_url=os.environ.get(
                 "GITHUB_WEB_URL",
                 "https://github.com",
@@ -495,6 +494,27 @@ def _persist_trigger_skip(
         persist_review_report(conn, review_run_id, report)
 
 
+def _continuity_paths(
+    update_diff: str,
+) -> tuple[frozenset[str], dict[str, str]]:
+    """Derive touched paths and rename aliases for finding continuity."""
+    aliases: dict[str, str] = {}
+    touched: set[str] = set()
+    for file in parse_unified_diff(update_diff).files:
+        old_path = validate_repo_path(file.old_path) if file.old_path else None
+        new_path = validate_repo_path(file.new_path) if file.new_path else None
+        if old_path and new_path and old_path != new_path:
+            aliases[old_path] = new_path
+            # Renames keep continuity via aliases; only the destination path is
+            # treated as touched so the old path is not falsely addressed.
+            touched.add(new_path)
+        elif new_path:
+            touched.add(new_path)
+        elif old_path:
+            touched.add(old_path)
+    return frozenset(touched), aliases
+
+
 def _generate_and_persist_review(
     job: WorkflowJob,
     review_run_id: int,
@@ -503,6 +523,7 @@ def _generate_and_persist_review(
     worker_id: str,
     policy: ResolvedReviewPolicy,
     touched_paths: frozenset[str],
+    path_aliases: dict[str, str] | None = None,
 ) -> None:
     def report_progress() -> None:
         if not _heartbeat_and_check_current(job.id, worker_id):
@@ -524,6 +545,7 @@ def _generate_and_persist_review(
                 review_run_id,
                 report,
                 touched_paths=touched_paths,
+                path_aliases=path_aliases,
             )
     except ReviewSupersededError:
         with closing(get_conn()) as conn, conn:
@@ -1228,6 +1250,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
             return
 
     touched_paths: frozenset[str] = frozenset()
+    path_aliases: dict[str, str] = {}
     if decision.eligible and review_run.needs_generation:
         if job.pull_request_id is None:
             raise ValueError("Review job does not reference a pull request")
@@ -1243,12 +1266,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
                 event,
                 previous_head,
             )
-            touched_paths = frozenset(
-                validate_repo_path(path)
-                for file in parse_unified_diff(update_diff).files
-                for path in (file.old_path, file.new_path)
-                if path is not None
-            )
+            touched_paths, path_aliases = _continuity_paths(update_diff)
 
     context_bundle = None
     if decision.eligible and review_run.needs_generation:
@@ -1279,6 +1297,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
                     worker_id,
                     policy,
                     touched_paths,
+                    path_aliases,
                 )
             )
         except ReviewSupersededError:

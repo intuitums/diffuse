@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Literal
@@ -64,12 +65,18 @@ def _token_similarity(left: str, right: str) -> float:
     return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
 
 
+def _effective_path(path: str, path_aliases: Mapping[str, str]) -> str:
+    return path_aliases.get(path, path)
+
+
 def _finding_similarity(
     current: ReviewFinding,
     historical: ReviewFinding,
+    *,
+    path_aliases: Mapping[str, str],
 ) -> float:
     if (
-        current.file_path != historical.file_path
+        current.file_path != _effective_path(historical.file_path, path_aliases)
         or current.category != historical.category
         or current.security_classification != historical.security_classification
     ):
@@ -102,16 +109,32 @@ def classify_finding_lineage(
     historical_findings: tuple[HistoricalFinding, ...],
     *,
     touched_paths: frozenset[str],
+    path_aliases: Mapping[str, str] | None = None,
     match_threshold: float = 0.68,
 ) -> tuple[FindingTransition, ...]:
     """Match current findings, then address unmatched active findings on touched files."""
     if not 0 <= match_threshold <= 1:
         raise ValueError("Finding-lineage match threshold must be between zero and one")
+    aliases = path_aliases or {}
+    if any(
+        not isinstance(old, str)
+        or not isinstance(new, str)
+        or not old
+        or not new
+        or old.startswith("/")
+        or new.startswith("/")
+        for old, new in aliases.items()
+    ):
+        raise ValueError("Finding-lineage path aliases must be normalized repository paths")
 
     candidates: list[tuple[float, int, int]] = []
     for current_index, current in enumerate(current_findings):
         for history_index, historical in enumerate(historical_findings):
-            score = _finding_similarity(current, historical.finding)
+            score = _finding_similarity(
+                current,
+                historical.finding,
+                path_aliases=aliases,
+            )
             if score >= match_threshold:
                 candidates.append((score, current_index, history_index))
     candidates.sort(
@@ -148,10 +171,14 @@ def classify_finding_lineage(
         )
 
     for history_index, historical in enumerate(historical_findings):
+        effective_path = _effective_path(historical.finding.file_path, aliases)
         if (
             history_index not in matched_history
             and historical.status == "active"
-            and historical.finding.file_path in touched_paths
+            and (
+                historical.finding.file_path in touched_paths
+                or effective_path in touched_paths
+            )
         ):
             transitions.append(
                 FindingTransition(

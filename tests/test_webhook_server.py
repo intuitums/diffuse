@@ -53,6 +53,21 @@ def test_webhook_rejects_oversized_body_before_parsing(monkeypatch):
     assert response.status_code == 413
 
 
+def test_webhook_rejects_oversized_content_length_before_reading(monkeypatch):
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
+
+    response = client.post(
+        "/webhook/github",
+        content=b"{}",
+        headers={
+            **_signed_headers(b"{}"),
+            "Content-Length": str(webhook_server.MAX_WEBHOOK_BODY_BYTES + 1),
+        },
+    )
+
+    assert response.status_code == 413
+
+
 def test_webhook_durably_queues_normalized_review_work(monkeypatch):
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
     processed: list[tuple] = []

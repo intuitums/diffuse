@@ -118,12 +118,14 @@ def persist_finding_lineage(
     review_run_id: int,
     findings: tuple[ReviewFinding, ...],
     touched_paths: frozenset[str],
+    path_aliases: dict[str, str] | None = None,
 ) -> None:
     history = _historical_findings(cursor, pull_request_id)
     transitions = classify_finding_lineage(
         findings,
         history,
         touched_paths=touched_paths,
+        path_aliases=path_aliases,
     )
     ordinals = {finding.fingerprint: index for index, finding in enumerate(findings)}
 

@@ -31,6 +31,7 @@ class IdempotencyReservation:
     requested_at: datetime
     operation_data: dict[str, object] | None
     response: dict[str, object] | None
+    lease_generation: int
 
 
 def validate_idempotency_key(value: str) -> str:
@@ -64,6 +65,12 @@ def _actor_identity(value: str) -> str:
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
     ):
         raise ValueError("Idempotency actor identity is invalid")
+    return value
+
+
+def _lease_generation(value: object) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError("Idempotency lease generation must be a positive integer")
     return value
 
 
@@ -124,6 +131,7 @@ def reserve_idempotency_key(
                 requested_at=inserted["requested_at"],
                 operation_data=None,
                 response=None,
+                lease_generation=int(inserted["lease_generation"]),
             )
         cursor.execute(
             """
@@ -157,6 +165,7 @@ def reserve_idempotency_key(
                     else None
                 ),
                 response=dict(response),
+                lease_generation=int(row["lease_generation"]),
             )
         if not bool(row["lease_expired"]):
             raise IdempotencyInProgressError(
@@ -166,11 +175,16 @@ def reserve_idempotency_key(
             """
             UPDATE api_idempotency_keys
             SET lease_expires_at = now() + (%s * interval '1 second'),
+                lease_generation = lease_generation + 1,
                 updated_at = now()
             WHERE id = %s
+            RETURNING lease_generation
             """,
             (lease_seconds, int(row["id"])),
         )
+        generation = cursor.fetchone()
+        if generation is None:
+            raise RuntimeError("Idempotency lease takeover failed")
         return IdempotencyReservation(
             id=int(row["id"]),
             execute=True,
@@ -181,6 +195,7 @@ def reserve_idempotency_key(
                 else None
             ),
             response=None,
+            lease_generation=int(generation["lease_generation"]),
         )
 
 
@@ -189,11 +204,13 @@ def save_idempotency_operation_data(
     *,
     reservation_id: int,
     actor_identity: str,
+    lease_generation: int,
     operation_data: dict[str, object],
 ) -> None:
     if reservation_id <= 0:
         raise ValueError("Idempotency reservation ID must be positive")
     actor_identity = _actor_identity(actor_identity)
+    lease_generation = _lease_generation(lease_generation)
     with conn.cursor() as cursor:
         cursor.execute(
             """
@@ -204,12 +221,14 @@ def save_idempotency_operation_data(
             WHERE id = %s
               AND actor_identity = %s
               AND state = 'processing'
+              AND lease_generation = %s
             """,
             (
                 psycopg2.extras.Json(operation_data),
                 IDEMPOTENCY_LEASE_SECONDS,
                 reservation_id,
                 actor_identity,
+                lease_generation,
             ),
         )
         if cursor.rowcount != 1:
@@ -221,11 +240,13 @@ def complete_idempotency_key(
     *,
     reservation_id: int,
     actor_identity: str,
+    lease_generation: int,
     response: dict[str, object],
 ) -> dict[str, object]:
     if reservation_id <= 0:
         raise ValueError("Idempotency reservation ID must be positive")
     actor_identity = _actor_identity(actor_identity)
+    lease_generation = _lease_generation(lease_generation)
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
         cursor.execute(
             """
@@ -236,12 +257,14 @@ def complete_idempotency_key(
             WHERE id = %s
               AND actor_identity = %s
               AND state = 'processing'
+              AND lease_generation = %s
             RETURNING response
             """,
             (
                 psycopg2.extras.Json(response),
                 reservation_id,
                 actor_identity,
+                lease_generation,
             ),
         )
         row = cursor.fetchone()
@@ -255,10 +278,12 @@ def release_idempotency_lease(
     *,
     reservation_id: int,
     actor_identity: str,
+    lease_generation: int,
 ) -> None:
     if reservation_id <= 0:
         return
     actor_identity = _actor_identity(actor_identity)
+    lease_generation = _lease_generation(lease_generation)
     with conn.cursor() as cursor:
         cursor.execute(
             """
@@ -268,6 +293,7 @@ def release_idempotency_lease(
             WHERE id = %s
               AND actor_identity = %s
               AND state = 'processing'
+              AND lease_generation = %s
             """,
-            (reservation_id, actor_identity),
+            (reservation_id, actor_identity, lease_generation),
         )

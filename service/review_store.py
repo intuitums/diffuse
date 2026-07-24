@@ -402,13 +402,25 @@ def persist_review_report(
     report: ReviewReport,
     *,
     touched_paths: frozenset[str] = frozenset(),
+    path_aliases: dict[str, str] | None = None,
 ) -> None:
     next_status = "ready" if report.publication_enabled else "skipped"
+    aliases = path_aliases or {}
     if any(
         not isinstance(path, str) or not path or path.startswith("/")
         for path in touched_paths
     ):
         raise ValueError("Touched finding paths must be normalized repository paths")
+    if any(
+        not isinstance(old, str)
+        or not isinstance(new, str)
+        or not old
+        or not new
+        or old.startswith("/")
+        or new.startswith("/")
+        for old, new in aliases.items()
+    ):
+        raise ValueError("Finding path aliases must be normalized repository paths")
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
         cursor.execute(
             """
@@ -489,8 +501,27 @@ def persist_review_report(
         review_run = cursor.fetchone()
         if not review_run:
             raise RuntimeError("Review run is not in a generatable state")
+        # Lineage events reference findings with ON DELETE SET NULL, but
+        # non-addressed transitions require finding_id. Clear unpublished
+        # projections before replacing findings on regenerate.
+        cursor.execute(
+            """
+            DELETE FROM finding_lineage_events
+            WHERE review_run_id = %s
+              AND applied_at IS NULL
+            """,
+            (review_run_id,),
+        )
         cursor.execute(
             "DELETE FROM review_findings WHERE review_run_id = %s",
+            (review_run_id,),
+        )
+        cursor.execute(
+            """
+            DELETE FROM finding_lineages
+            WHERE first_seen_review_run_id = %s
+              AND status = 'pending'
+            """,
             (review_run_id,),
         )
         persist_finding_lineage(
@@ -499,6 +530,7 @@ def persist_review_report(
             review_run_id=review_run_id,
             findings=tuple(report.findings),
             touched_paths=touched_paths if report.publication_enabled else frozenset(),
+            path_aliases=aliases if report.publication_enabled else None,
         )
 
 

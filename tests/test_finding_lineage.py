@@ -121,6 +121,28 @@ def test_findings_never_match_across_paths_or_categories():
     assert [item.kind for item in transitions] == ["new", "new"]
 
 
+def test_renamed_path_aliases_preserve_finding_lineage():
+    previous = _finding("previous", path="service/old.py", line=20)
+    current = _finding(
+        "current",
+        title="Validate authorization at the tenant boundary",
+        body="The handler accepts a tenant ID without validating its ownership.",
+        path="service/new.py",
+        line=24,
+    )
+
+    transitions = classify_finding_lineage(
+        (current,),
+        (HistoricalFinding(7, "active", previous),),
+        touched_paths=frozenset({"service/new.py"}),
+        path_aliases={"service/old.py": "service/new.py"},
+    )
+
+    assert len(transitions) == 1
+    assert transitions[0].kind == "persistent"
+    assert transitions[0].lineage_id == 7
+
+
 def test_findings_never_match_across_security_classifications():
     vulnerability = _finding("same-explicit-fingerprint")
     preventative = vulnerability.model_copy(

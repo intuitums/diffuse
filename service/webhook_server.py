@@ -74,6 +74,43 @@ ACCEPTED_ACTIONS = {
 MAX_WEBHOOK_BODY_BYTES = 1_000_000
 
 
+async def _read_bounded_webhook_body(request: Request) -> bytes:
+    """Reject oversized webhook bodies before buffering the full payload."""
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Webhook Content-Length is invalid",
+            ) from error
+        if declared < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Webhook Content-Length is invalid",
+            )
+        if declared > MAX_WEBHOOK_BODY_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Webhook body exceeds Diffuse's size limit",
+            )
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > MAX_WEBHOOK_BODY_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Webhook body exceeds Diffuse's size limit",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _verify_database_schema() -> None:
     with closing(get_conn()) as conn:
         verify_database_current(conn)
@@ -175,12 +212,7 @@ async def github_webhook(
     x_github_delivery: str = Header(default=""),
     x_hub_signature_256: str = Header(default=""),
 ):
-    body = await request.body()
-    if len(body) > MAX_WEBHOOK_BODY_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail="Webhook body exceeds Diffuse's size limit",
-        )
+    body = await _read_bounded_webhook_body(request)
     verify_signature(
         body,
         x_hub_signature_256,
@@ -412,12 +444,7 @@ async def gitlab_webhook(
     webhook_timestamp: str = Header(default=""),
     webhook_signature: str = Header(default=""),
 ):
-    body = await request.body()
-    if len(body) > MAX_WEBHOOK_BODY_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail="Webhook body exceeds Diffuse's size limit",
-        )
+    body = await _read_bounded_webhook_body(request)
     verified = verify_gitlab_webhook(
         body,
         webhook_id=webhook_id,

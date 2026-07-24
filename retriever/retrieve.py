@@ -201,8 +201,16 @@ def parse_changed_line_ranges(diff_text: str) -> dict[str, list[tuple[int, int]]
                 continue
             start = int(match.group(f"{side}_start"))
             count_value = match.group(f"{side}_count")
-            count = int(count_value) if count_value is not None else 1
-            end = start + max(1, count) - 1
+            # Omitted count defaults to 1; an explicit zero means that side
+            # contributed no lines (pure insert or delete) and must not invent
+            # a one-line seed range.
+            if count_value is None:
+                count = 1
+            else:
+                count = int(count_value)
+                if count == 0:
+                    continue
+            end = start + count - 1
             ranges.setdefault(path, []).append((max(1, start), max(1, end)))
     return ranges
 

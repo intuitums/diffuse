@@ -15,6 +15,7 @@ from service.scm import (
     PullRequestEvent,
     PushEvent,
     ReviewConversationEvent,
+    normalize_base_url,
 )
 
 ERROR_CODE_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -652,6 +653,19 @@ def schedule_due_feedback_sync_jobs(
         raise ValueError("Feedback sync interval must be between 60 and 86400 seconds")
     if not 1 <= limit <= 100:
         raise ValueError("Feedback sync batch limit must be between 1 and 100")
+    github_scm_base_url = normalize_base_url(
+        github_scm_base_url,
+        field_name="GITHUB_WEB_URL",
+    )
+    gitlab_scm_base_url = normalize_base_url(
+        gitlab_scm_base_url,
+        field_name="GITLAB_WEB_URL",
+    )
+    gitlab_api_base_url = normalize_base_url(
+        gitlab_api_base_url,
+        field_name="GITLAB_API_URL",
+    )
+    api_base_url = normalize_base_url(api_base_url, field_name="GITHUB_API_URL")
 
     scheduled = 0
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
@@ -696,11 +710,12 @@ def schedule_due_feedback_sync_jobs(
         rows = cursor.fetchall()
         for row in rows:
             if row["scm_provider"] == "github":
-                provider_api_base_url = (
-                    api_base_url
-                    if row["scm_base_url"] == github_scm_base_url
-                    else f"{row['scm_base_url']}/api/v3"
-                )
+                if row["scm_base_url"] == github_scm_base_url:
+                    provider_api_base_url = api_base_url
+                elif row["scm_base_url"] == "https://github.com":
+                    provider_api_base_url = "https://api.github.com"
+                else:
+                    provider_api_base_url = f"{row['scm_base_url']}/api/v3"
             else:
                 provider_api_base_url = (
                     gitlab_api_base_url
@@ -729,6 +744,16 @@ def schedule_due_feedback_sync_jobs(
                 (event.scope_key,),
             )
             if cursor.fetchone():
+                # Advance due time so in-flight scopes do not starve later rows.
+                cursor.execute(
+                    """
+                    UPDATE review_feedback_sync_states
+                    SET next_sync_at = now() + interval '60 seconds',
+                        updated_at = now()
+                    WHERE finding_thread_id = %s
+                    """,
+                    (int(row["finding_thread_id"]),),
+                )
                 continue
             cursor.execute(
                 """

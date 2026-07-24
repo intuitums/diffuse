@@ -66,12 +66,14 @@ def test_idempotency_reservations_recover_and_replay_exact_response():
                     connection,
                     reservation_id=first.id,
                     actor_identity=actor_identity,
+                    lease_generation=first.lease_generation,
                     operation_data=operation_data,
                 )
                 release_idempotency_lease(
                     connection,
                     reservation_id=first.id,
                     actor_identity=actor_identity,
+                    lease_generation=first.lease_generation,
                 )
             with connection:
                 recovered = reserve_idempotency_key(
@@ -84,12 +86,23 @@ def test_idempotency_reservations_recover_and_replay_exact_response():
             assert recovered.execute
             assert recovered.requested_at == first.requested_at
             assert recovered.operation_data == operation_data
+            assert recovered.lease_generation == first.lease_generation + 1
 
             with connection:
+                # A stale holder must not fence out the recovered lease.
+                with pytest.raises(RuntimeError, match="no longer active"):
+                    save_idempotency_operation_data(
+                        connection,
+                        reservation_id=first.id,
+                        actor_identity=actor_identity,
+                        lease_generation=first.lease_generation,
+                        operation_data={"stale": True},
+                    )
                 completed = complete_idempotency_key(
                     connection,
                     reservation_id=recovered.id,
                     actor_identity=actor_identity,
+                    lease_generation=recovered.lease_generation,
                     response=response,
                 )
             assert completed == response

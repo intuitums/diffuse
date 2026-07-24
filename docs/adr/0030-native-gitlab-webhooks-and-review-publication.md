@@ -74,7 +74,8 @@ Relevant public contracts:
 - Fetch complete MR raw diffs from the target project.
 - Fetch update comparisons between the previously reviewed and current heads
   from the source project. If GitLab reports a bounded/incomplete comparison,
-  use the full MR diff conservatively for finding-continuity path evaluation.
+  return an empty update diff so finding-continuity addressing fails closed
+  instead of treating the full MR as newly touched.
 - Dispatch review diff access and output by provider while retaining one native
   generation, policy, retrieval, lineage, and workflow implementation.
 

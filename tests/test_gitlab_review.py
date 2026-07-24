@@ -160,23 +160,17 @@ async def test_update_diff_is_pinned_between_reviewed_heads(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_unavailable_force_pushed_comparison_falls_back_to_full_mr_diff(
+async def test_unavailable_force_pushed_comparison_fails_closed(
     monkeypatch,
 ):
     monkeypatch.setenv("GITLAB_TOKEN", "test-token")
     paths: list[str] = []
-    full_diff = (
-        "diff --git a/service/read.py b/service/read.py\n"
-        "--- a/service/read.py\n"
-        "+++ b/service/read.py\n"
-        "@@ -1 +1 @@\n-old\n+new\n"
-    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
         if request.url.path.endswith("/repository/compare"):
             return httpx.Response(404, json={"message": "commit not found"})
-        return httpx.Response(200, text=full_diff)
+        raise AssertionError(f"Unexpected request path: {request.url.path}")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         value = await fetch_gitlab_pull_request_update_diff(
@@ -185,14 +179,43 @@ async def test_unavailable_force_pushed_comparison_falls_back_to_full_mr_diff(
             client=client,
         )
 
-    assert value == full_diff
-    assert paths == [
-        "/api/v4/projects/122/repository/compare",
-        (
-            "/api/v4/projects/group/subgroup/repo/"
-            "merge_requests/17/raw_diffs"
-        ),
-    ]
+    assert value == ""
+    assert paths == ["/api/v4/projects/122/repository/compare"]
+
+
+@pytest.mark.anyio
+async def test_collapsed_comparison_fails_closed_for_continuity(monkeypatch):
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "commit": {"id": "a" * 40},
+                "compare_timeout": False,
+                "diffs": [
+                    {
+                        "old_path": "service/read.py",
+                        "new_path": "service/read.py",
+                        "new_file": False,
+                        "deleted_file": False,
+                        "renamed_file": False,
+                        "collapsed": True,
+                        "too_large": False,
+                        "diff": "",
+                    }
+                ],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        value = await fetch_gitlab_pull_request_update_diff(
+            _event(),
+            "c" * 40,
+            client=client,
+        )
+
+    assert value == ""
 
 
 @pytest.mark.anyio
