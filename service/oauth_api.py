@@ -44,7 +44,6 @@ from service.oauth_store import (
     generate_state,
     parse_callback_port,
     parse_installation_id,
-    record_user_installation,
     upsert_user,
     validate_state,
 )
@@ -351,16 +350,32 @@ async def complete_app_setup(
     if claimed is None or claimed.user_id is None:
         return _unlinked_install_page()
 
-    await _in_transaction(
-        record_user_installation,
-        user_id=claimed.user_id,
-        github_installation_id=installation,
+    # The state proves *a* user started an install. It does NOT prove this
+    # `installation_id` is the one they installed — that value is a query
+    # parameter under the caller's control, and installation ids are small
+    # sequential integers. Anyone may sign in, so an attacker can mint a valid
+    # state of their own and then hand-craft this URL with a victim's id.
+    #
+    # Persisting that claim would seed the table tenancy is going to read
+    # (DEV-213) with an attacker-chosen row, so the linkage is deliberately not
+    # written until it can be verified against GitHub. Verification needs either
+    # an App JWT calling GET /app/installations/{id} — Diffuse holds no app
+    # private key today — or the HMAC-signed `installation.created` webhook,
+    # whose `sender` is authoritative and unspoofable. Tracked in DEV-226.
+    LOGGER.info(
+        "Received an unverified GitHub App setup redirect for installation %s; "
+        "not linking it to a user until the installer can be verified",
+        installation,
     )
     return _page(
         status_code=200,
-        title="Connected",
-        heading="Connected",
-        body="<p>You can close this window.</p>",
+        title="Installed",
+        heading="Installed",
+        body=(
+            "<p>Diffuse has the installation. You can close this window.</p>"
+            "<p>Repository access is confirmed separately, so it may take a "
+            "moment to appear.</p>"
+        ),
     )
 
 

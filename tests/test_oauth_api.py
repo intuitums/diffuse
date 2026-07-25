@@ -26,7 +26,9 @@ class FakeBackend:
         self.login_states: list[dict] = []
         self.install_states: list[dict] = []
         self.sessions: list[dict] = []
-        self.installations: list[dict] = []
+        # Every store call the routes make, in order, by name. Asserting on this
+        # catches a persisted linkage no matter which function writes it.
+        self.db_calls: list[str] = []
         self.exchanges: list[str] = []
         self.claimable: dict[tuple[str, str], ConsumedOAuthState] = {}
         self.exchange_error: Exception | None = None
@@ -56,11 +58,6 @@ class FakeBackend:
     def create_session(self, _conn, *, user_id, token):
         self.sessions.append({"user_id": user_id, "token": token})
 
-    def record_user_installation(self, _conn, *, user_id, github_installation_id):
-        self.installations.append(
-            {"user_id": user_id, "github_installation_id": github_installation_id}
-        )
-
     # --- GitHub doubles ------------------------------------------------
     async def exchange_code_for_token(self, code):
         if self.exchange_error is not None:
@@ -81,6 +78,7 @@ def backend(monkeypatch):
     fake = FakeBackend()
 
     async def in_transaction(callback, /, **kwargs):
+        fake.db_calls.append(getattr(callback, "__name__", repr(callback)))
         return callback(object(), **kwargs)
 
     monkeypatch.setattr(oauth_api, "_in_transaction", in_transaction)
@@ -90,7 +88,6 @@ def backend(monkeypatch):
         "consume_oauth_state",
         "upsert_user",
         "create_session",
-        "record_user_installation",
         "exchange_code_for_token",
         "fetch_authenticated_user",
     ):
@@ -266,7 +263,9 @@ def test_callback_reports_a_github_denial_without_touching_the_database(
     assert backend.exchanges == []
 
 
-def test_setup_links_the_installation_to_the_user_that_started_it(backend, client):
+def test_setup_confirms_the_install_without_persisting_an_unverified_link(
+    backend, client
+):
     nonce = generate_state()
     backend.allow(
         nonce,
@@ -281,10 +280,38 @@ def test_setup_links_the_installation_to_the_user_that_started_it(backend, clien
     response = client.get(f"/setup?installation_id=99887766&state={nonce}")
 
     assert response.status_code == 200
-    assert "Connected" in response.text
-    assert backend.installations == [
-        {"user_id": 7, "github_installation_id": 99887766}
-    ]
+    assert "Installed" in response.text
+    # The page must not claim a linkage that was never established.
+    assert "Connected" not in response.text
+    # Claiming the state is the only database work /setup is allowed to do.
+    assert backend.db_calls == ["consume_oauth_state"]
+
+
+def test_setup_cannot_be_used_to_claim_another_users_installation(backend, client):
+    """A valid state proves who started an install, not *which* install.
+
+    `installation_id` is caller-controlled and ids are sequential, so an
+    attacker who signs in normally could otherwise attach a victim's org
+    installation to their own account — poisoning the table tenancy will read.
+    """
+    attacker_nonce = generate_state()
+    backend.allow(
+        attacker_nonce,
+        ConsumedOAuthState(
+            id=7,
+            purpose=APP_INSTALL_PURPOSE,
+            callback_port=None,
+            user_id=1234,  # the attacker's own, legitimately obtained, user id
+        ),
+    )
+    victim_installation = 99887766
+
+    response = client.get(
+        f"/setup?installation_id={victim_installation}&state={attacker_nonce}"
+    )
+
+    assert response.status_code == 200
+    assert backend.db_calls == ["consume_oauth_state"]
 
 
 @pytest.mark.parametrize(
@@ -302,7 +329,7 @@ def test_setup_fails_closed_when_the_installer_cannot_be_identified(
     response = client.get(f"/setup?{query}")
 
     assert response.status_code == 400
-    assert backend.installations == []
+    assert [call for call in backend.db_calls if call != "consume_oauth_state"] == []
 
 
 def test_sign_in_is_unavailable_when_the_oauth_client_is_not_configured(
