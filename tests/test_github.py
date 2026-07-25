@@ -3,6 +3,7 @@ import pytest
 
 from service.github import (
     fetch_manual_pull_request_event,
+    fetch_pull_request_diff,
     fetch_pull_request_update_diff,
     normalize_manual_review_request,
     normalize_review_conversation_event,
@@ -102,6 +103,13 @@ def test_review_conversation_normalizes_explicit_authorized_question():
         {"author_association": "NONE"},
         {"user": {"login": "automation", "type": "Bot"}},
         {"in_reply_to_id": None},
+        # Diffuse's own replies arrive as ordinary user comments under a user
+        # access token, so the marker — not the actor type — has to exclude them.
+        {
+            "body": "@diffuse follow-up\n<!-- diffuse-conversation:c1 -->",
+            "user": {"login": "operator", "type": "User"},
+            "author_association": "OWNER",
+        },
     ],
 )
 def test_review_conversation_ignores_non_questions_and_unauthorized_comments(
@@ -138,6 +146,14 @@ def test_review_feedback_records_authorized_context_without_a_mention():
         {"author_association": "NONE"},
         {"user": {"login": "automation", "type": "Bot"}},
         {"in_reply_to_id": None},
+        # A Diffuse-authored thread update must never be re-ingested as human
+        # feedback about the finding it describes.
+        {
+            "body": "Marked this finding as addressed.\n"
+            "<!-- diffuse-thread-operation:t1 -->",
+            "user": {"login": "operator", "type": "User"},
+            "author_association": "OWNER",
+        },
     ],
 )
 def test_review_feedback_ignores_excluded_or_unauthorized_comments(
@@ -272,3 +288,40 @@ async def test_manual_trigger_rejects_closed_pull_request():
                 delivery_id="manual-delivery-1",
                 client=client,
             )
+
+
+@pytest.mark.anyio
+async def test_github_diff_fetch_uses_the_configured_scm_timeout(monkeypatch):
+    """The owned client must honor SCM_API_TIMEOUT_SECONDS, not a hardcoded value."""
+    monkeypatch.setenv("SCM_API_TIMEOUT_SECONDS", "7.5")
+    observed: dict = {}
+    real_client = httpx.AsyncClient
+
+    def record_timeout(*args, **kwargs):
+        observed["timeout"] = kwargs.get("timeout")
+        kwargs["transport"] = httpx.MockTransport(
+            lambda _request: httpx.Response(200, text="diff --git a/a b/a")
+        )
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", record_timeout)
+
+    event = PullRequestEvent.from_payload(
+        {
+            "provider": "github",
+            "scm_base_url": "https://github.com",
+            "api_base_url": "https://api.github.com",
+            "repo_full_name": "owner/repo",
+            "number": 42,
+            "web_url": "https://github.com/owner/repo/pull/42",
+            "action": "synchronize",
+            "head_sha": "a" * 40,
+            "base_sha": "b" * 40,
+            "updated_at": "2026-07-23T16:00:00Z",
+            "delivery_id": "timeout-delivery-1",
+        }
+    )
+    diff = await fetch_pull_request_diff(event)
+
+    assert diff.startswith("diff --git")
+    assert observed["timeout"] == 7.5
