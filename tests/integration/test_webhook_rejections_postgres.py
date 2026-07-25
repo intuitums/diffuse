@@ -172,6 +172,62 @@ def test_a_recorded_rejection_does_not_block_the_delivery_once_onboarded():
             _cleanup(connection, repo=repo, delivery=delivery)
 
 
+def test_rejections_are_distinguished_by_provider_and_base_url():
+    """`docs/deployment.md` tells operators to filter by provider and base URL.
+
+    Diffuse serves GitHub and GitLab, and the same repository path and delivery
+    id can legitimately occur on different instances, so the uniqueness key has
+    to include both or one provider's refusals would overwrite the other's.
+    """
+    database_url = os.environ["POSTGRES_TEST_DATABASE_URL"]
+    suffix = uuid.uuid4().hex[:12]
+    repo = f"shared/{suffix}"
+    delivery = f"delivery-{suffix}"
+    origins = [
+        ("github", "https://github.com"),
+        ("gitlab", "https://gitlab.com"),
+        ("gitlab", "https://gitlab.self-hosted.example"),
+    ]
+
+    with closing(psycopg2.connect(database_url)) as connection:
+        try:
+            for provider, base_url in origins:
+                with connection:
+                    record_webhook_rejection(
+                        connection,
+                        scm_provider=provider,
+                        scm_base_url=base_url,
+                        delivery_id=delivery,
+                        event_name="pull_request",
+                        repo_full_name=repo,
+                        reason=REPOSITORY_NOT_ONBOARDED_REASON,
+                    )
+
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT scm_provider, scm_base_url, attempts
+                    FROM scm_webhook_rejections
+                    WHERE delivery_id = %s
+                    ORDER BY scm_provider, scm_base_url
+                    """,
+                    (delivery,),
+                )
+                rows = cursor.fetchall()
+
+            assert rows == [
+                ("github", "https://github.com", 1),
+                ("gitlab", "https://gitlab.com", 1),
+                ("gitlab", "https://gitlab.self-hosted.example", 1),
+            ]
+        finally:
+            with connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM scm_webhook_rejections WHERE delivery_id = %s",
+                    (delivery,),
+                )
+
+
 def test_rejection_recording_validates_its_inputs():
     database_url = os.environ["POSTGRES_TEST_DATABASE_URL"]
     with closing(psycopg2.connect(database_url)) as connection:

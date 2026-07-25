@@ -246,12 +246,16 @@ def record_review_feedback(
     body: bytes,
 ) -> str:
     payload_sha256 = hashlib.sha256(body).hexdigest()
-    with closing(get_conn()) as conn, conn:
-        return record_review_comment_feedback(
-            conn,
-            event,
-            payload_sha256=payload_sha256,
-        )
+    try:
+        with closing(get_conn()) as conn, conn:
+            return record_review_comment_feedback(
+                conn,
+                event,
+                payload_sha256=payload_sha256,
+            )
+    except RepositoryNotOnboardedError:
+        _record_not_onboarded(event, event_name="review_feedback")
+        raise
 
 
 @app.post("/webhook/github")
