@@ -119,6 +119,31 @@ Point the provider webhook at
 types described in the main README, and verify a signed `ping` or harmless test
 delivery before onboarding production repositories.
 
+### When nothing appears to happen
+
+A webhook for a repository that has not been onboarded is refused with HTTP
+409, because Diffuse only reviews repositories an operator has registered with
+`diffuse repository add`. This is the most common reason a correctly configured
+webhook produces no reviews, and it is easy to misread as "the provider is not
+delivering at all".
+
+Refused deliveries are recorded, so you can tell the two apart:
+
+```bash
+docker compose exec db psql -U diffuse -d diffuse -c \
+  "SELECT scm_provider, scm_base_url, repo_full_name, event_name,
+          attempts, last_seen_at
+     FROM scm_webhook_rejections
+    ORDER BY last_seen_at DESC LIMIT 20;"
+```
+
+Rows matching the provider and base URL being diagnosed mean that SCM *is*
+reaching Diffuse and being turned away — onboard the repository and the next
+delivery will be accepted. No matching rows alongside failures in that
+provider's webhook delivery page points at the ingress instead: TLS, DNS, the
+reverse proxy, or a signature-secret mismatch. Each refusal is also logged as a
+warning, so `docker compose logs app` shows them as they arrive.
+
 ## Backups and restore drills
 
 PostgreSQL is the authoritative durable state. Repository mirrors are useful to
