@@ -61,6 +61,10 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - repository_data:/var/lib/diffuse/repositories
+      # Read-only host secrets for browser sign-in. The directory may be absent
+      # or empty; sign-in simply stays disabled until the client secret is in
+      # place, and the secret never reaches .env or an image layer.
+      - ${DIFFUSE_SECRETS_DIR:-/srv/diffuse/secrets}:/srv/diffuse/secrets:ro
     healthcheck:
       test:
         - CMD
