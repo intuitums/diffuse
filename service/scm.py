@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -18,6 +19,14 @@ BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 ACTION_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 TRIGGER_KINDS = {"automatic", "manual"}
 REVIEW_COMMENT_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+
+
+def scm_api_timeout_seconds() -> float:
+    """Return the configured timeout applied to every provider API call."""
+    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
+    if timeout <= 0:
+        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    return timeout
 
 
 def normalize_base_url(value: str, *, field_name: str) -> str:
