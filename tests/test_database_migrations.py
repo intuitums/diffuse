@@ -21,6 +21,7 @@ def test_frozen_baseline_catalog_is_packaged_and_contract_is_parseable():
         (2, "api_generation_scope"),
         (3, "api_idempotency"),
         (4, "idempotency_lease_generation"),
+        (5, "hot_path_indexes"),
     ]
     assert catalog[0].checksum == BASELINE_SCHEMA_SHA256
     contract = _baseline_contract(catalog[0].sql)

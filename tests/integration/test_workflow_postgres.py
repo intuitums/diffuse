@@ -3018,3 +3018,97 @@ def test_gitlab_threads_conversations_and_feedback_share_durable_lineage():
     assert feedback_job_payload["api_base_url"] == (
         "https://gitlab.example.com/api/v4"
     )
+
+
+def _numbered_event(*, number: int, delivery: str, head: str) -> PullRequestEvent:
+    return PullRequestEvent.from_payload(
+        {
+            "provider": "github",
+            "scm_base_url": "https://github.com",
+            "api_base_url": "https://api.github.com",
+            "repo_full_name": "workflow/concurrent-repo",
+            "number": number,
+            "web_url": f"https://github.com/workflow/concurrent-repo/pull/{number}",
+            "action": "synchronize",
+            "head_sha": head,
+            "base_sha": "b" * 40,
+            "updated_at": "2026-07-23T16:00:00Z",
+            "delivery_id": delivery,
+        }
+    )
+
+
+def test_concurrent_workers_claim_independent_jobs_in_one_repository():
+    """Claiming must lock only the job row, never the shared repository row.
+
+    A bare `FOR UPDATE SKIP LOCKED` over the workflow_jobs/repositories join
+    locks both tables, so one worker holding a job in a repository makes every
+    other queued job in that repository invisible to its peers.
+    """
+    database_url = os.environ["POSTGRES_TEST_DATABASE_URL"]
+    with closing(psycopg2.connect(database_url)) as setup_connection:
+        register_repository(
+            setup_connection,
+            scm_provider="github",
+            scm_base_url="https://github.com",
+            full_name="workflow/concurrent-repo",
+            default_branch="main",
+        )
+        first = enqueue_review_event(
+            setup_connection,
+            _numbered_event(
+                number=41,
+                delivery="concurrent-delivery-1",
+                head="a" * 40,
+            ),
+            payload_sha256="1" * 64,
+        )
+        second = enqueue_review_event(
+            setup_connection,
+            _numbered_event(
+                number=42,
+                delivery="concurrent-delivery-2",
+                head="c" * 40,
+            ),
+            payload_sha256="2" * 64,
+        )
+        # Both worker connections must see these rows, so unlike the
+        # single-connection tests above this one commits and cleans up below.
+        setup_connection.commit()
+
+    try:
+        assert first.accepted and second.accepted
+        assert first.job_id != second.job_id
+
+        with (
+            closing(psycopg2.connect(database_url)) as worker_one,
+            closing(psycopg2.connect(database_url)) as worker_two,
+        ):
+            # worker-1 holds an open transaction on its claimed job.
+            claimed_one = claim_workflow_job(worker_one, "worker-1", lease_seconds=60)
+            assert claimed_one is not None
+
+            claimed_two = claim_workflow_job(worker_two, "worker-2", lease_seconds=60)
+            assert claimed_two is not None, (
+                "worker-2 was starved by worker-1's lock on the shared repository row"
+            )
+            assert {claimed_one.id, claimed_two.id} == {first.job_id, second.job_id}
+
+            worker_one.rollback()
+            worker_two.rollback()
+    finally:
+        with (
+            closing(psycopg2.connect(database_url)) as cleanup_connection,
+            cleanup_connection,
+            cleanup_connection.cursor() as cursor,
+        ):
+            cursor.execute(
+                "DELETE FROM repositories WHERE full_name = %s",
+                ("workflow/concurrent-repo",),
+            )
+            # Deliveries are not owned by the repository row, so the unique
+            # (provider, base_url, delivery_id) rows outlive it.
+            cursor.execute(
+                "DELETE FROM scm_webhook_deliveries WHERE delivery_id = ANY(%s)",
+                (["concurrent-delivery-1", "concurrent-delivery-2"],),
+            )

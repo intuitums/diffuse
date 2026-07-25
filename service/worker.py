@@ -160,6 +160,7 @@ from service.scm import (
     ReviewConversationEvent,
 )
 from service.workflow import (
+    NonRetryableError,
     WorkflowJob,
     claim_workflow_job,
     complete_workflow_job,
@@ -187,7 +188,7 @@ async def _fetch_scm_pull_request_diff(event: PullRequestEvent) -> str:
         return await fetch_pull_request_diff(event)
     if event.provider == "gitlab":
         return await fetch_gitlab_merge_request_diff(event)
-    raise ValueError(f"Unsupported SCM provider: {event.provider}")
+    raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
 
 
 async def _fetch_scm_pull_request_update_diff(
@@ -201,13 +202,13 @@ async def _fetch_scm_pull_request_update_diff(
             event,
             previous_head_sha,
         )
-    raise ValueError(f"Unsupported SCM provider: {event.provider}")
+    raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
 
 
 def _lease_seconds() -> int:
     value = int(os.environ.get("WORKFLOW_LEASE_SECONDS", "1800"))
     if value < 60:
-        raise ValueError("WORKFLOW_LEASE_SECONDS must be at least 60")
+        raise NonRetryableError("WORKFLOW_LEASE_SECONDS must be at least 60")
     return value
 
 
@@ -341,7 +342,7 @@ def _begin_native_review(
     policy: ResolvedReviewPolicy,
 ) -> ReviewRunHandle:
     if job.pull_request_id is None:
-        raise ValueError("Review job does not reference a pull request")
+        raise NonRetryableError("Review job does not reference a pull request")
     with closing(get_conn()) as conn, conn:
         return begin_review_run(
             conn,
@@ -882,7 +883,7 @@ async def _publish_native_thread_operations(
             elif event.provider == "gitlab":
                 result = await apply_gitlab_thread_operation(event, operation)
             else:
-                raise ValueError(
+                raise NonRetryableError(
                     f"Unsupported SCM provider: {event.provider}"
                 )
         except Exception:
@@ -978,7 +979,7 @@ async def _ensure_native_check(
                 existing_external_url=handle.external_url,
             )
         else:
-            raise ValueError(f"Unsupported SCM provider: {event.provider}")
+            raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
         await anyio.to_thread.run_sync(
             partial(
                 _mark_native_check_started,
@@ -1044,7 +1045,7 @@ async def _complete_native_check(
                 unresolved_findings=unresolved_findings,
             )
         else:
-            raise ValueError(f"Unsupported SCM provider: {event.provider}")
+            raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
     except Exception:
         await anyio.to_thread.run_sync(
             partial(_mark_native_check_failed, handle.id)
@@ -1066,7 +1067,7 @@ async def _publish_native_auto_approval(
     elif event.provider == "gitlab":
         publisher = publish_gitlab_approval
     else:
-        raise ValueError(f"Unsupported SCM provider: {event.provider}")
+        raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
     return await publisher(
         event,
         review_run_id=review_run_id,
@@ -1096,7 +1097,7 @@ def _index_repository_job(job: WorkflowJob, event: PushEvent, worker_id: str) ->
     with closing(get_conn()) as conn:
         repository = get_repository(conn, job.repository_id)
     if repository is None or not repository.enabled:
-        raise ValueError("Repository is disabled or is not configured for mirroring")
+        raise NonRetryableError("Repository is disabled or is not configured for mirroring")
     if (
         repository.scm_provider != event.provider
         or repository.scm_base_url != event.scm_base_url
@@ -1104,7 +1105,7 @@ def _index_repository_job(job: WorkflowJob, event: PushEvent, worker_id: str) ->
         or repository.default_branch != event.default_branch
         or event.after_sha != job.revision
     ):
-        raise ValueError("Index workflow identity does not match repository configuration")
+        raise NonRetryableError("Index workflow identity does not match repository configuration")
 
     def report_progress() -> None:
         if not _heartbeat_and_check_latest(job.id, worker_id):
@@ -1148,14 +1149,14 @@ def _index_repository_job(job: WorkflowJob, event: PushEvent, worker_id: str) ->
 
 async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
     if job.job_type != "review_pull_request":
-        raise ValueError(f"Unsupported workflow job type: {job.job_type}")
+        raise NonRetryableError(f"Unsupported workflow job type: {job.job_type}")
     event = PullRequestEvent.from_payload(job.payload)
     if (
         event.base_sha != job.base_revision
         or event.head_sha != job.revision
         or event.scope_key != job.scope_key
     ):
-        raise ValueError("Workflow job identity does not match its payload")
+        raise NonRetryableError("Workflow job identity does not match its payload")
 
     if not await anyio.to_thread.run_sync(partial(_heartbeat_and_check_current, job.id, worker_id)):
         await _complete_existing_job_check(
@@ -1253,7 +1254,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
     path_aliases: dict[str, str] = {}
     if decision.eligible and review_run.needs_generation:
         if job.pull_request_id is None:
-            raise ValueError("Review job does not reference a pull request")
+            raise NonRetryableError("Review job does not reference a pull request")
         previous_head = await anyio.to_thread.run_sync(
             partial(
                 _latest_native_review_head,
@@ -1367,7 +1368,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
                         continuity=continuity,
                     )
                 else:
-                    raise ValueError(
+                    raise NonRetryableError(
                         f"Unsupported SCM provider: {event.provider}"
                     )
             except Exception:
@@ -1476,14 +1477,14 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
 
 async def process_conversation_job(job: WorkflowJob, worker_id: str) -> None:
     if job.job_type != "answer_review_comment" or job.pull_request_id is None:
-        raise ValueError(f"Unsupported conversation workflow job: {job.job_type}")
+        raise NonRetryableError(f"Unsupported conversation workflow job: {job.job_type}")
     event = ReviewConversationEvent.from_payload(job.payload)
     if (
         event.base_sha != job.base_revision
         or event.head_sha != job.revision
         or event.scope_key != job.scope_key
     ):
-        raise ValueError("Conversation workflow identity does not match its payload")
+        raise NonRetryableError("Conversation workflow identity does not match its payload")
 
     try:
         if not await anyio.to_thread.run_sync(
@@ -1492,7 +1493,7 @@ async def process_conversation_job(job: WorkflowJob, worker_id: str) -> None:
             raise RuntimeError("Workflow lease was lost before conversation processing")
         work = await anyio.to_thread.run_sync(partial(_begin_conversation, job.id))
         if work.root_comment_id != event.root_comment_id:
-            raise ValueError("Conversation thread does not match its workflow payload")
+            raise NonRetryableError("Conversation thread does not match its workflow payload")
         if work.status == "ignored":
             completed = await anyio.to_thread.run_sync(
                 partial(_complete, job.id, worker_id)
@@ -1577,7 +1578,7 @@ async def process_conversation_job(job: WorkflowJob, worker_id: str) -> None:
                     references=publication.references,
                 )
             else:
-                raise ValueError(
+                raise NonRetryableError(
                     f"Unsupported SCM provider: {event.provider}"
                 )
             await anyio.to_thread.run_sync(
@@ -1615,7 +1616,7 @@ async def process_index_job(job: WorkflowJob, worker_id: str) -> None:
         or event.after_sha != job.base_revision
         or event.scope_key != job.scope_key
     ):
-        raise ValueError("Index workflow identity does not match its payload")
+        raise NonRetryableError("Index workflow identity does not match its payload")
 
     if not await anyio.to_thread.run_sync(partial(_heartbeat_and_check_latest, job.id, worker_id)):
         await anyio.to_thread.run_sync(partial(_supersede, job.id, worker_id))
@@ -1641,14 +1642,14 @@ async def process_index_job(job: WorkflowJob, worker_id: str) -> None:
 
 async def process_feedback_sync_job(job: WorkflowJob, worker_id: str) -> None:
     if job.job_type != "sync_review_feedback" or job.pull_request_id is None:
-        raise ValueError(f"Unsupported feedback workflow job: {job.job_type}")
+        raise NonRetryableError(f"Unsupported feedback workflow job: {job.job_type}")
     event = FeedbackSyncEvent.from_payload(job.payload)
     if (
         event.base_sha != job.base_revision
         or event.head_sha != job.revision
         or event.scope_key != job.scope_key
     ):
-        raise ValueError("Feedback workflow identity does not match its payload")
+        raise NonRetryableError("Feedback workflow identity does not match its payload")
 
     try:
         if not await anyio.to_thread.run_sync(
@@ -1663,7 +1664,7 @@ async def process_feedback_sync_job(job: WorkflowJob, worker_id: str) -> None:
         elif event.provider == "gitlab":
             reactions = await fetch_gitlab_review_reactions(event)
         else:
-            raise ValueError(
+            raise NonRetryableError(
                 f"Unsupported SCM provider: {event.provider}"
             )
         result = await anyio.to_thread.run_sync(
@@ -1701,7 +1702,7 @@ async def process_feedback_sync_job(job: WorkflowJob, worker_id: str) -> None:
 
 async def process_rule_learning_job(job: WorkflowJob, worker_id: str) -> None:
     if job.job_type != "generate_suggested_rules" or job.pull_request_id is not None:
-        raise ValueError(f"Unsupported rule-learning workflow job: {job.job_type}")
+        raise NonRetryableError(f"Unsupported rule-learning workflow job: {job.job_type}")
     event = RuleLearningJobEvent.from_payload(job.payload)
     if (
         event.repository_id != job.repository_id
@@ -1709,7 +1710,7 @@ async def process_rule_learning_job(job: WorkflowJob, worker_id: str) -> None:
         or event.evidence_fingerprint != job.revision
         or event.scope_key != job.scope_key
     ):
-        raise ValueError("Rule-learning workflow identity does not match its payload")
+        raise NonRetryableError("Rule-learning workflow identity does not match its payload")
 
     try:
         if not await anyio.to_thread.run_sync(
@@ -1774,7 +1775,7 @@ async def process_job(job: WorkflowJob, worker_id: str) -> None:
     if job.job_type == "generate_suggested_rules":
         await process_rule_learning_job(job, worker_id)
         return
-    raise ValueError(f"Unsupported workflow job type: {job.job_type}")
+    raise NonRetryableError(f"Unsupported workflow job type: {job.job_type}")
 
 
 async def run_once(worker_id: str) -> bool:
@@ -1801,16 +1802,23 @@ async def run_once(worker_id: str) -> bool:
                     "Failed to finalize terminal review lineage job=%s",
                     job.id,
                 )
+            if next_status == "dead":
+                terminal_message = (
+                    "Diffuse could not complete this review after exhausting "
+                    "its retry policy."
+                )
+            else:
+                terminal_message = (
+                    "Diffuse could not complete this review because the job "
+                    "failed in a way that retrying cannot resolve."
+                )
             try:
                 event = PullRequestEvent.from_payload(job.payload)
                 await _complete_existing_job_check(
                     job,
                     event,
                     conclusion="failure",
-                    message=(
-                        "Diffuse could not complete this review after exhausting "
-                        "its retry policy."
-                    ),
+                    message=terminal_message,
                 )
             except Exception:
                 LOGGER.exception(
