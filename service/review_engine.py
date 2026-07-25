@@ -214,7 +214,9 @@ def _call_structured[T: BaseModel](
     completion_tokens = _usage_value(response, "completion_tokens")
     try:
         value = response_model.model_validate_json(_message_content(response))
-    except ValidationError as error:
+    except (ValidationError, RuntimeError) as error:
+        # Empty model content raises RuntimeError; schema drift raises ValidationError.
+        # Both are transient structured-output faults and must remain retryable.
         raise StructuredOutputValidationError(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -497,8 +499,8 @@ def _generate_diagram(
         )
     except StructuredOutputValidationError as error:
         # The diagram is an optional enrichment and its safety rules are
-        # deliberately strict, so a rejected proposal degrades to no diagram
-        # rather than discarding an otherwise complete review.
+        # deliberately strict, so a rejected or empty proposal degrades to no
+        # diagram rather than discarding an otherwise complete review.
         LOGGER.warning("Discarded an unsafe or malformed review diagram", exc_info=True)
         return None, error.prompt_tokens, error.completion_tokens
     return proposal.diagram, prompt_tokens, completion_tokens

@@ -61,7 +61,10 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
             )
         for embedding in embeddings:
             if len(embedding) != expected_dimensions:
-                raise ValueError(
+                # Provider/model drift is transient from Diffuse's point of view:
+                # retrying may recover after a rollout or routing glitch, while a
+                # ValueError would permanently fail the index job (DEV-199).
+                raise RuntimeError(
                     f"Embedding model returned {len(embedding)} dimensions; "
                     f"expected {expected_dimensions}"
                 )

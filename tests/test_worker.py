@@ -1124,6 +1124,21 @@ async def test_malformed_model_output_is_retried(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_embedding_dimension_mismatch_is_retried(monkeypatch):
+    """Provider vector-width drift must retry instead of permanently failing."""
+    job = _job(_event())
+    recorded = _capture_failure_classification(
+        monkeypatch,
+        job,
+        RuntimeError("Embedding model returned 1024 dimensions; expected 1536"),
+    )
+
+    assert await worker.run_once("worker-1")
+
+    assert recorded == {"retryable": True}
+
+
+@pytest.mark.anyio
 async def test_deterministic_faults_are_not_retried(monkeypatch):
     job = _job(_event())
     recorded = _capture_failure_classification(
