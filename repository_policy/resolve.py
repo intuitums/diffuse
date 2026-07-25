@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import Literal
 
 from .models import (
@@ -32,8 +32,41 @@ _SEVERITY_ORDER = {
 }
 
 
-def _glob_regex(pattern: str) -> re.Pattern[str]:
-    output = ["^"]
+_GlobTokenKind = Literal["char", "single", "segment", "any", "any_dir", "choice"]
+
+
+@dataclass(frozen=True)
+class _GlobToken:
+    kind: _GlobTokenKind
+    char: str = ""
+    branches: tuple[tuple[_GlobToken, ...], ...] = ()
+
+
+# Adjacent unbounded wildcards are interchangeable with a single one, so folding them
+# during parsing keeps a committed `**/**/**/...` pattern from inflating match work.
+_ABSORBED_WILDCARDS: dict[tuple[_GlobTokenKind, _GlobTokenKind], _GlobTokenKind] = {
+    ("segment", "segment"): "segment",
+    ("any", "any"): "any",
+    ("any", "segment"): "any",
+    ("segment", "any"): "any",
+    ("any", "any_dir"): "any",
+    ("any_dir", "any"): "any",
+    ("any_dir", "any_dir"): "any_dir",
+}
+
+
+def _append_token(tokens: list[_GlobToken], token: _GlobToken) -> None:
+    if tokens:
+        absorbed = _ABSORBED_WILDCARDS.get((tokens[-1].kind, token.kind))
+        if absorbed is not None:
+            tokens[-1] = _GlobToken(kind=absorbed)
+            return
+    tokens.append(token)
+
+
+@lru_cache(maxsize=1024)
+def _parse_path_glob(pattern: str) -> tuple[_GlobToken, ...]:
+    tokens: list[_GlobToken] = []
     index = 0
     while index < len(pattern):
         character = pattern[index]
@@ -41,66 +74,140 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
             if index + 1 < len(pattern) and pattern[index + 1] == "*":
                 index += 2
                 if index < len(pattern) and pattern[index] == "/":
-                    output.append("(?:.*/)?")
+                    _append_token(tokens, _GlobToken(kind="any_dir"))
                     index += 1
                 else:
-                    output.append(".*")
+                    _append_token(tokens, _GlobToken(kind="any"))
                 continue
-            output.append("[^/]*")
+            _append_token(tokens, _GlobToken(kind="segment"))
         elif character == "?":
-            output.append("[^/]")
+            _append_token(tokens, _GlobToken(kind="single"))
         else:
-            output.append(re.escape(character))
+            _append_token(tokens, _GlobToken(kind="char", char=character))
         index += 1
-    output.append("$")
-    return re.compile("".join(output))
+    return tuple(tokens)
 
 
-def path_matches(pattern: str, path: str) -> bool:
-    if pattern.endswith("/"):
-        pattern += "**"
-    return bool(_glob_regex(pattern).fullmatch(path))
-
-
-def _filter_glob_fragment(pattern: str) -> str:
-    output: list[str] = []
+@lru_cache(maxsize=1024)
+def _parse_filter_glob(pattern: str) -> tuple[_GlobToken, ...]:
+    tokens: list[_GlobToken] = []
     index = 0
     while index < len(pattern):
         character = pattern[index]
         if character == "*":
             if index + 1 < len(pattern) and pattern[index + 1] == "*":
-                output.append(".*")
+                _append_token(tokens, _GlobToken(kind="any"))
                 index += 2
                 continue
-            output.append("[^/]*")
+            _append_token(tokens, _GlobToken(kind="segment"))
         elif character == "?":
-            output.append("[^/]")
+            _append_token(tokens, _GlobToken(kind="single"))
         elif character == "{":
             end = pattern.find("}", index + 1)
             if end != -1:
                 choices = pattern[index + 1 : end].split(",")
                 if 1 < len(choices) <= 16 and all(choices):
-                    output.append(
-                        "(?:"
-                        + "|".join(_filter_glob_fragment(choice) for choice in choices)
-                        + ")"
+                    _append_token(
+                        tokens,
+                        _GlobToken(
+                            kind="choice",
+                            branches=tuple(
+                                _parse_filter_glob(choice) for choice in choices
+                            ),
+                        ),
                     )
                     index = end + 1
                     continue
-            output.append(r"\{")
+            _append_token(tokens, _GlobToken(kind="char", char="{"))
         else:
-            output.append(re.escape(character))
+            _append_token(tokens, _GlobToken(kind="char", char=character))
         index += 1
-    return "".join(output)
+    return tuple(tokens)
+
+
+def _advance_within_segment(text: str, reachable: set[int]) -> set[int]:
+    """`*` consumes anything up to, but never across, the next separator."""
+    result: set[int] = set()
+    inside = False
+    for index in range(min(reachable), len(text) + 1):
+        if index in reachable:
+            inside = True
+        if inside:
+            result.add(index)
+        if index < len(text) and text[index] == "/":
+            inside = False
+    return result
+
+
+def _advance(
+    tokens: tuple[_GlobToken, ...],
+    text: str,
+    reachable: set[int],
+    *,
+    ignore_case: bool,
+) -> set[int]:
+    """Advance every reachable offset one token at a time.
+
+    Glob patterns are attacker-supplied repository content, so they are simulated as a
+    set of offsets rather than translated into a backtracking regex: nested `(?:.*/)?`
+    and `.*` groups make CPython's `re` engine backtrack catastrophically, and one
+    committed pattern would otherwise wedge every review worker. Tracking offsets keeps
+    each token linear in the length of the matched text.
+    """
+    for token in tokens:
+        if not reachable:
+            return reachable
+        if token.kind == "char":
+            expected = token.char.lower() if ignore_case else token.char
+            reachable = {
+                index + 1
+                for index in reachable
+                if index < len(text)
+                and (text[index].lower() if ignore_case else text[index]) == expected
+            }
+        elif token.kind == "single":
+            reachable = {
+                index + 1
+                for index in reachable
+                if index < len(text) and text[index] != "/"
+            }
+        elif token.kind == "segment":
+            reachable = _advance_within_segment(text, reachable)
+        elif token.kind == "any":
+            reachable = set(range(min(reachable), len(text) + 1))
+        elif token.kind == "any_dir":
+            reachable = reachable | {
+                index + 1
+                for index in range(min(reachable), len(text))
+                if text[index] == "/"
+            }
+        else:
+            reachable = set().union(
+                *(
+                    _advance(branch, text, reachable, ignore_case=ignore_case)
+                    for branch in token.branches
+                )
+            )
+    return reachable
+
+
+def path_matches(pattern: str, path: str) -> bool:
+    if pattern.endswith("/"):
+        pattern += "**"
+    return len(path) in _advance(
+        _parse_path_glob(pattern),
+        path,
+        {0},
+        ignore_case=False,
+    )
 
 
 def filter_matches(pattern: str, value: str) -> bool:
-    return bool(
-        re.fullmatch(
-            _filter_glob_fragment(pattern),
-            value,
-            flags=re.IGNORECASE,
-        )
+    return len(value) in _advance(
+        _parse_filter_glob(pattern),
+        value,
+        {0},
+        ignore_case=True,
     )
 
 

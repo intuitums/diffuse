@@ -173,12 +173,12 @@ set `DIFFUSE_PUBLIC_URL` to its HTTP(S) origin and add the exact host
 (including its port when applicable) to the comma-separated
 `DIFFUSE_MCP_ALLOWED_HOSTS` allowlist.
 
-Provision the new credential in an environment variable without placing it on
-the command line, then store only its SHA-256 digest:
+`diffuse token add` mints the credential itself with a CSPRNG, prints it once,
+and stores only its SHA-256 digest. Capture that single line into the client's
+secret manager; Diffuse cannot show it again:
 
 ```bash
 diffuse token add ide-agent \
-  --token-env DIFFUSE_NEW_TOKEN \
   --scope diffuse:mcp:read \
   --scope diffuse:mcp:generate \
   --repository-id 1 \
@@ -187,6 +187,11 @@ diffuse token add ide-agent \
 diffuse token list
 diffuse token revoke 1 --actor operator --reason "credential rotation"
 ```
+
+`--token-env DIFFUSE_NEW_TOKEN` still adopts an operator-supplied credential
+from an environment variable, but prefer minting: a single unsalted SHA-256 is
+only sound for a high-entropy secret, and an operator-chosen string in that
+column is recoverable offline from any dump or read replica.
 
 Use `--all-repositories` instead of one or more `--repository-id` values only
 for clients that genuinely require deployment-wide access. Creation and
@@ -366,7 +371,6 @@ routine client with API-specific scopes:
 
 ```bash
 diffuse token add dashboard-reader \
-  --token-env DIFFUSE_NEW_TOKEN \
   --scope diffuse:api:read \
   --repository-id 1 \
   --actor operator

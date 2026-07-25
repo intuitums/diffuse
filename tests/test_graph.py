@@ -139,3 +139,21 @@ def test_syntax_error_is_reported_without_aborting_repository(tmp_path: Path):
     assert len(graph.diagnostics) == 1
     assert graph.diagnostics[0].file_path == "broken.py"
     assert graph.diagnostics[0].line == 1
+
+
+def test_recursion_error_skips_one_file_without_aborting_repository(tmp_path: Path):
+    package = tmp_path / "app"
+    package.mkdir()
+    (package / "hostile.py").write_text("value = " + " + ".join(["1"] * 20000) + "\n")
+    (package / "utils.py").write_text(
+        """\
+def normalize(value: str) -> str:
+    return value.strip()
+"""
+    )
+
+    graph = extract_repository_graph(tmp_path)
+
+    assert _symbol_by_name(graph, "app.utils.normalize").kind == "function"
+    assert [diagnostic.file_path for diagnostic in graph.diagnostics] == ["app/hostile.py"]
+    assert not any(symbol.file_path == "app/hostile.py" for symbol in graph.symbols)
