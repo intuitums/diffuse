@@ -70,6 +70,15 @@ MIN_DIAGRAM_CHANGED_LINES = 40
 MIN_MULTI_FILE_DIAGRAM_CHANGED_LINES = 12
 
 
+class StructuredOutputValidationError(RuntimeError):
+    """A transient structured model response that failed schema validation."""
+
+    def __init__(self, *, prompt_tokens: int, completion_tokens: int) -> None:
+        super().__init__("Review model returned invalid structured output")
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+
+
 def review_model() -> str:
     value = os.environ.get("REVIEW_MODEL", DEFAULT_REVIEW_MODEL).strip()
     if not value:
@@ -201,11 +210,19 @@ def _call_structured[T: BaseModel](
         arguments["response_format"] = response_model
 
     response = litellm.completion(**arguments)
-    value = response_model.model_validate_json(_message_content(response))
+    prompt_tokens = _usage_value(response, "prompt_tokens")
+    completion_tokens = _usage_value(response, "completion_tokens")
+    try:
+        value = response_model.model_validate_json(_message_content(response))
+    except ValidationError as error:
+        raise StructuredOutputValidationError(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        ) from error
     return (
         value,
-        _usage_value(response, "prompt_tokens"),
-        _usage_value(response, "completion_tokens"),
+        prompt_tokens,
+        completion_tokens,
     )
 
 
@@ -478,12 +495,12 @@ def _generate_diagram(
             user_prompt=_diagram_prompt(parsed_diff, diff_chunks, context_text),
             max_tokens=_positive_int("REVIEW_DIAGRAM_MAX_OUTPUT_TOKENS", 2500),
         )
-    except ValidationError:
+    except StructuredOutputValidationError as error:
         # The diagram is an optional enrichment and its safety rules are
         # deliberately strict, so a rejected proposal degrades to no diagram
         # rather than discarding an otherwise complete review.
         LOGGER.warning("Discarded an unsafe or malformed review diagram", exc_info=True)
-        return None, 0, 0
+        return None, error.prompt_tokens, error.completion_tokens
     return proposal.diagram, prompt_tokens, completion_tokens
 
 

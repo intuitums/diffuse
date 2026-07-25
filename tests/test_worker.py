@@ -1,7 +1,6 @@
 from unittest.mock import AsyncMock
 
 import pytest
-from pydantic import ValidationError
 
 from repository_policy.models import (
     PolicyLayer,
@@ -32,6 +31,7 @@ from service.learning_models import (
     RuleLearningResult,
     RuleLearningWork,
 )
+from service.review_engine import StructuredOutputValidationError
 from service.review_models import (
     Category,
     ReviewFinding,
@@ -1112,12 +1112,14 @@ def _capture_failure_classification(monkeypatch, job, error):
 async def test_malformed_model_output_is_retried(monkeypatch):
     """A truncated or drifting model response is transient, not terminal."""
     job = _job(_event())
-    error = ValidationError.from_exception_data("CandidateBatch", [])
+    error = StructuredOutputValidationError(
+        prompt_tokens=10,
+        completion_tokens=2,
+    )
     recorded = _capture_failure_classification(monkeypatch, job, error)
 
     assert await worker.run_once("worker-1")
 
-    assert isinstance(error, ValueError)
     assert recorded == {"retryable": True}
 
 
@@ -1127,7 +1129,7 @@ async def test_deterministic_faults_are_not_retried(monkeypatch):
     recorded = _capture_failure_classification(
         monkeypatch,
         job,
-        NonRetryableError("Workflow job identity does not match its payload"),
+        ValueError("REVIEW_STRUCTURED_OUTPUT_MODE is invalid"),
     )
 
     assert await worker.run_once("worker-1")

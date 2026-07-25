@@ -25,10 +25,9 @@ class NonRetryableError(ValueError):
     """A job failure that retrying cannot resolve.
 
     Reserved for deterministic faults — an unsupported provider or job type, or
-    a payload whose identity does not match the job it was claimed for. Every
-    other failure is treated as transient and retried under the job's backoff
-    policy, because retrying a transient fault is cheap and permanently failing
-    a recoverable one is not.
+    a payload whose identity does not match the job it was claimed for. Ordinary
+    value and configuration errors are also terminal; this subtype makes the
+    non-retryable intent explicit at workflow boundaries.
     """
 
 

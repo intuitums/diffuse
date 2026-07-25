@@ -61,10 +61,24 @@ def test_review_diagram_rejects_mismatch_and_active_or_embedded_content(source):
 def test_unsafe_diagram_is_discarded_without_failing_the_review(monkeypatch):
     """The diagram is optional enrichment; rejecting it must not lose the review."""
 
-    def reject(*_args, **_kwargs):
-        raise ValidationError.from_exception_data("DiagramProposal", [])
+    def unsafe_diagram(**_kwargs):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"diagram":{"kind":"sequence","title":"Unsafe",'
+                            '"mermaid":"sequenceDiagram\\n'
+                            '  click API https://attacker.invalid"}}'
+                        )
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 17, "completion_tokens": 5},
+        }
 
-    monkeypatch.setattr(review_engine, "_call_structured", reject)
+    monkeypatch.setenv("REVIEW_STRUCTURED_OUTPUT_MODE", "prompt")
+    monkeypatch.setattr(review_engine.litellm, "completion", unsafe_diagram)
     monkeypatch.setattr(review_engine, "_diagram_would_help", lambda _diff: True)
 
     diagram, prompt_tokens, completion_tokens = review_engine._generate_diagram(
@@ -81,4 +95,4 @@ def test_unsafe_diagram_is_discarded_without_failing_the_review(monkeypatch):
     )
 
     assert diagram is None
-    assert (prompt_tokens, completion_tokens) == (0, 0)
+    assert (prompt_tokens, completion_tokens) == (17, 5)

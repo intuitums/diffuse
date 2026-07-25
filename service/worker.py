@@ -1785,7 +1785,7 @@ async def run_once(worker_id: str) -> bool:
     try:
         await process_job(job, worker_id)
     except Exception as error:
-        retryable = not isinstance(error, NonRetryableError)
+        retryable = not isinstance(error, ValueError)
         next_status = await anyio.to_thread.run_sync(
             partial(_fail, job.id, worker_id, retryable=retryable)
         )
