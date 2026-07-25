@@ -36,6 +36,9 @@ from service.gitlab import (
     verify_gitlab_webhook,
 )
 from service.mcp_server import diffuse_mcp, mcp_http_app
+from service.oauth_api import (
+    router as oauth_router,
+)
 from service.rest_api import (
     RestApiError,
     rest_api_error_handler,
@@ -125,6 +128,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Diffuse", version="0.1.0", lifespan=lifespan)
 app.include_router(rest_api_router)
+app.include_router(oauth_router)
 app.add_exception_handler(RestApiError, rest_api_error_handler)
 
 

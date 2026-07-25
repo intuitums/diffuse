@@ -45,6 +45,32 @@ URL. Also set:
 Do not commit `.env`, copy it into an image, or place its values on command
 lines. Back it up separately in an encrypted secret manager.
 
+### Browser sign-in (optional)
+
+`diffuse login` signs in through GitHub. Diffuse is the confidential OAuth
+client, so the GitHub App client secret is read from a file rather than the
+environment and never belongs in `.env`:
+
+```bash
+sudo install -d -m 700 /srv/diffuse/secrets
+sudo install -m 600 /dev/stdin /srv/diffuse/secrets/app-client-secret
+sudo chown "$(docker compose run --rm --no-deps --entrypoint id app -u)" \
+    /srv/diffuse/secrets/app-client-secret
+```
+
+Paste the client secret on stdin, then end with Ctrl-D. The `chown` matters:
+the container runs as the unprivileged `diffuse` user, so a root-owned mode-600
+file is unreadable to it. Compose mounts the directory read-only; override the
+host path with `DIFFUSE_SECRETS_DIR` if you keep secrets elsewhere.
+
+Then set `GITHUB_OAUTH_CLIENT_ID` and, to offer an install link after sign-in,
+`GITHUB_APP_SLUG`. In the GitHub App set the callback URL to
+`https://diffuse.example.com/auth/github/callback` and the setup URL to
+`https://diffuse.example.com/setup`. Sign-in stays disabled and returns 503
+until the client id and a readable secret are both present; Diffuse logs a
+warning if the secret file is group- or world-readable and refuses to read it
+at all if it is group- or world-writable.
+
 Validate interpolation before starting anything:
 
 ```bash
