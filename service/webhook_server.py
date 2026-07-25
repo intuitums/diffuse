@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, closing
@@ -55,6 +56,7 @@ from service.scm import (
     ReviewFeedbackCommentEvent,
 )
 from service.workflow import (
+    REPOSITORY_NOT_ONBOARDED_REASON,
     DeliveryConflictError,
     EnqueueResult,
     EventOrderConflictError,
@@ -62,7 +64,10 @@ from service.workflow import (
     enqueue_repository_index_event,
     enqueue_review_conversation_event,
     enqueue_review_event,
+    record_webhook_rejection,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 ACCEPTED_ACTIONS = {
     "closed",
@@ -162,24 +167,61 @@ def _is_github_managed_description_update(payload: dict) -> bool:
     )
 
 
+def _record_not_onboarded(event, *, event_name: str) -> None:
+    """Leave a durable trace that Diffuse turned a delivery away.
+
+    The caller's transaction rolled back when RepositoryNotOnboardedError was
+    raised, so this needs its own connection. Recording must never turn a
+    rejected delivery into a failed request, hence the broad guard: the 409 the
+    caller is about to raise is the important part.
+    """
+    LOGGER.warning(
+        "Rejected %s delivery %s for %s: repository is not onboarded",
+        event_name,
+        event.delivery_id,
+        event.repo_full_name,
+    )
+    try:
+        with closing(get_conn()) as conn, conn:
+            record_webhook_rejection(
+                conn,
+                scm_provider=event.provider,
+                scm_base_url=event.scm_base_url,
+                delivery_id=event.delivery_id,
+                event_name=event_name,
+                repo_full_name=event.repo_full_name,
+                reason=REPOSITORY_NOT_ONBOARDED_REASON,
+            )
+    except Exception:
+        LOGGER.exception("Could not record the rejected webhook delivery")
+
+
 def enqueue_pull_request(event: PullRequestEvent, body: bytes) -> EnqueueResult:
     payload_sha256 = hashlib.sha256(body).hexdigest()
-    with closing(get_conn()) as conn, conn:
-        return enqueue_review_event(
-            conn,
-            event,
-            payload_sha256=payload_sha256,
-        )
+    try:
+        with closing(get_conn()) as conn, conn:
+            return enqueue_review_event(
+                conn,
+                event,
+                payload_sha256=payload_sha256,
+            )
+    except RepositoryNotOnboardedError:
+        _record_not_onboarded(event, event_name="pull_request")
+        raise
 
 
 def enqueue_repository_push(event: PushEvent, body: bytes) -> EnqueueResult:
     payload_sha256 = hashlib.sha256(body).hexdigest()
-    with closing(get_conn()) as conn, conn:
-        return enqueue_repository_index_event(
-            conn,
-            event,
-            payload_sha256=payload_sha256,
-        )
+    try:
+        with closing(get_conn()) as conn, conn:
+            return enqueue_repository_index_event(
+                conn,
+                event,
+                payload_sha256=payload_sha256,
+            )
+    except RepositoryNotOnboardedError:
+        _record_not_onboarded(event, event_name="push")
+        raise
 
 
 def enqueue_review_conversation(
@@ -187,12 +229,16 @@ def enqueue_review_conversation(
     body: bytes,
 ) -> EnqueueResult:
     payload_sha256 = hashlib.sha256(body).hexdigest()
-    with closing(get_conn()) as conn, conn:
-        return enqueue_review_conversation_event(
-            conn,
-            event,
-            payload_sha256=payload_sha256,
-        )
+    try:
+        with closing(get_conn()) as conn, conn:
+            return enqueue_review_conversation_event(
+                conn,
+                event,
+                payload_sha256=payload_sha256,
+            )
+    except RepositoryNotOnboardedError:
+        _record_not_onboarded(event, event_name="review_conversation")
+        raise
 
 
 def record_review_feedback(

@@ -35,6 +35,10 @@ class RepositoryNotOnboardedError(LookupError):
     pass
 
 
+REPOSITORY_NOT_ONBOARDED_REASON = "repository_not_onboarded"
+WEBHOOK_REJECTION_REASONS = frozenset({REPOSITORY_NOT_ONBOARDED_REASON})
+
+
 class DeliveryConflictError(RuntimeError):
     pass
 
@@ -113,6 +117,63 @@ def _record_pull_request_lifecycle(
             event.source_merged_at or None,
         ),
     )
+
+
+def record_webhook_rejection(
+    conn,
+    *,
+    scm_provider: str,
+    scm_base_url: str,
+    delivery_id: str,
+    event_name: str,
+    repo_full_name: str,
+    reason: str,
+) -> None:
+    """Record a delivery Diffuse refused, so the refusal is visible.
+
+    Deliberately kept out of `scm_webhook_deliveries`: that table's UNIQUE on
+    the delivery id is what makes redelivery idempotent, so a rejection stored
+    there would make GitHub's retry look like a duplicate and never enqueue.
+    Callers must supply their own connection — the transaction that raised has
+    already rolled back by the time this runs.
+    """
+    if scm_provider not in {"github", "gitlab"}:
+        raise ValueError("Webhook rejection provider is invalid")
+    if reason not in WEBHOOK_REJECTION_REASONS:
+        raise ValueError("Webhook rejection reason is invalid")
+    if not 1 <= len(delivery_id) <= 255:
+        raise ValueError("Webhook rejection delivery id is invalid")
+    if not 1 <= len(event_name) <= 100:
+        raise ValueError("Webhook rejection event name is invalid")
+    if not 1 <= len(repo_full_name) <= 255:
+        raise ValueError("Webhook rejection repository name is invalid")
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO scm_webhook_rejections (
+                scm_provider,
+                scm_base_url,
+                delivery_id,
+                event_name,
+                repo_full_name,
+                reason
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (scm_provider, scm_base_url, delivery_id) DO UPDATE
+            SET attempts = scm_webhook_rejections.attempts + 1,
+                last_seen_at = now(),
+                reason = EXCLUDED.reason
+            """,
+            (
+                scm_provider,
+                scm_base_url,
+                delivery_id,
+                event_name,
+                repo_full_name,
+                reason,
+            ),
+        )
 
 
 def enqueue_review_event(
