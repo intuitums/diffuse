@@ -52,16 +52,25 @@ client, so the GitHub App client secret is read from a file rather than the
 environment and never belongs in `.env`:
 
 ```bash
-sudo install -d -m 700 /srv/diffuse/secrets
+sudo install -d -m 0711 /srv/diffuse/secrets
 sudo install -m 600 /dev/stdin /srv/diffuse/secrets/app-client-secret
 sudo chown "$(docker compose run --rm --no-deps --entrypoint id app -u)" \
     /srv/diffuse/secrets/app-client-secret
 ```
 
-Paste the client secret on stdin, then end with Ctrl-D. The `chown` matters:
-the container runs as the unprivileged `diffuse` user, so a root-owned mode-600
-file is unreadable to it. Compose mounts the directory read-only; override the
-host path with `DIFFUSE_SECRETS_DIR` if you keep secrets elsewhere.
+Paste the client secret on stdin, then end with Ctrl-D.
+
+Both permissions matter, and they grant the narrowest access that works. The
+container runs as an unprivileged user, so the `chown` is what lets it read the
+file at all. The directory is `0711` — traversable but **not** listable — rather
+than `0700`, because a root-owned `0700` directory blocks that user from
+reaching the file even when the file itself is chowned to them. Sibling secrets
+in the same directory, such as an `app-private-key.pem`, stay unreadable to the
+container because they keep their own `0600` root ownership. If the directory
+already exists at `0700`, `sudo chmod 0711` it.
+
+Compose mounts the directory read-only; override the host path with
+`DIFFUSE_SECRETS_DIR` if you keep secrets elsewhere.
 
 Then set `GITHUB_OAUTH_CLIENT_ID` and, to offer an install link after sign-in,
 `GITHUB_APP_SLUG`. In the GitHub App set the callback URL to
