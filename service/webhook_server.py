@@ -131,7 +131,39 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
 
 
-app = FastAPI(title="Diffuse", version="0.1.0", lifespan=lifespan)
+def api_docs_enabled() -> bool:
+    """Report whether the interactive API documentation may be served.
+
+    Diffuse is deployed on the public internet to receive webhooks, so the
+    default is off: `/docs`, `/redoc` and `/openapi.json` otherwise enumerate
+    every `/api/v1` route and request schema to anonymous callers, which is a
+    reconnaissance aid no operator asked for. Local development opts back in.
+    """
+    return os.environ.get("DIFFUSE_ENABLE_API_DOCS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def documentation_urls() -> dict[str, str | None]:
+    """Build the FastAPI documentation kwargs. `None` unmounts the route."""
+    if not api_docs_enabled():
+        return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    return {
+        "docs_url": "/docs",
+        "redoc_url": "/redoc",
+        "openapi_url": "/openapi.json",
+    }
+
+
+app = FastAPI(
+    title="Diffuse",
+    version="0.1.0",
+    lifespan=lifespan,
+    **documentation_urls(),
+)
 app.include_router(rest_api_router)
 app.include_router(oauth_router)
 app.add_exception_handler(RestApiError, rest_api_error_handler)

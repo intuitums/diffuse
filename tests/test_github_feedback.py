@@ -5,7 +5,7 @@ from service.github_feedback import (
     MAX_REACTION_PAGES,
     fetch_github_review_reactions,
 )
-from service.scm import FeedbackSyncEvent
+from service.scm import FeedbackSyncEvent, ProviderPaginationLimitError
 
 
 def _event() -> FeedbackSyncEvent:
@@ -124,7 +124,10 @@ async def test_feedback_reader_fails_closed_at_pagination_cap(monkeypatch):
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        with pytest.raises(RuntimeError, match="pagination limit"):
+        with pytest.raises(
+            ProviderPaginationLimitError,
+            match="cannot tell whether it already published",
+        ):
             await fetch_github_review_reactions(_event(), client=client)
 
     assert pages == list(range(1, MAX_REACTION_PAGES + 1))

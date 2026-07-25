@@ -13,7 +13,12 @@ from service.finding_store import (
     ThreadOperationHandle,
 )
 from service.github import GITHUB_API_VERSION
-from service.scm import PullRequestEvent, normalize_base_url
+from service.scm import (
+    ProviderPaginationLimitError,
+    PullRequestEvent,
+    normalize_base_url,
+    raise_for_provider_status,
+)
 
 MAX_THREAD_PAGES = 20
 MAX_COMMENT_PAGES = 20
@@ -97,13 +102,23 @@ async def _find_existing_reply(
     operation: ThreadOperationHandle,
 ) -> PublishedThreadOperation | None:
     marker = _operation_marker(operation)
+    reached_end = False
     for page in range(1, MAX_COMMENT_PAGES + 1):
         response = await client.get(
             _comments_url(event),
             headers=_headers(),
-            params={"per_page": 100, "page": page},
+            # Newest first: the addressed/reopened notice this is looking for
+            # was written by an earlier attempt of this same operation, so it
+            # is among the most recent comments and the scan stops on page one
+            # rather than marching into the page cap.
+            params={
+                "sort": "created",
+                "direction": "desc",
+                "per_page": 100,
+                "page": page,
+            },
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="github")
         value = response.json()
         if not isinstance(value, list):
             raise RuntimeError("GitHub returned an invalid pull-request comment list")
@@ -125,7 +140,16 @@ async def _find_existing_reply(
                 thread_node_id=operation.thread_node_id or "",
             )
         if len(value) < 100:
+            reached_end = True
             break
+    if not reached_end:
+        # The caller posts the thread reply when this returns None, so a capped
+        # scan would duplicate the addressed/reopened notice.
+        raise ProviderPaginationLimitError(
+            "github",
+            "pull-request review comments",
+            pages=MAX_COMMENT_PAGES,
+        )
     return None
 
 
@@ -178,7 +202,7 @@ async def _find_thread(
                 },
             },
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="github")
         value = response.json()
         if not isinstance(value, dict) or value.get("errors"):
             raise RuntimeError("GitHub GraphQL thread query failed")
@@ -244,7 +268,7 @@ async def _set_thread_resolution(
             "variables": {"threadId": thread_node_id},
         },
     )
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="github")
     value = response.json()
     if not isinstance(value, dict) or value.get("errors"):
         raise RuntimeError("GitHub GraphQL thread mutation failed")
@@ -304,7 +328,7 @@ async def _apply_with_client(
                 "in_reply_to": root_comment_id,
             },
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="github")
         value = response.json()
         if not isinstance(value, dict) or value.get("id") is None:
             raise RuntimeError("GitHub returned an invalid review-thread reply")

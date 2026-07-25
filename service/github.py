@@ -25,6 +25,7 @@ from service.scm import (
     ReviewConversationEvent,
     ReviewFeedbackCommentEvent,
     normalize_base_url,
+    raise_for_provider_status,
     scm_api_timeout_seconds,
 )
 
@@ -478,7 +479,7 @@ async def fetch_manual_pull_request_event(
 
     async def fetch(active_client: httpx.AsyncClient) -> dict:
         response = await active_client.get(url, headers=_github_json_headers())
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="github")
         if len(response.content) > MAX_METADATA_BYTES:
             raise RuntimeError("Pull-request metadata exceeds Diffuse's size limit")
         value = response.json()
@@ -591,7 +592,7 @@ async def _fetch_diff_url(
     async def fetch(active_client: httpx.AsyncClient) -> str:
         content = bytearray()
         async with active_client.stream("GET", url, headers=headers) as response:
-            response.raise_for_status()
+            raise_for_provider_status(response, provider="github")
             async for chunk in response.aiter_bytes():
                 content.extend(chunk)
                 if len(content) > MAX_DIFF_BYTES:

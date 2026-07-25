@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import random
 from urllib.parse import quote
 
 import anyio
@@ -11,9 +12,15 @@ import httpx
 from service.check_store import CHECK_NAME, VALID_CONCLUSIONS, CheckConclusion
 from service.github_check import PublishedCheckRun
 from service.review_models import ReviewFinding, ReviewReport
-from service.scm import PullRequestEvent
+from service.scm import PullRequestEvent, raise_for_provider_status
 
 MAX_RESPONSE_BYTES = 1_000_000
+MAX_STATUS_ATTEMPTS = 3
+STATUS_RETRY_BASE_SECONDS = 0.5
+# 409 is GitLab serializing two writers on the same commit; the 5xx and 429
+# codes are the transient faults that used to fail an entire review job on the
+# first response instead of costing one short backoff.
+RETRYABLE_STATUS_CODES = frozenset({409, 429, 500, 502, 503, 504})
 
 
 def _headers() -> dict[str, str]:
@@ -46,19 +53,23 @@ async def _post_status(
     payload: dict[str, object],
 ) -> dict:
     response: httpx.Response | None = None
-    for attempt in range(3):
+    for attempt in range(MAX_STATUS_ATTEMPTS):
         response = await client.post(
             _status_url(event),
             headers=_headers(),
             data=payload,
         )
-        if response.status_code != 409:
+        if response.status_code not in RETRYABLE_STATUS_CODES:
             break
-        if attempt < 2:
-            await anyio.sleep(0.1 * (attempt + 1))
+        if attempt < MAX_STATUS_ATTEMPTS - 1:
+            # Jittered so that every review job racing the same commit does not
+            # retry on the same instant and reproduce the conflict it backed off
+            # from.
+            ceiling = STATUS_RETRY_BASE_SECONDS * (2**attempt)
+            await anyio.sleep(random.uniform(ceiling / 2, ceiling))
     if response is None:
         raise RuntimeError("GitLab commit-status request was not attempted")
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="gitlab")
     if len(response.content) > MAX_RESPONSE_BYTES:
         raise RuntimeError("GitLab commit-status response exceeds Diffuse's size limit")
     value = response.json()

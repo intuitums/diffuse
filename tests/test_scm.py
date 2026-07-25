@@ -1,13 +1,20 @@
+from datetime import UTC, datetime
+
+import httpx
 import pytest
 
 from service.scm import (
+    MAX_RATE_LIMIT_DELAY_SECONDS,
+    MIN_RATE_LIMIT_DELAY_SECONDS,
     PLAINTEXT_ORIGIN_VARIABLE,
     FeedbackSyncEvent,
+    ProviderRateLimitError,
     PullRequestEvent,
     PushEvent,
     ReviewFeedbackCommentEvent,
     normalize_base_url,
     normalize_timestamp,
+    raise_for_provider_status,
 )
 
 
@@ -204,3 +211,144 @@ def test_feedback_events_have_scoped_safe_identities():
     assert sync.scope_key.endswith("pull_request:7:feedback_thread:201")
     assert sync.idempotency_key.endswith("feedback_thread:201:generation:3")
     assert FeedbackSyncEvent.from_payload(sync.to_payload()) == sync
+
+
+def test_secondary_rate_limit_carries_the_retry_after_instant():
+    """A 429 must park the job past Retry-After, not burn a retry attempt."""
+    response = httpx.Response(429, headers={"Retry-After": "900"})
+
+    with pytest.raises(ProviderRateLimitError) as error:
+        raise_for_provider_status(response, provider="github")
+
+    delay = (error.value.retry_at - datetime.now(tz=UTC)).total_seconds()
+    assert 890 <= delay <= 900
+    assert error.value.provider == "github"
+
+
+def test_primary_rate_limit_uses_the_reset_epoch():
+    reset_at = datetime.now(tz=UTC).timestamp() + 1800
+    response = httpx.Response(
+        403,
+        headers={
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": str(int(reset_at)),
+        },
+    )
+
+    with pytest.raises(ProviderRateLimitError) as error:
+        raise_for_provider_status(response, provider="github")
+
+    assert 1700 <= (error.value.retry_at - datetime.now(tz=UTC)).total_seconds() <= 1800
+
+
+def test_gitlab_reset_header_is_honored_and_bounded():
+    response = httpx.Response(
+        429,
+        headers={"RateLimit-Reset": str(int(datetime.now(tz=UTC).timestamp() + 90_000))},
+    )
+
+    with pytest.raises(ProviderRateLimitError) as error:
+        raise_for_provider_status(response, provider="gitlab")
+
+    delay = (error.value.retry_at - datetime.now(tz=UTC)).total_seconds()
+    assert delay <= MAX_RATE_LIMIT_DELAY_SECONDS
+
+
+def test_permission_denial_is_not_mistaken_for_a_rate_limit():
+    """A plain 403 has no remaining counter and must stay a hard failure."""
+    response = httpx.Response(403, request=httpx.Request("GET", "https://example/api"))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        raise_for_provider_status(response, provider="github")
+
+
+def test_zero_retry_after_still_parks_the_job_for_a_real_interval():
+    """A reset of "now" is a hot loop, not a retry.
+
+    The job is re-queued with its attempt refunded, so nothing bounds how many
+    times it comes back; flooring the delay is the only thing that stops it
+    from hammering the API that is already throttling us while it holds its
+    scope key against every job queued behind it.
+    """
+    response = httpx.Response(429, headers={"Retry-After": "0"})
+
+    with pytest.raises(ProviderRateLimitError) as error:
+        raise_for_provider_status(response, provider="github")
+
+    delay = (error.value.retry_at - datetime.now(tz=UTC)).total_seconds()
+    assert delay >= MIN_RATE_LIMIT_DELAY_SECONDS - 1
+    assert MIN_RATE_LIMIT_DELAY_SECONDS >= 5
+
+
+def test_a_reset_epoch_already_past_is_floored_not_treated_as_now():
+    """A worker clock running ahead of the provider makes the reset look past."""
+    stale = int(datetime.now(tz=UTC).timestamp()) - 300
+    response = httpx.Response(
+        403,
+        headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(stale)},
+    )
+
+    with pytest.raises(ProviderRateLimitError) as error:
+        raise_for_provider_status(response, provider="github")
+
+    delay = (error.value.retry_at - datetime.now(tz=UTC)).total_seconds()
+    assert delay >= MIN_RATE_LIMIT_DELAY_SECONDS - 1
+
+
+def test_ietf_reset_header_is_read_as_delta_seconds_not_an_epoch():
+    """`RateLimit-Reset: 120` means two minutes, not 1970.
+
+    Read as an epoch it lands 56 years in the past, which collapses to an
+    immediate retry — the same hot loop, reached by a header the IETF draft
+    defines the other way round from GitHub's vendor-prefixed one.
+    """
+    response = httpx.Response(429, headers={"RateLimit-Reset": "120"})
+
+    with pytest.raises(ProviderRateLimitError) as error:
+        raise_for_provider_status(response, provider="gitlab")
+
+    delay = (error.value.retry_at - datetime.now(tz=UTC)).total_seconds()
+    assert 110 <= delay <= 120
+
+
+def test_secondary_rate_limit_with_untouched_primary_quota_is_recognized():
+    """GitHub's content-creation limit is the one Diffuse actually trips.
+
+    It answers 403 with Retry-After while the primary quota still reads 4999,
+    so a remaining-counter test misses it entirely: the call falls through as
+    a generic HTTP error, is classified retryable, burns every attempt inside
+    the limit window and finishes as a red X on the pull request.
+    """
+    response = httpx.Response(
+        403,
+        headers={"Retry-After": "120", "X-RateLimit-Remaining": "4999"},
+        request=httpx.Request("POST", "https://api.github.com/reviews"),
+    )
+
+    with pytest.raises(ProviderRateLimitError) as error:
+        raise_for_provider_status(response, provider="github")
+
+    delay = (error.value.retry_at - datetime.now(tz=UTC)).total_seconds()
+    assert 110 <= delay <= 120
+
+
+def test_secondary_rate_limit_reported_as_429_without_quota_headers():
+    """The same limit is also served as a 429 with no quota headers at all."""
+    response = httpx.Response(429, headers={"Retry-After": "60"})
+
+    with pytest.raises(ProviderRateLimitError) as error:
+        raise_for_provider_status(response, provider="github")
+
+    assert 50 <= (error.value.retry_at - datetime.now(tz=UTC)).total_seconds() <= 60
+
+
+def test_a_denial_with_an_unparseable_retry_after_stays_a_hard_failure():
+    """Only a Retry-After that actually parses may reclassify a 403."""
+    response = httpx.Response(
+        403,
+        headers={"Retry-After": "soon", "X-RateLimit-Remaining": "4999"},
+        request=httpx.Request("GET", "https://example/api"),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        raise_for_provider_status(response, provider="github")

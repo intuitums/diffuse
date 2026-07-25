@@ -9,7 +9,11 @@ import httpx
 
 from service.feedback_models import ReviewReaction
 from service.gitlab_review import MAX_RESPONSE_BYTES, _headers
-from service.scm import FeedbackSyncEvent
+from service.scm import (
+    FeedbackSyncEvent,
+    ProviderPaginationLimitError,
+    raise_for_provider_status,
+)
 
 MAX_REACTION_PAGES = 20
 REACTION_CONTENT = {
@@ -38,7 +42,7 @@ async def _is_project_member(
     )
     if response.status_code == 404:
         return False
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="gitlab")
     if len(response.content) > MAX_RESPONSE_BYTES:
         raise RuntimeError("GitLab member response exceeds Diffuse's size limit")
     value = response.json()
@@ -72,7 +76,7 @@ async def fetch_gitlab_review_reactions(
                 headers=_headers(),
                 params={"per_page": 100, "page": page},
             )
-            response.raise_for_status()
+            raise_for_provider_status(response, provider="gitlab")
             if len(response.content) > MAX_RESPONSE_BYTES:
                 raise RuntimeError(
                     "GitLab emoji response exceeds Diffuse's size limit"
@@ -120,8 +124,10 @@ async def fetch_gitlab_review_reactions(
                 reached_end = True
                 break
         if not reached_end:
-            raise RuntimeError(
-                "GitLab emoji reactions exceed Diffuse's safe pagination limit"
+            raise ProviderPaginationLimitError(
+                "gitlab",
+                "emoji reactions",
+                pages=MAX_REACTION_PAGES,
             )
 
         authorization: dict[int, bool] = {}

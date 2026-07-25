@@ -20,13 +20,19 @@ from service.review_models import (
     ReviewReport,
     SecurityClassification,
 )
-from service.scm import PullRequestEvent
+from service.scm import (
+    ProviderPaginationLimitError,
+    PullRequestEvent,
+    raise_for_provider_status,
+)
 
 MAX_INLINE_COMMENTS = 25
 MAX_REVIEW_BODY_CHARS = 60_000
 MAX_INLINE_BODY_CHARS = 10_000
 MAX_PULL_REQUEST_RESPONSE_BYTES = 1_000_000
 MAX_PULL_REQUEST_DESCRIPTION_CHARS = 65_536
+MAX_REVIEW_PAGES = 20
+MAX_REVIEW_COMMENT_PAGES = 10
 FINDING_MARKER_PATTERN = re.compile(
     r"<!-- diffuse-finding:([0-9a-f]{64}) -->"
 )
@@ -326,13 +332,14 @@ async def _find_existing_review(
     marker: str,
 ) -> PublishedReview | None:
     url = _reviews_url(event)
-    for page in range(1, 21):
+    reached_end = False
+    for page in range(1, MAX_REVIEW_PAGES + 1):
         response = await client.get(
             url,
             headers=_headers(),
             params={"per_page": 100, "page": page},
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="github")
         reviews = response.json()
         if not isinstance(reviews, list):
             raise RuntimeError("GitHub returned an invalid review list")
@@ -350,7 +357,16 @@ async def _find_existing_review(
                     ),
                 )
         if len(reviews) < 100:
+            reached_end = True
             break
+    if not reached_end:
+        # Exhausting the cap is not evidence that the marker is absent, and the
+        # caller treats absence as permission to submit a second Diffuse review.
+        raise ProviderPaginationLimitError(
+            "github",
+            "pull-request reviews",
+            pages=MAX_REVIEW_PAGES,
+        )
     return None
 
 
@@ -408,13 +424,14 @@ async def _published_finding_comments(
 ) -> tuple[PublishedFindingComment, ...]:
     comments: dict[str, PublishedFindingComment] = {}
     url = _review_comments_url(event, review_id)
-    for page in range(1, 11):
+    reached_end = False
+    for page in range(1, MAX_REVIEW_COMMENT_PAGES + 1):
         response = await client.get(
             url,
             headers=_headers(),
             params={"per_page": 100, "page": page},
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="github")
         value = response.json()
         if not isinstance(value, list):
             raise RuntimeError("GitHub returned an invalid review-comment list")
@@ -436,7 +453,16 @@ async def _published_finding_comments(
                 ),
             )
         if len(value) < 100:
+            reached_end = True
             break
+    if not reached_end:
+        # Returning the partial map would report every unscanned finding as
+        # uncommented and post a duplicate inline comment for each of them.
+        raise ProviderPaginationLimitError(
+            "github",
+            "review comments",
+            pages=MAX_REVIEW_COMMENT_PAGES,
+        )
     return tuple(comments[key] for key in sorted(comments))
 
 
@@ -444,7 +470,7 @@ def _validated_pull_request(
     response: httpx.Response,
     event: PullRequestEvent,
 ) -> dict[str, object]:
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="github")
     if len(response.content) > MAX_PULL_REQUEST_RESPONSE_BYTES:
         raise RuntimeError("GitHub pull-request response exceeds Diffuse's size limit")
     value = response.json()
@@ -672,7 +698,7 @@ async def _publish_with_client(
             headers=_headers(),
             json=payload,
         )
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="github")
     value = response.json()
     if not isinstance(value, dict) or value.get("id") is None:
         raise RuntimeError("GitHub returned an invalid created review")

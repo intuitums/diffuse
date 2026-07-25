@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import unquote, urlsplit
+
+import httpx
 
 from repository_policy.models import validate_repo_path
 
@@ -41,6 +45,77 @@ def plaintext_origin_allowed(hostname: str | None) -> bool:
         raise ValueError(f"{PLAINTEXT_ORIGIN_VARIABLE} must be 0 or 1")
     return raw == "1"
 
+SCM_PROVIDERS = frozenset({"github", "gitlab"})
+
+# GitHub's primary quota window is an hour and GitLab's is a minute, so an hour
+# bounds every reset a healthy provider can advertise. Anything longer is a
+# malformed or hostile header and is clamped rather than trusted.
+MAX_RATE_LIMIT_DELAY_SECONDS = 3600
+# Providers may rate limit without saying when the quota lifts; park the job for
+# long enough that the retry is not just another immediate rejection.
+DEFAULT_RATE_LIMIT_DELAY_SECONDS = 60
+# A parsed delay is never trusted to be positive. `Retry-After: 0`, a worker
+# clock running ahead of the provider, and a delta-seconds header read as an
+# epoch all resolve to "retry now", which turns a rate limit into a full-speed
+# hot loop against the very API that is throttling us — and because a quota
+# deferral refunds its attempt, that loop has no retry budget to exhaust. Every
+# delay is floored so the job always parks for a real interval.
+MIN_RATE_LIMIT_DELAY_SECONDS = 15
+# Reset headers come in two shapes. Anything at or above this magnitude is an
+# absolute Unix epoch; anything below it is a delta in seconds, because no
+# quota window is 31 years wide and no epoch is that small.
+RATE_LIMIT_EPOCH_THRESHOLD_SECONDS = 1_000_000_000
+# GitHub sends the absolute epoch under the vendor-prefixed name; the IETF
+# RateLimit-Reset draft defines the un-prefixed name as delta-seconds. GitLab
+# ships an epoch under the un-prefixed name anyway, so each header starts from
+# its documented shape and falls back on magnitude when the value contradicts.
+EPOCH_RATE_LIMIT_RESET_HEADERS = ("X-RateLimit-Reset",)
+DELTA_RATE_LIMIT_RESET_HEADERS = ("RateLimit-Reset",)
+
+
+class ProviderRateLimitError(RuntimeError):
+    """A provider refused a call because Diffuse exhausted its API quota.
+
+    Carries the instant the quota resets so the workflow can park the job until
+    then. Without it a rate limit is indistinguishable from a transient fault
+    and burns the whole retry budget in minutes against a window that can stay
+    shut for an hour, killing a review that was never actually attempted.
+    """
+
+    def __init__(self, message: str, *, provider: str, retry_at: datetime) -> None:
+        super().__init__(message)
+        if provider not in SCM_PROVIDERS:
+            raise ValueError("provider must be a supported SCM provider")
+        if retry_at.tzinfo is None:
+            raise ValueError("retry_at must include a timezone")
+        self.provider = provider
+        self.retry_at = retry_at.astimezone(UTC)
+
+
+class ProviderPaginationLimitError(ValueError):
+    """A listing outgrew every page Diffuse is willing to walk.
+
+    Idempotency scans read an existing thread to decide whether Diffuse has
+    already spoken, so a truncated scan would post a duplicate. Stopping is
+    therefore correct — but retrying is not: the next attempt reads the same
+    oversized listing and stops in the same place, so five attempts only buy
+    five identical failures and a terminal red X. Deriving from ValueError puts
+    this on the worker's non-retryable path, which fails the job once with an
+    operator-actionable message instead of looping.
+    """
+
+    def __init__(self, provider: str, resource: str, *, pages: int) -> None:
+        if provider not in SCM_PROVIDERS:
+            raise ValueError("provider must be a supported SCM provider")
+        super().__init__(
+            f"{provider} {resource} did not fit in {pages} pages of 100, so "
+            "Diffuse cannot tell whether it already published here. Retrying "
+            "cannot help; reduce the thread or raise Diffuse's page budget."
+        )
+        self.provider = provider
+        self.resource = resource
+        self.pages = pages
+
 
 def scm_api_timeout_seconds() -> float:
     """Return the configured timeout applied to every provider API call."""
@@ -48,6 +123,128 @@ def scm_api_timeout_seconds() -> float:
     if timeout <= 0:
         raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
     return timeout
+
+
+def _clamped_reset(now: datetime, seconds: float) -> datetime:
+    """Turn a parsed delay into an instant that is always safely in the future."""
+    bounded = min(
+        max(seconds, float(MIN_RATE_LIMIT_DELAY_SECONDS)),
+        float(MAX_RATE_LIMIT_DELAY_SECONDS),
+    )
+    return now + timedelta(seconds=bounded)
+
+
+def _delay_from_epoch(value: float, now: datetime) -> float | None:
+    try:
+        reset_at = datetime.fromtimestamp(value, tz=UTC)
+    except (OSError, OverflowError, ValueError):
+        return None
+    return (reset_at - now).total_seconds()
+
+
+def _retry_after_reset(value: str, now: datetime) -> datetime | None:
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        # Retry-After is delta-seconds by definition, never an epoch.
+        seconds = float(candidate)
+    except ValueError:
+        seconds = None
+    if seconds is not None:
+        return _clamped_reset(now, seconds) if math.isfinite(seconds) else None
+    try:
+        parsed = parsedate_to_datetime(candidate)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return _clamped_reset(now, (parsed - now).total_seconds())
+
+
+def _reset_header_delay(raw: str, now: datetime, *, epoch_shaped: bool) -> float | None:
+    """Seconds until the quota lifts, for either shape of reset header."""
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        return None
+    if not math.isfinite(value):
+        return None
+    # The documented shape wins unless the magnitude flatly contradicts it: an
+    # epoch is always huge, a delta never is. This is what keeps GitLab's epoch
+    # under `RateLimit-Reset` and an IETF `RateLimit-Reset: 120` (two minutes,
+    # not 1970) from both collapsing to "retry immediately".
+    looks_like_epoch = value >= RATE_LIMIT_EPOCH_THRESHOLD_SECONDS
+    if epoch_shaped and not looks_like_epoch:
+        return value
+    if epoch_shaped or looks_like_epoch:
+        return _delay_from_epoch(value, now)
+    return value
+
+
+def _rate_limit_reset(response: httpx.Response, now: datetime) -> datetime:
+    """Resolve when the provider says its quota lifts, newest header first."""
+    retry_after = response.headers.get("Retry-After")
+    if retry_after is not None:
+        reset = _retry_after_reset(retry_after, now)
+        if reset is not None:
+            return reset
+    for headers, epoch_shaped in (
+        (EPOCH_RATE_LIMIT_RESET_HEADERS, True),
+        (DELTA_RATE_LIMIT_RESET_HEADERS, False),
+    ):
+        for header in headers:
+            raw = response.headers.get(header)
+            if raw is None:
+                continue
+            delay = _reset_header_delay(raw, now, epoch_shaped=epoch_shaped)
+            if delay is None:
+                continue
+            return _clamped_reset(now, delay)
+    return _clamped_reset(now, DEFAULT_RATE_LIMIT_DELAY_SECONDS)
+
+
+def _is_rate_limited(response: httpx.Response, now: datetime) -> bool:
+    if response.status_code == 429:
+        return True
+    if response.status_code != 403:
+        return False
+    # GitHub answers a secondary (content-creation) limit with a 403 whose
+    # primary quota is untouched — `x-ratelimit-remaining: 4999` — and signals
+    # it purely with Retry-After. Posting a review body plus its inline
+    # comments is exactly the write burst that trips it, and a genuine
+    # permission denial never carries Retry-After, so the header alone
+    # separates the two.
+    retry_after = response.headers.get("Retry-After")
+    if retry_after is not None and _retry_after_reset(retry_after, now) is not None:
+        return True
+    # A primary-quota exhaustion is a 403 that is otherwise indistinguishable
+    # from a permission denial; only the remaining counter separates them.
+    remaining = response.headers.get(
+        "X-RateLimit-Remaining",
+        response.headers.get("RateLimit-Remaining", ""),
+    )
+    try:
+        return int(remaining.strip()) <= 0
+    except ValueError:
+        return False
+
+
+def raise_for_provider_status(response: httpx.Response, *, provider: str) -> None:
+    """Raise the typed rate-limit error before httpx's generic status error."""
+    if provider not in SCM_PROVIDERS:
+        raise ValueError("provider must be a supported SCM provider")
+    now = datetime.now(tz=UTC)
+    if _is_rate_limited(response, now):
+        retry_at = _rate_limit_reset(response, now)
+        raise ProviderRateLimitError(
+            f"{provider} rate limited Diffuse until {retry_at.isoformat()}",
+            provider=provider,
+            retry_at=retry_at,
+        )
+    response.raise_for_status()
 
 
 def normalize_base_url(value: str, *, field_name: str) -> str:

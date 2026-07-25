@@ -3,10 +3,12 @@ import hmac
 import json
 from unittest.mock import AsyncMock
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from service import webhook_server
 from service.gitlab import GitLabReviewInteraction
+from service.rest_api import router as rest_api_router
 from service.scm import (
     PullRequestEvent,
     ReviewConversationEvent,
@@ -912,3 +914,52 @@ def test_non_default_branch_push_is_ignored(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["status"] == "ignored"
+
+
+def test_api_documentation_is_unmounted_by_default():
+    # Diffuse is internet-facing to receive webhooks; /docs, /redoc and
+    # /openapi.json would hand every /api/v1 route and schema to an anonymous
+    # caller.
+    assert not webhook_server.api_docs_enabled()
+    assert webhook_server.documentation_urls() == {
+        "docs_url": None,
+        "redoc_url": None,
+        "openapi_url": None,
+    }
+    assert webhook_server.app.docs_url is None
+    assert webhook_server.app.redoc_url is None
+    assert webhook_server.app.openapi_url is None
+
+    for path in ("/openapi.json", "/docs", "/redoc"):
+        response = client.get(path)
+        assert response.status_code != 200, path
+
+    routes = {getattr(route, "path", None) for route in webhook_server.app.routes}
+    assert routes.isdisjoint({"/openapi.json", "/docs", "/redoc"})
+
+
+def test_api_documentation_can_be_enabled_for_local_development(monkeypatch):
+    for enabled in ("1", "true", "TRUE", "yes", "on"):
+        monkeypatch.setenv("DIFFUSE_ENABLE_API_DOCS", enabled)
+        assert webhook_server.api_docs_enabled()
+        assert webhook_server.documentation_urls() == {
+            "docs_url": "/docs",
+            "redoc_url": "/redoc",
+            "openapi_url": "/openapi.json",
+        }
+
+    for disabled in ("", " ", "0", "false", "no", "off", "maybe"):
+        monkeypatch.setenv("DIFFUSE_ENABLE_API_DOCS", disabled)
+        assert not webhook_server.api_docs_enabled()
+
+
+def test_enabling_documentation_actually_serves_the_openapi_document(monkeypatch):
+    monkeypatch.setenv("DIFFUSE_ENABLE_API_DOCS", "true")
+    documented = FastAPI(**webhook_server.documentation_urls())
+    documented.include_router(rest_api_router)
+
+    with TestClient(documented) as documented_client:
+        response = documented_client.get("/openapi.json")
+
+    assert response.status_code == 200
+    assert "/api/v1" in json.dumps(response.json()["paths"])

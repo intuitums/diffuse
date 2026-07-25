@@ -13,7 +13,13 @@ from service.approval_publication import (
 )
 from service.auto_approval import AutoApprovalDecision
 from service.github import GITHUB_API_VERSION
-from service.scm import PullRequestEvent
+from service.scm import (
+    ProviderPaginationLimitError,
+    PullRequestEvent,
+    raise_for_provider_status,
+)
+
+MAX_REVIEW_PAGES = 20
 
 
 def _headers() -> dict[str, str]:
@@ -48,13 +54,14 @@ async def _find_existing_approval(
     event: PullRequestEvent,
     marker: str,
 ) -> PublishedApproval | None:
-    for page in range(1, 21):
+    reached_end = False
+    for page in range(1, MAX_REVIEW_PAGES + 1):
         response = await client.get(
             _reviews_url(event),
             headers=_headers(),
             params={"per_page": 100, "page": page},
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="github")
         reviews = response.json()
         if not isinstance(reviews, list):
             raise RuntimeError("GitHub returned an invalid review list")
@@ -74,7 +81,16 @@ async def _find_existing_approval(
                 external_url=review.get("html_url"),
             )
         if len(reviews) < 100:
+            reached_end = True
             break
+    if not reached_end:
+        # A capped scan that reports absence would submit a second approval on a
+        # pull request Diffuse has already approved.
+        raise ProviderPaginationLimitError(
+            "github",
+            "pull-request reviews",
+            pages=MAX_REVIEW_PAGES,
+        )
     return None
 
 
@@ -83,7 +99,7 @@ async def _assert_current_head(
     event: PullRequestEvent,
 ) -> None:
     response = await client.get(_pull_url(event), headers=_headers())
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="github")
     pull_request = response.json()
     try:
         current_head = pull_request["head"]["sha"]
@@ -172,7 +188,7 @@ async def _publish_with_client(
         existing = await _find_existing_approval(client, event, marker)
         if existing is not None:
             return existing
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="github")
     value = response.json()
     if not isinstance(value, dict) or value.get("id") is None:
         raise RuntimeError("GitHub returned an invalid created approval")

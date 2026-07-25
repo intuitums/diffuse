@@ -17,11 +17,16 @@ from service.review_models import (
     ReviewReport,
     SecurityClassification,
 )
-from service.scm import PullRequestEvent
+from service.scm import (
+    ProviderPaginationLimitError,
+    PullRequestEvent,
+    raise_for_provider_status,
+)
 
 MAX_CHECK_SUMMARY_CHARS = 60_000
 MAX_CHECK_ANNOTATIONS = 50
 MAX_ANNOTATION_MESSAGE_CHARS = 4_000
+MAX_CHECK_RUN_PAGES = 10
 
 
 @dataclass(frozen=True)
@@ -76,7 +81,8 @@ async def _find_existing_check_run(
         f"{_repository_api_path(event)}/commits/"
         f"{quote(event.head_sha, safe='')}/check-runs"
     )
-    for page in range(1, 11):
+    reached_end = False
+    for page in range(1, MAX_CHECK_RUN_PAGES + 1):
         response = await client.get(
             url,
             headers=_headers(),
@@ -87,7 +93,7 @@ async def _find_existing_check_run(
                 "page": page,
             },
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="github")
         value = response.json()
         check_runs = value.get("check_runs") if isinstance(value, dict) else None
         if not isinstance(check_runs, list):
@@ -105,7 +111,16 @@ async def _find_existing_check_run(
                     external_url=check_run.get("html_url"),
                 )
         if len(check_runs) < 100:
+            reached_end = True
             break
+    if not reached_end:
+        # Reporting absence after the cap would create a second check run for a
+        # key that already has one, so the commit shows two Diffuse checks.
+        raise ProviderPaginationLimitError(
+            "github",
+            "check runs",
+            pages=MAX_CHECK_RUN_PAGES,
+        )
     return None
 
 
@@ -156,7 +171,7 @@ async def _ensure_with_client(
             },
         },
     )
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="github")
     value = response.json()
     if not isinstance(value, dict) or value.get("id") is None:
         raise RuntimeError("GitHub returned an invalid created check run")
@@ -328,4 +343,4 @@ async def complete_github_check_run(
             headers=_headers(),
             json=payload,
         )
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="github")

@@ -10,7 +10,7 @@ import httpx
 
 from service.finding_store import PublishedThreadOperation, ThreadOperationHandle
 from service.gitlab_review import MAX_RESPONSE_BYTES, _headers, _merge_request_path
-from service.scm import PullRequestEvent
+from service.scm import PullRequestEvent, raise_for_provider_status
 
 DISCUSSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,255}$")
 
@@ -69,7 +69,7 @@ async def _get_discussion(
         _discussion_url(event, discussion_id),
         headers=_headers(),
     )
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="gitlab")
     if len(response.content) > MAX_RESPONSE_BYTES:
         raise RuntimeError("GitLab discussion response exceeds Diffuse's size limit")
     value = response.json()
@@ -122,7 +122,7 @@ async def _set_resolution(
         headers=_headers(),
         data={"resolved": "true" if resolved else "false"},
     )
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="gitlab")
     if len(response.content) > MAX_RESPONSE_BYTES:
         raise RuntimeError("GitLab discussion response exceeds Diffuse's size limit")
     notes = _discussion_notes(response.json(), discussion_id)
@@ -141,7 +141,7 @@ async def _create_reply(
         headers=_headers(),
         data={"body": _operation_body(event, operation)},
     )
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="gitlab")
     if len(response.content) > MAX_RESPONSE_BYTES:
         raise RuntimeError("GitLab discussion reply exceeds Diffuse's size limit")
     value = response.json()

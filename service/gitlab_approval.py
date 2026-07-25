@@ -12,7 +12,7 @@ from service.approval_publication import (
     PublishedApproval,
 )
 from service.auto_approval import AutoApprovalDecision
-from service.scm import PullRequestEvent
+from service.scm import PullRequestEvent, raise_for_provider_status
 
 MAX_APPROVAL_METADATA_BYTES = 1_000_000
 PENDING_MERGE_STATUSES = frozenset({"checking", "approvals_syncing"})
@@ -42,7 +42,7 @@ async def _json_response(
     *,
     description: str,
 ) -> object:
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="gitlab")
     if len(response.content) > MAX_APPROVAL_METADATA_BYTES:
         raise RuntimeError(f"GitLab {description} exceeds Diffuse's size limit")
     return response.json()
