@@ -177,10 +177,10 @@ async def test_mcp_initializes_lists_only_durable_tools_and_calls_one(
             },
         )
         comment_search = await session.call_tool(
-            "search_greptile_comments",
+            "search_review_comments",
             {
                 "query": "authorization",
-                "includeAddressed": True,
+                "include_addressed": True,
                 "limit": 4,
             },
         )
@@ -233,7 +233,6 @@ async def test_mcp_initializes_lists_only_durable_tools_and_calls_one(
         "get_fix_all_handoff",
         "list_merge_request_comments",
         "search_review_comments",
-        "search_greptile_comments",
         "list_custom_context",
         "get_custom_context",
         "search_custom_context",
@@ -260,11 +259,6 @@ async def test_mcp_initializes_lists_only_durable_tools_and_calls_one(
         "limit",
         "offset",
     } == set(tools_by_name["list_pull_requests"].inputSchema["properties"])
-    assert {
-        "query",
-        "limit",
-        "includeAddressed",
-    } == set(tools_by_name["search_greptile_comments"].inputSchema["properties"])
     assert {
         "codeReviewId",
         "findingFingerprint",
@@ -387,6 +381,7 @@ async def test_mcp_initializes_lists_only_durable_tools_and_calls_one(
             mcp_server.search_mcp_review_comments,
             {
                 "query": "authorization",
+                "repository_id": None,
                 "include_addressed": True,
                 "limit": 4,
                 "offset": 0,
@@ -1023,7 +1018,7 @@ def test_database_query_injects_repository_authorization(monkeypatch):
 
 def test_every_registered_mcp_tool_is_async():
     tools = mcp_server.diffuse_mcp._tool_manager.list_tools()
-    assert len(tools) >= 21
+    assert len(tools) >= 20
 
     # FastMCP runs a synchronous tool inline on the event loop the webhook app shares,
     # so a blocking tool stalls deliveries and the /ready healthcheck until it returns.
