@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -188,12 +189,33 @@ def begin_review_run(
     model: str,
     prompt_version: str,
     context_fingerprint: str,
+    verifier_model: str | None = None,
+    provenance: dict[str, object] | None = None,
+    model_routing_reason: str = "legacy_single_model",
     learned_rules: tuple[ApprovedLearnedRule, ...] = (),
     custom_contexts: tuple[ApprovedCustomContext, ...] = (),
     context_snapshots: tuple[RepositoryContextSnapshot, ...] = (),
 ) -> ReviewRunHandle:
     if not re.fullmatch(r"[0-9a-f]{64}", context_fingerprint):
         raise ValueError("Review context fingerprint must be a lowercase SHA-256 value")
+    selected_verifier_model = verifier_model or model
+    selected_provenance = {} if provenance is None else provenance
+    if not model.strip() or not selected_verifier_model.strip():
+        raise ValueError("Review models cannot be empty")
+    if not re.fullmatch(r"[a-z0-9_]{1,64}", model_routing_reason):
+        raise ValueError("Review model routing reason is invalid")
+    if (
+        not isinstance(selected_provenance, dict)
+        or len(
+            json.dumps(
+                selected_provenance,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+        > 65_536
+    ):
+        raise ValueError("Review provenance must be a bounded JSON object")
     with conn.cursor() as cursor:
         cursor.execute(
             "SELECT repository_id FROM pull_requests WHERE id = %s FOR UPDATE",
@@ -236,6 +258,9 @@ def begin_review_run(
                     UPDATE review_runs
                     SET index_snapshot_id = %s,
                         model = %s,
+                        verifier_model = %s,
+                        provenance = %s,
+                        model_routing_reason = %s,
                         prompt_version = %s,
                         context_fingerprint = %s,
                         status = 'generating',
@@ -247,6 +272,9 @@ def begin_review_run(
                     (
                         index_snapshot_id,
                         model,
+                        selected_verifier_model,
+                        psycopg2.extras.Json(selected_provenance),
+                        model_routing_reason,
                         prompt_version,
                         context_fingerprint,
                         review_run_id,
@@ -354,11 +382,17 @@ def begin_review_run(
                 base_sha,
                 head_sha,
                 model,
+                verifier_model,
+                provenance,
+                model_routing_reason,
                 prompt_version,
                 context_fingerprint,
                 status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'generating')
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                'generating'
+            )
             RETURNING id
             """,
             (
@@ -369,6 +403,9 @@ def begin_review_run(
                 base_sha,
                 head_sha,
                 model,
+                selected_verifier_model,
+                psycopg2.extras.Json(selected_provenance),
+                model_routing_reason,
                 prompt_version,
                 context_fingerprint,
             ),

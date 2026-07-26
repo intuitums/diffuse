@@ -30,8 +30,11 @@ from repository_policy.resolve import (
 from retriever.retrieve import parse_changed_files, retrieve_context_from_plan
 from service import (
     cluster_cli,
+    control_plane_cli,
     database_cli,
+    evaluation_cli,
     learning_cli,
+    model_cli,
     repository_cli,
     token_cli,
 )
@@ -763,6 +766,24 @@ def _parser() -> argparse.ArgumentParser:
         help="Inspect, migrate, and verify the PostgreSQL schema",
     )
     database_cli.configure_parser(database)
+
+    evaluate = subparsers.add_parser(
+        "evaluate",
+        help="Score a labeled review-quality evaluation set",
+    )
+    evaluation_cli.configure_parser(evaluate)
+
+    model = subparsers.add_parser(
+        "model",
+        help="Inspect or verify the configured review model",
+    )
+    model_cli.configure_parser(model)
+
+    control_plane = subparsers.add_parser(
+        "control-plane",
+        help="Publish bounded status projections to managed Diffuse",
+    )
+    control_plane_cli.configure_parser(control_plane)
     return parser
 
 

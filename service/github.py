@@ -19,6 +19,7 @@ from service.review_interaction import (
     is_human_only_discussion,
     is_manual_review_trigger,
 )
+from service.review_provenance import CommitMetadata, PullRequestCommits
 from service.scm import (
     PullRequestEvent,
     PushEvent,
@@ -33,6 +34,9 @@ COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
 GITHUB_API_VERSION = "2026-03-10"
 MAX_DIFF_BYTES = 2_000_000
 MAX_METADATA_BYTES = 1_000_000
+MAX_COMMIT_METADATA_BYTES = 2_000_000
+MAX_PULL_REQUEST_COMMITS = 250
+MAX_COMMIT_METADATA_PAGES = 3
 MANUAL_TRIGGER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 
@@ -615,6 +619,143 @@ async def fetch_pull_request_diff(event: PullRequestEvent) -> str:
         f"{quote(repository, safe='')}/pulls/{event.number}"
     )
     return await _fetch_diff_url(url, user_agent="diffuse-context-review")
+
+
+def _github_commit_metadata(value: object) -> CommitMetadata | None:
+    if not isinstance(value, dict):
+        return None
+    commit = value.get("commit")
+    if not isinstance(commit, dict):
+        return None
+    author = commit.get("author")
+    committer = commit.get("committer")
+    api_author = value.get("author")
+    api_committer = value.get("committer")
+    verification = commit.get("verification")
+    if not isinstance(author, dict) or not isinstance(committer, dict):
+        return None
+    sha = value.get("sha")
+    message = commit.get("message")
+    fields = (
+        sha,
+        message,
+        author.get("name"),
+        author.get("email"),
+        committer.get("name"),
+        committer.get("email"),
+    )
+    if not all(isinstance(field, str) for field in fields):
+        return None
+    try:
+        return CommitMetadata(
+            sha=sha,
+            message=message,
+            author_name=author["name"],
+            author_email=author["email"],
+            author_login=(
+                str(api_author.get("login", ""))
+                if isinstance(api_author, dict)
+                else ""
+            ),
+            author_type=(
+                str(api_author.get("type", ""))
+                if isinstance(api_author, dict)
+                else ""
+            ),
+            committer_name=committer["name"],
+            committer_email=committer["email"],
+            committer_login=(
+                str(api_committer.get("login", ""))
+                if isinstance(api_committer, dict)
+                else ""
+            ),
+            committer_type=(
+                str(api_committer.get("type", ""))
+                if isinstance(api_committer, dict)
+                else ""
+            ),
+            verified=(
+                verification.get("verified") is True
+                if isinstance(verification, dict)
+                else False
+            ),
+        )
+    except ValueError:
+        return None
+
+
+async def fetch_pull_request_commits(
+    event: PullRequestEvent,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> PullRequestCommits:
+    """Fetch bounded, non-source commit metadata for provenance classification."""
+
+    if event.provider != "github":
+        raise ValueError(f"Unsupported SCM provider: {event.provider}")
+    owner, repository = event.repo_full_name.split("/", maxsplit=1)
+    url = (
+        f"{event.api_base_url}/repos/{quote(owner, safe='')}/"
+        f"{quote(repository, safe='')}/pulls/{event.number}/commits"
+    )
+
+    async def fetch(active_client: httpx.AsyncClient) -> PullRequestCommits:
+        commits: list[CommitMetadata] = []
+        complete = True
+        page = 1
+        pages_fetched = 0
+        while (
+            len(commits) < MAX_PULL_REQUEST_COMMITS
+            and pages_fetched < MAX_COMMIT_METADATA_PAGES
+        ):
+            pages_fetched += 1
+            response = await active_client.get(
+                url,
+                headers={
+                    **_github_json_headers(),
+                    "User-Agent": "diffuse-review-provenance",
+                },
+                params={"per_page": 100, "page": page},
+            )
+            response.raise_for_status()
+            if len(response.content) > MAX_COMMIT_METADATA_BYTES:
+                raise RuntimeError("GitHub commit metadata exceeds Diffuse's size limit")
+            value = response.json()
+            if not isinstance(value, list):
+                raise RuntimeError("GitHub returned invalid pull-request commits")
+            for item in value:
+                commit = _github_commit_metadata(item)
+                if commit is None:
+                    complete = False
+                    continue
+                if len(commits) == MAX_PULL_REQUEST_COMMITS:
+                    complete = False
+                    break
+                commits.append(commit)
+            next_page = response.links.get("next")
+            if next_page is None:
+                break
+            if len(commits) >= MAX_PULL_REQUEST_COMMITS:
+                complete = False
+                break
+            if pages_fetched >= MAX_COMMIT_METADATA_PAGES:
+                complete = False
+                break
+            page += 1
+        if not commits or all(
+            commit.sha.casefold() != event.head_sha.casefold()
+            for commit in commits
+        ):
+            complete = False
+        return PullRequestCommits(
+            commits=tuple(commits[:MAX_PULL_REQUEST_COMMITS]),
+            complete=complete,
+        )
+
+    if client is not None:
+        return await fetch(client)
+    async with httpx.AsyncClient(timeout=scm_api_timeout_seconds()) as owned_client:
+        return await fetch(owned_client)
 
 
 async def fetch_pull_request_update_diff(

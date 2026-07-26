@@ -6,6 +6,7 @@ import pytest
 
 from service.github_review import format_review_body
 from service.gitlab_review import (
+    fetch_gitlab_merge_request_commits,
     fetch_gitlab_merge_request_diff,
     fetch_gitlab_pull_request_update_diff,
     publish_gitlab_review,
@@ -114,6 +115,48 @@ async def test_fetch_merge_request_raw_diff_is_nested_project_safe(monkeypatch):
         b"/api/v4/projects/group%2Fsubgroup%2Frepo/"
         b"merge_requests/17/raw_diffs"
     )
+    assert requests[0].headers["PRIVATE-TOKEN"] == "test-token"
+
+
+@pytest.mark.anyio
+async def test_fetch_merge_request_commits_preserves_trailers_for_provenance(
+    monkeypatch,
+):
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "a" * 40,
+                    "message": (
+                        "Fix review retries\n\n"
+                        "Co-authored-by: Cursor Agent <cursoragent@cursor.com>"
+                    ),
+                    "author_name": "Cursor Agent",
+                    "author_email": "cursoragent@cursor.com",
+                    "committer_name": "Cursor Agent",
+                    "committer_email": "cursoragent@cursor.com",
+                }
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await fetch_gitlab_merge_request_commits(
+            _event(),
+            client=client,
+        )
+
+    assert result.complete
+    assert result.commits[0].author_email == "cursoragent@cursor.com"
+    assert requests[0].url.raw_path.startswith(
+        b"/api/v4/projects/group%2Fsubgroup%2Frepo/"
+        b"merge_requests/17/commits"
+    )
+    assert requests[0].url.params["per_page"] == "100"
     assert requests[0].headers["PRIVATE-TOKEN"] == "test-token"
 
 

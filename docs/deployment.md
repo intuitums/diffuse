@@ -3,8 +3,8 @@
 This profile is for one trusted operator or a small trusted team on a Linux
 server. Diffuse is still a foundation release: it does not yet provide
 multi-tenant isolation, encrypted per-installation SCM credentials, operational
-metrics, signed release images, or automated backup retention. Do not expose it
-as an untrusted multi-tenant service.
+metrics, connected/offline entitlement enforcement, or automated backup
+retention. Do not expose it as an untrusted multi-tenant service.
 
 ## Host preparation
 
@@ -24,7 +24,10 @@ binds PostgreSQL and Diffuse itself to `127.0.0.1`; keep those bindings private.
 Create the deployment environment and restrict it to the operator:
 
 ```bash
-cp .env.example .env
+# Customer release bundle:
+cp env.example .env
+# Private source workspace instead:
+# cp .env.example .env
 chmod 600 .env
 openssl rand -hex 32
 openssl rand -hex 32
@@ -96,13 +99,18 @@ public URL.
 
 ## Start and expose the service
 
-Build and start the migration-gated stack:
+Pull and start a customer release bundle's digest-pinned, migration-gated
+stack:
 
 ```bash
-docker compose up -d --build
+docker compose --env-file .env pull
+docker compose --env-file .env up -d
 docker compose ps
 curl --fail http://127.0.0.1:8000/ready
 ```
+
+Maintainers working from the private source workspace instead use
+`docker compose up -d --build`.
 
 The `migrate` container must finish successfully before `app` and `worker`
 start. Both the API and worker share the repository-mirror volume. The API
@@ -178,14 +186,41 @@ Never test a restore over the live database. Record the exact restore procedure
 for the server's backup system and rehearse it before the first production
 upgrade.
 
+## Optional managed control-plane connection
+
+This is not required for self-hosting. To expose operational status in the
+managed control room, configure the Convex HTTP-actions URL and a private
+signing-key file:
+
+```dotenv
+DIFFUSE_CONTROL_PLANE_URL=https://your-deployment.convex.site
+DIFFUSE_CONTROL_PLANE_SIGNING_SECRET_FILE=/run/secrets/diffuse-control-plane-signing-key
+```
+
+The secret file must contain at least 32 random bytes and must not be readable
+by group or world. The same value is configured as
+`DIFFUSE_CONTROL_PLANE_SIGNING_KEY` in the Convex deployment. Publish a
+validated snapshot with:
+
+```bash
+diffuse control-plane publish /private/path/status-snapshot.json
+```
+
+The JSON schema is enforced by `service.control_plane.ControlPlaneSnapshot`.
+It deliberately cannot represent repository content or credentials. Automating
+snapshot publication from the durable worker is a later reliability step; the
+explicit command is the current operator-controlled seam.
+
 ## Upgrades
 
 For every upgrade:
 
 1. read the migration notes and take a verified off-host backup;
-2. build the new image without stopping the existing stack;
-3. run `docker compose up -d`; the one-shot migrator gates application startup;
-4. require `docker compose run --rm migrate diffuse database verify` and a
+2. obtain the new signed bundle, verify its image signature, and pull its
+   digest without stopping the existing stack;
+3. run `docker compose --env-file .env up -d`; the one-shot migrator gates
+   application startup;
+4. require `docker compose run --rm migrate database verify` and a
    successful `/ready` response; and
 5. inspect `docker compose logs migrate app worker` for restarts or failed
    jobs.
@@ -203,6 +238,6 @@ or an unversioned schema, stop and investigate rather than bypassing the gate.
 - Keep the SCM instance allowlists narrow.
 - Monitor `/ready`, PostgreSQL disk growth, Docker volume capacity, container
   restart counts, worker errors, and backup age.
-- Patch the host and rebuild the containers regularly.
+- Patch the host and install supported signed Diffuse releases regularly.
 - Keep source execution disabled; Diffuse's current review path reads source
   and calls model/SCM APIs but is not a sandbox for running pull-request code.

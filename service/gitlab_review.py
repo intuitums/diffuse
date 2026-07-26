@@ -20,10 +20,14 @@ from service.github_review import (
 )
 from service.review_description import merge_review_description
 from service.review_models import ReviewFinding, ReviewReport
+from service.review_provenance import CommitMetadata, PullRequestCommits
 from service.scm import PullRequestEvent
 
 MAX_DIFF_BYTES = 2_000_000
 MAX_RESPONSE_BYTES = 2_000_000
+MAX_COMMIT_METADATA_BYTES = 2_000_000
+MAX_PULL_REQUEST_COMMITS = 250
+MAX_COMMIT_METADATA_PAGES = 3
 MAX_MERGE_REQUEST_DESCRIPTION_CHARS = 1_048_576
 MAX_DISCUSSION_PAGES = 20
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
@@ -99,6 +103,108 @@ async def fetch_gitlab_merge_request_diff(
             limit=MAX_DIFF_BYTES,
         )
         return content.decode("utf-8", errors="replace")
+
+    if client is not None:
+        return await fetch(client)
+    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
+    if timeout <= 0:
+        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    async with httpx.AsyncClient(timeout=timeout) as owned_client:
+        return await fetch(owned_client)
+
+
+def _gitlab_commit_metadata(value: object) -> CommitMetadata | None:
+    if not isinstance(value, dict):
+        return None
+    fields = (
+        value.get("id"),
+        value.get("message"),
+        value.get("author_name"),
+        value.get("author_email"),
+        value.get("committer_name"),
+        value.get("committer_email"),
+    )
+    if not all(isinstance(field, str) for field in fields):
+        return None
+    try:
+        return CommitMetadata(
+            sha=fields[0],
+            message=fields[1],
+            author_name=fields[2],
+            author_email=fields[3],
+            committer_name=fields[4],
+            committer_email=fields[5],
+        )
+    except ValueError:
+        return None
+
+
+async def fetch_gitlab_merge_request_commits(
+    event: PullRequestEvent,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> PullRequestCommits:
+    """Fetch bounded GitLab commit identities and trailers without source blobs."""
+
+    if event.provider != "gitlab":
+        raise ValueError("GitLab commit reader received a non-GitLab event")
+    url = f"{_merge_request_path(event)}/commits"
+
+    async def fetch(active_client: httpx.AsyncClient) -> PullRequestCommits:
+        commits: list[CommitMetadata] = []
+        complete = True
+        page = 1
+        pages_fetched = 0
+        while (
+            len(commits) < MAX_PULL_REQUEST_COMMITS
+            and pages_fetched < MAX_COMMIT_METADATA_PAGES
+        ):
+            pages_fetched += 1
+            response = await active_client.get(
+                url,
+                headers={
+                    **_headers(),
+                    "User-Agent": "diffuse-review-provenance",
+                },
+                params={"per_page": 100, "page": page},
+            )
+            response.raise_for_status()
+            if len(response.content) > MAX_COMMIT_METADATA_BYTES:
+                raise RuntimeError("GitLab commit metadata exceeds Diffuse's size limit")
+            value = response.json()
+            if not isinstance(value, list):
+                raise RuntimeError("GitLab returned invalid merge-request commits")
+            for item in value:
+                commit = _gitlab_commit_metadata(item)
+                if commit is None:
+                    complete = False
+                    continue
+                if len(commits) == MAX_PULL_REQUEST_COMMITS:
+                    complete = False
+                    break
+                commits.append(commit)
+            next_page = response.headers.get("X-Next-Page", "").strip()
+            if not next_page:
+                break
+            if not next_page.isdigit():
+                complete = False
+                break
+            if len(commits) >= MAX_PULL_REQUEST_COMMITS:
+                complete = False
+                break
+            if pages_fetched >= MAX_COMMIT_METADATA_PAGES:
+                complete = False
+                break
+            page = int(next_page)
+        if not commits or all(
+            commit.sha.casefold() != event.head_sha.casefold()
+            for commit in commits
+        ):
+            complete = False
+        return PullRequestCommits(
+            commits=tuple(commits[:MAX_PULL_REQUEST_COMMITS]),
+            complete=complete,
+        )
 
     if client is not None:
         return await fetch(client)

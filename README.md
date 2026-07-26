@@ -55,6 +55,29 @@ The webhook acknowledges work only after its delivery and review job are
 persisted. Workers use leases, bounded exponential retry, dead-letter state,
 revision deduplication, and queued-job supersession.
 
+## Deployment models
+
+Diffuse is proprietary software with two planned operating models:
+
+- **Self-hosted:** customers run the API, workers, PostgreSQL/pgvector,
+  repository storage, and model connections in infrastructure they control.
+  Standalone operation does not require a Diffuse-hosted control plane, and
+  source-derived data does not leave the customer environment unless the
+  operator explicitly configures an external model or integration.
+- **Managed cloud:** Diffuse operates the same versioned data plane and
+  PostgreSQL contract for the customer, with an additional cloud control plane
+  for accounts, subscriptions, provisioning, deployment management, and
+  support.
+
+Self-hosting is a deployment right, not an open-source license grant. The
+source repository remains private; customers receive authenticated, signed
+executable artifacts and installation documentation under a commercial
+agreement. See
+[ADR 0040](docs/adr/0040-proprietary-self-hosted-and-managed-cloud-distribution.md).
+The customer-facing, digest-pinned Compose profile and signature-verification
+instructions live in [`deploy/`](deploy/README.md); the root Compose file
+remains the source-workspace development profile.
+
 ## Local setup
 
 Requirements:
@@ -77,9 +100,9 @@ cp .env.example .env
 
 docker compose up -d --build
 
-docker compose run --rm migrate diffuse database status
+docker compose run --rm migrate database status
 
-docker compose run --rm worker diffuse repository add \
+docker compose run --rm worker repository add \
   --provider github \
   --base-url https://github.com \
   --repo owner/repository \
@@ -111,8 +134,8 @@ when the packaged migration history and baseline database contract are current.
 Back up PostgreSQL before upgrading. Inspect or verify schema state with:
 
 ```bash
-docker compose run --rm migrate diffuse database status
-docker compose run --rm migrate diffuse database verify
+docker compose run --rm migrate database status
+docker compose run --rm migrate database verify
 ```
 
 An installation created before versioned migrations has application tables but
@@ -121,7 +144,7 @@ backing up that database, explicitly adopt it; Diffuse first verifies every
 version-1 table and column plus pgvector:
 
 ```bash
-docker compose run --rm migrate diffuse database migrate \
+docker compose run --rm migrate database migrate \
   --adopt-existing \
   --actor operator@example.com
 ```
@@ -144,6 +167,9 @@ diffuse review -b origin/main --diff
 diffuse review --json
 diffuse review --agent
 diffuse review --resume
+diffuse model
+diffuse model --live
+diffuse evaluate evals/baseline.example.json
 ```
 
 The checkout must correspond to an enabled, indexed Diffuse repository. The
@@ -161,6 +187,25 @@ stores no source or model output, only bounded review identity under the Git
 common directory. `--resume` retries only if the repository, diff, base,
 untracked choice, index snapshot, policy fingerprint, model, and prompt version
 are unchanged; completed or drifted runs require a new review.
+
+`diffuse model` reports the selected LiteLLM provider, expected credential
+variable names, and readiness booleans without printing secret values.
+`diffuse model --live` makes a small schema-validated request and should be run
+before onboarding the first review repository.
+
+The versioned evaluation format under `evals/` matches labeled and observed
+findings one-to-one by category, path, and bounded line tolerance. It reports
+true bugs, false positives, false negatives, developer-addressed findings,
+precision, recall, F1, median latency, token use, and estimated cost:
+
+```bash
+diffuse evaluate evals/baseline.example.json \
+  --min-precision 0.80 \
+  --min-recall 0.60
+```
+
+The committed set is intentionally synthetic. Replace it with reviewed pull
+requests before using the thresholds as a product-quality claim.
 
 ### MCP
 
@@ -348,12 +393,28 @@ that supports another stored dimension must add a numbered migration for both
 `EMBEDDING_DIMENSIONS` consistently, and schedule compatible re-indexing.
 Never edit the frozen baseline migration.
 
-`REVIEW_MODEL` accepts LiteLLM model identifiers. `REVIEW_API_BASE` can point
-review generation at an operator-controlled OpenAI-compatible endpoint.
+`REVIEW_MODEL` accepts LiteLLM model identifiers. `REVIEW_VERIFIER_MODEL`
+optionally selects an independent verifier from another model family.
+`REVIEW_API_BASE` can point review generation at an operator-controlled
+OpenAI-compatible endpoint.
+OpenAI, Anthropic, Google Gemini, Azure, AWS Bedrock, Ollama, and other LiteLLM
+routes use their conventional provider configuration in the data plane; model
+credentials are never projected into the optional control plane.
 `REVIEW_STRUCTURED_OUTPUT_MODE=auto` uses provider-native schemas when
 available and otherwise uses schema-constrained prompting with local Pydantic
 validation. Invalid model output fails the durable attempt and is never posted
 to the SCM.
+
+Before generation, Diffuse deterministically inspects bounded PR/MR commit
+metadata—authors, committers, bot identities, verification state, and Git
+trailers such as `Co-authored-by` and `Made-with`. No model is called for this
+classification. Strong Anthropic attribution selects a configured non-Anthropic
+reviewer and strong OpenAI attribution selects a non-OpenAI reviewer. Cursor,
+Copilot, mixed, incomplete, or absent attribution cannot weaken or skip a
+review; those cases retain the configured candidate/verifier pair. Set
+`REVIEW_PROVENANCE_MIN_CONFIDENCE` to control when an opposing-family route is
+allowed. The evidence, confidence, selected models, and routing reason are
+stored with the immutable review run.
 
 Repository Q&A inherits `REVIEW_MODEL` and `REVIEW_API_BASE`; set
 `CODE_QUERY_MODEL` to choose a different LiteLLM model. Each call is bounded by
@@ -639,16 +700,16 @@ Operators can also group related onboarded repositories without changing every
 repository's committed configuration:
 
 ```bash
-docker compose run --rm worker diffuse cluster create product-stack \
+docker compose run --rm worker cluster create product-stack \
   --repository-id 1 \
   --repository-id 2 \
   --repository-id 3 \
   --actor operator@example.com
-docker compose run --rm worker diffuse cluster list
-docker compose run --rm worker diffuse cluster add 1 4 \
+docker compose run --rm worker cluster list
+docker compose run --rm worker cluster add 1 4 \
   --actor operator@example.com
-docker compose run --rm worker diffuse cluster remove 1 4
-docker compose run --rm worker diffuse cluster delete 1
+docker compose run --rm worker cluster remove 1 4
+docker compose run --rm worker cluster delete 1
 ```
 
 Cluster members must share one SCM provider and host. Explicit entries take
@@ -777,13 +838,13 @@ approves it. Suggestions may be inspected, edited, approved, rejected,
 deactivated, and reactivated with the operator CLI:
 
 ```bash
-docker compose run --rm worker diffuse learning list 1
-docker compose run --rm worker diffuse learning show 1 4
-docker compose run --rm worker diffuse learning edit 1 4 \
+docker compose run --rm worker learning list 1
+docker compose run --rm worker learning show 1 4
+docker compose run --rm worker learning edit 1 4 \
   --expected-version 1 \
   --actor operator@example.com \
   --guidance "API handlers must use the shared request validator."
-docker compose run --rm worker diffuse learning approve 1 4 \
+docker compose run --rm worker learning approve 1 4 \
   --expected-version 2 \
   --actor operator@example.com
 ```

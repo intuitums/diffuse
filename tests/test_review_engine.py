@@ -170,6 +170,59 @@ def test_review_generation_grounds_deduplicates_and_verifies_findings(monkeypatc
     assert len(finding.fingerprint) == 64
 
 
+def test_review_generation_uses_selected_candidate_and_verifier_models(monkeypatch):
+    monkeypatch.setenv("REVIEW_PASSES", "security")
+    calls: list[tuple[type, str]] = []
+
+    def fake_call(response_model, **kwargs):
+        calls.append((response_model, kwargs["model_name"]))
+        if response_model is CandidateBatch:
+            return (
+                CandidateBatch(
+                    analysis_summary="One candidate.",
+                    findings=[
+                        _candidate(
+                            title="Authorization bypass",
+                            line=1,
+                            confidence=0.95,
+                        )
+                    ],
+                ),
+                5,
+                2,
+            )
+        return (
+            VerificationBatch(
+                summary="Candidate verified.",
+                risk_score=7,
+                decisions=[
+                    VerificationDecision(
+                        candidate_id="candidate-0",
+                        keep=True,
+                        confidence=0.95,
+                        rationale="Directly evidenced.",
+                    )
+                ],
+            ),
+            3,
+            1,
+        )
+
+    monkeypatch.setattr(review_engine, "_call_structured", fake_call)
+
+    review_engine.generate_review(
+        DIFF,
+        [],
+        candidate_model="openrouter/anthropic/claude-sonnet-4.6",
+        verifier_model="openrouter/openai/gpt-5.2",
+    )
+
+    assert calls == [
+        (CandidateBatch, "openrouter/anthropic/claude-sonnet-4.6"),
+        (VerificationBatch, "openrouter/openai/gpt-5.2"),
+    ]
+
+
 def test_repository_minimum_severity_filters_verified_findings(monkeypatch):
     policy = resolve_review_policy(
         RepositoryPolicySnapshot(
@@ -636,6 +689,34 @@ def test_structured_call_requests_provider_schema_when_configured(monkeypatch):
 
     assert value == batch
     assert arguments[0]["response_format"] is CandidateBatch
+
+
+def test_structured_call_uses_openrouter_gateway_key(monkeypatch):
+    batch = CandidateBatch(analysis_summary="No issue.", findings=[])
+    arguments: list[dict] = []
+
+    def fake_completion(**kwargs):
+        arguments.append(kwargs)
+        return {
+            "choices": [{"message": {"content": batch.model_dump_json()}}],
+            "usage": {},
+        }
+
+    monkeypatch.setenv(
+        "REVIEW_MODEL",
+        "openrouter/anthropic/claude-sonnet-4.6",
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "gateway-key")
+    monkeypatch.setenv("REVIEW_STRUCTURED_OUTPUT_MODE", "prompt")
+    monkeypatch.setattr(review_engine.litellm, "completion", fake_completion)
+
+    review_engine._call_structured(
+        CandidateBatch,
+        system_prompt="System",
+        user_prompt="User",
+    )
+
+    assert arguments[0]["api_key"] == "gateway-key"
 
 
 def test_repository_policy_filters_diff_controls_passes_and_enforces_threshold(

@@ -886,6 +886,14 @@ def test_native_review_report_and_publication_are_durable_and_idempotent():
             base_sha=event.base_sha,
             head_sha=event.head_sha,
             model="openai/test-review-model",
+            verifier_model="openai/test-verifier-model",
+            provenance={
+                "schema_version": "diffuse-review-provenance-v1",
+                "classification": "ai_assisted",
+                "model_family": "anthropic",
+                "confidence": 0.9,
+            },
+            model_routing_reason="opposing_anthropic_reviewer",
             prompt_version="native-review-v1",
             context_fingerprint="c" * 64,
             context_snapshots=context_snapshots,
@@ -1009,7 +1017,10 @@ def test_native_review_report_and_publication_are_durable_and_idempotent():
                     publication.status,
                     publication.attempt_count,
                     run.confidence_score,
-                    run.review_number
+                    run.review_number,
+                    run.verifier_model,
+                    run.provenance->>'model_family',
+                    run.model_routing_reason
                 FROM review_runs AS run
                 JOIN review_publications AS publication
                   ON publication.review_run_id = run.id
@@ -1055,7 +1066,16 @@ def test_native_review_report_and_publication_are_durable_and_idempotent():
             context_state = cursor.fetchone()
         connection.rollback()
 
-    assert statuses == ("published", "published", 2, 2, 1)
+    assert statuses == (
+        "published",
+        "published",
+        2,
+        2,
+        1,
+        "openai/test-verifier-model",
+        "anthropic",
+        "opposing_anthropic_reviewer",
+    )
     assert finding_classifications == [
         (finding.fingerprint, "vulnerability"),
         (preventative_finding.fingerprint, "preventative"),

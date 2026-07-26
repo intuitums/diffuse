@@ -1,0 +1,115 @@
+name: diffuse
+
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg17@sha256:d2ef61f42ef767baa5a1475393303cc235bcd92febd9d7014eddb48b41f3bad0}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: diffuse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: diffuse
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U diffuse -d diffuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 1m
+
+  migrate:
+    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
+    restart: "no"
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command: ["database", "migrate"]
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ${DIFFUSE_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  app:
+    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - ${DIFFUSE_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
+      DIFFUSE_API_TOKEN: ${DIFFUSE_API_TOKEN:?Set DIFFUSE_API_TOKEN in .env}
+      DIFFUSE_PUBLIC_URL: ${DIFFUSE_PUBLIC_URL:?Set DIFFUSE_PUBLIC_URL in .env}
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - repository_data:/var/lib/diffuse/repositories
+      - ${DIFFUSE_SECRETS_DIR:-/srv/diffuse/secrets}:/srv/diffuse/secrets:ro
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 30s
+
+  worker:
+    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command: ["worker"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - ${DIFFUSE_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
+    volumes:
+      - repository_data:/var/lib/diffuse/repositories
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 30s
+
+volumes:
+  pgdata:
+  repository_data:

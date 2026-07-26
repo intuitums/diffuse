@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
+from typing import Literal
 
 import litellm
 from pydantic import BaseModel, ValidationError
@@ -79,10 +80,26 @@ class StructuredOutputValidationError(RuntimeError):
         self.completion_tokens = completion_tokens
 
 
+class ModelConnectionProbe(BaseModel):
+    ready: Literal[True]
+
+
 def review_model() -> str:
     value = os.environ.get("REVIEW_MODEL", DEFAULT_REVIEW_MODEL).strip()
     if not value:
         raise ValueError("REVIEW_MODEL cannot be empty")
+    return value
+
+
+def review_verifier_model() -> str:
+    value = os.environ.get("REVIEW_VERIFIER_MODEL", "").strip()
+    return value or review_model()
+
+
+def review_provenance_minimum_confidence() -> float:
+    value = float(os.environ.get("REVIEW_PROVENANCE_MIN_CONFIDENCE", "0.8"))
+    if not 0 <= value <= 1:
+        raise ValueError("REVIEW_PROVENANCE_MIN_CONFIDENCE must be between 0 and 1")
     return value
 
 
@@ -113,8 +130,15 @@ def minimum_review_confidence() -> float:
 
 
 def _model_api_key(model: str) -> str | None:
-    if model.startswith(("openai/", "gpt-", "o1", "o3", "o4")):
+    normalized = model.casefold()
+    if normalized.startswith("openrouter/"):
+        return os.environ.get("OPENROUTER_API_KEY")
+    if normalized.startswith(("openai/", "gpt-", "o1", "o3", "o4")):
         return os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_KEY")
+    if normalized.startswith(("anthropic/", "claude")):
+        return os.environ.get("ANTHROPIC_API_KEY")
+    if normalized.startswith(("gemini/", "google/")):
+        return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     return None
 
 
@@ -225,6 +249,18 @@ def _call_structured[T: BaseModel](
         value,
         prompt_tokens,
         completion_tokens,
+    )
+
+
+def verify_model_connection(model_name: str | None = None) -> None:
+    """Perform a minimal structured request without logging credentials."""
+    _call_structured(
+        ModelConnectionProbe,
+        system_prompt="You are a connectivity probe for Diffuse code review.",
+        user_prompt='Return {"ready": true}.',
+        model_name=model_name,
+        max_tokens=32,
+        timeout_seconds=min(_positive_int("REVIEW_MODEL_TIMEOUT_SECONDS", 180), 30),
     )
 
 
@@ -480,6 +516,8 @@ def _generate_diagram(
     diff_chunks: list[str],
     context_text: str,
     policy: ResolvedReviewPolicy | None,
+    *,
+    model_name: str | None = None,
 ) -> tuple[ReviewDiagram | None, int, int]:
     if (
         (policy is not None and not policy.diagram_included)
@@ -495,6 +533,7 @@ def _generate_diagram(
                 "when it materially improves understanding of the reviewed change."
             ),
             user_prompt=_diagram_prompt(parsed_diff, diff_chunks, context_text),
+            model_name=model_name,
             max_tokens=_positive_int("REVIEW_DIAGRAM_MAX_OUTPUT_TOKENS", 2500),
         )
     except StructuredOutputValidationError as error:
@@ -584,7 +623,11 @@ def generate_review(
     *,
     progress_callback: Callable[[], None] | None = None,
     policy: ResolvedReviewPolicy | None = None,
+    candidate_model: str | None = None,
+    verifier_model: str | None = None,
 ) -> ReviewReport:
+    selected_candidate_model = candidate_model or review_model()
+    selected_verifier_model = verifier_model or review_verifier_model()
     complete_diff = parse_unified_diff(diff_text)
     parsed_diff = (
         ParsedDiff(
@@ -643,6 +686,7 @@ def generate_review(
                     policy_text,
                     security_policy_text,
                 ),
+                model_name=selected_candidate_model,
             )
             prompt_tokens += input_tokens
             completion_tokens += output_tokens
@@ -656,6 +700,7 @@ def generate_review(
         chunks,
         context_text,
         policy,
+        model_name=selected_candidate_model,
     )
     prompt_tokens += diagram_prompt_tokens
     completion_tokens += diagram_completion_tokens
@@ -697,6 +742,7 @@ def generate_review(
             "Preserve critical security and correctness defects when directly evidenced."
         ),
         user_prompt=_verification_prompt(candidates, parsed_diff, policy_text),
+        model_name=selected_verifier_model,
     )
     prompt_tokens += input_tokens
     completion_tokens += output_tokens

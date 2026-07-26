@@ -24,16 +24,19 @@ services:
 
   migrate:
     build: .
+    image: ${DIFFUSE_IMAGE:-diffuse:local}
     restart: "no"
     init: true
     security_opt:
       - no-new-privileges:true
-    command: ["diffuse", "database", "migrate"]
+    command: ["database", "migrate"]
+    healthcheck:
+      disable: true
     depends_on:
       db:
         condition: service_healthy
     env_file:
-      - .env
+      - ${DIFFUSE_ENV_FILE:-.env}
     environment:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
     logging:
@@ -44,6 +47,7 @@ services:
 
   app:
     build: .
+    image: ${DIFFUSE_IMAGE:-diffuse:local}
     restart: unless-stopped
     init: true
     security_opt:
@@ -52,7 +56,7 @@ services:
       migrate:
         condition: service_completed_successfully
     env_file:
-      - .env
+      - ${DIFFUSE_ENV_FILE:-.env}
     environment:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
       DIFFUSE_API_TOKEN: ${DIFFUSE_API_TOKEN:?Set DIFFUSE_API_TOKEN in .env}
@@ -65,18 +69,6 @@ services:
       # or empty; sign-in simply stays disabled until the client secret is in
       # place, and the secret never reaches .env or an image layer.
       - ${DIFFUSE_SECRETS_DIR:-/srv/diffuse/secrets}:/srv/diffuse/secrets:ro
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - >-
-          import urllib.request;
-          urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5).read()
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
     logging:
       driver: json-file
       options:
@@ -86,16 +78,19 @@ services:
 
   worker:
     build: .
+    image: ${DIFFUSE_IMAGE:-diffuse:local}
     restart: unless-stopped
     init: true
     security_opt:
       - no-new-privileges:true
-    command: ["python", "-m", "service.worker"]
+    command: ["worker"]
+    healthcheck:
+      disable: true
     depends_on:
       migrate:
         condition: service_completed_successfully
     env_file:
-      - .env
+      - ${DIFFUSE_ENV_FILE:-.env}
     environment:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
     volumes:
