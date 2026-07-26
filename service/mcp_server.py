@@ -79,6 +79,7 @@ from service.mcp_store import (
 from service.review_trigger import (
     fetch_current_manual_review_event,
 )
+from service.scm import PLAINTEXT_ORIGIN_VARIABLE, plaintext_origin_allowed
 
 DEFAULT_ALLOWED_HOSTS = (
     "localhost:*",
@@ -102,6 +103,14 @@ def _public_url() -> str:
     ):
         raise ValueError(
             "DIFFUSE_PUBLIC_URL must be an HTTP(S) origin without credentials or a path"
+        )
+    # This origin is advertised to MCP clients, which then send their bearer
+    # token to it, so it is credential-bearing in exactly the same way an SCM
+    # base URL is.
+    if parsed.scheme == "http" and not plaintext_origin_allowed(parsed.hostname):
+        raise ValueError(
+            "DIFFUSE_PUBLIC_URL must use https; plaintext is accepted only for "
+            f"loopback or when {PLAINTEXT_ORIGIN_VARIABLE}=1"
         )
     return urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
 
@@ -266,6 +275,19 @@ def _database_write[T](callback: Callable[..., T], **kwargs) -> T:
         raise RuntimeError("Diffuse data store is unavailable") from None
 
 
+# FastMCP dispatches a synchronous tool inline on the event loop, and this MCP app shares
+# that loop with the webhook app in a single uvicorn process, so blocking psycopg2 work in
+# a tool stalls webhook deliveries and can time out the /ready healthcheck. Every tool
+# therefore offloads its blocking work to a worker thread; anyio copies the current context
+# into that thread, so the MCP access-token contextvar stays visible to the callbacks.
+async def _database_query_async[T](callback: Callable[..., T], **kwargs) -> T:
+    return await anyio.to_thread.run_sync(partial(_database_query, callback, **kwargs))
+
+
+async def _database_write_async[T](callback: Callable[..., T], **kwargs) -> T:
+    return await anyio.to_thread.run_sync(partial(_database_write, callback, **kwargs))
+
+
 public_url = _public_url()
 diffuse_mcp = FastMCP(
     "Diffuse",
@@ -297,13 +319,13 @@ diffuse_mcp = FastMCP(
 
 
 @diffuse_mcp.tool()
-def list_repositories(
+async def list_repositories(
     enabled: bool | None = None,
     limit: int = 20,
     offset: int = 0,
 ) -> dict[str, object]:
     """List onboarded repositories and active immutable index snapshots."""
-    return _database_query(
+    return await _database_query_async(
         list_mcp_repositories,
         enabled=enabled,
         limit=limit,
@@ -312,7 +334,7 @@ def list_repositories(
 
 
 @diffuse_mcp.tool()
-def get_review_analytics(
+async def get_review_analytics(
     startAt: Annotated[
         str,
         Field(
@@ -345,7 +367,7 @@ def get_review_analytics(
     author: Annotated[str | None, Field(min_length=1, max_length=255)] = None,
 ) -> dict[str, object]:
     """Report exact review, finding, engagement, and usage metrics."""
-    return _database_query(
+    return await _database_query_async(
         query_review_analytics,
         start_at=startAt,
         end_at=endAt,
@@ -358,7 +380,7 @@ def get_review_analytics(
 
 
 @diffuse_mcp.tool()
-def search_code(
+async def search_code(
     name: Annotated[
         str,
         Field(validation_alias=AliasChoices("name", "repository_name")),
@@ -386,7 +408,7 @@ def search_code(
     limit: Annotated[int, Field(ge=1, le=20)] = 8,
 ) -> dict[str, object]:
     """Search one authorized immutable code index with source permalinks."""
-    target = _database_query(
+    target = await _database_query_async(
         resolve_code_query_target,
         repository_name=name,
         remote=remote,
@@ -394,16 +416,19 @@ def search_code(
         remote_url=remoteUrl,
         include_related=includeRelated,
     )
-    return search_codebase(
-        target,
-        query=query,
-        path_prefix=path,
-        limit=limit,
+    return await anyio.to_thread.run_sync(
+        partial(
+            search_codebase,
+            target,
+            query=query,
+            path_prefix=path,
+            limit=limit,
+        )
     )
 
 
 @diffuse_mcp.tool()
-def ask_codebase(
+async def ask_codebase(
     name: Annotated[
         str,
         Field(validation_alias=AliasChoices("name", "repository_name")),
@@ -432,7 +457,7 @@ def ask_codebase(
 ) -> dict[str, object]:
     """Answer a repository question using only exact retrieved source ranges."""
     _require_mcp_generation_scope()
-    target = _database_query(
+    target = await _database_query_async(
         resolve_code_query_target,
         repository_name=name,
         remote=remote,
@@ -440,16 +465,19 @@ def ask_codebase(
         remote_url=remoteUrl,
         include_related=includeRelated,
     )
-    return answer_codebase_query(
-        target,
-        question=question,
-        path_prefix=path,
-        limit=limit,
+    return await anyio.to_thread.run_sync(
+        partial(
+            answer_codebase_query,
+            target,
+            question=question,
+            path_prefix=path,
+            limit=limit,
+        )
     )
 
 
 @diffuse_mcp.tool()
-def list_code_reviews(
+async def list_code_reviews(
     name: Annotated[
         str | None,
         Field(validation_alias=AliasChoices("name", "repository_name")),
@@ -472,7 +500,7 @@ def list_code_reviews(
     offset: int = 0,
 ) -> dict[str, object]:
     """List durable reviews, optionally filtered by repository, PR, or status."""
-    return _database_query(
+    return await _database_query_async(
         list_mcp_code_reviews,
         repository_name=name,
         remote=remote,
@@ -486,7 +514,7 @@ def list_code_reviews(
 
 
 @diffuse_mcp.tool()
-def list_merge_requests(
+async def list_merge_requests(
     name: Annotated[
         str | None,
         Field(validation_alias=AliasChoices("name", "repository_name")),
@@ -505,7 +533,7 @@ def list_merge_requests(
     offset: int = 0,
 ) -> dict[str, object]:
     """List durable pull/merge requests and their review activity."""
-    return _database_query(
+    return await _database_query_async(
         list_mcp_merge_requests,
         repository_name=name,
         remote=remote,
@@ -518,7 +546,7 @@ def list_merge_requests(
 
 
 @diffuse_mcp.tool()
-def list_pull_requests(
+async def list_pull_requests(
     name: Annotated[
         str | None,
         Field(validation_alias=AliasChoices("name", "repository_name")),
@@ -537,7 +565,7 @@ def list_pull_requests(
     offset: int = 0,
 ) -> dict[str, object]:
     """GitHub-compatible alias for list_merge_requests."""
-    return _database_query(
+    return await _database_query_async(
         list_mcp_merge_requests,
         repository_name=name,
         remote=remote,
@@ -550,7 +578,7 @@ def list_pull_requests(
 
 
 @diffuse_mcp.tool()
-def get_merge_request(
+async def get_merge_request(
     name: Annotated[
         str,
         Field(validation_alias=AliasChoices("name", "repository_name")),
@@ -570,7 +598,7 @@ def get_merge_request(
     ] = None,
 ) -> dict[str, object]:
     """Get pull-request metadata, Diffuse findings, and review history."""
-    return _database_query(
+    return await _database_query_async(
         get_mcp_merge_request,
         repository_name=name,
         remote=remote,
@@ -603,16 +631,13 @@ async def trigger_code_review(
 ) -> dict[str, object]:
     """Fetch current provider PR/MR state and queue an audited manual review."""
     authorization = _mcp_write_authorization()
-    target = await anyio.to_thread.run_sync(
-        partial(
-            _database_query,
-            get_mcp_review_trigger_target,
-            repository_name=name,
-            remote=remote,
-            default_branch=defaultBranch,
-            remote_url=remoteUrl,
-            pull_request_number=prNumber,
-        )
+    target = await _database_query_async(
+        get_mcp_review_trigger_target,
+        repository_name=name,
+        remote=remote,
+        default_branch=defaultBranch,
+        remote_url=remoteUrl,
+        pull_request_number=prNumber,
     )
     trigger_key = uuid4().hex
     event = await fetch_current_manual_review_event(
@@ -626,32 +651,29 @@ async def trigger_code_review(
         github_fetch=fetch_manual_pull_request_event,
         gitlab_fetch=fetch_manual_gitlab_merge_request_event,
     )
-    return await anyio.to_thread.run_sync(
-        partial(
-            _database_write,
-            enqueue_mcp_review_trigger,
-            event=event,
-            repository_id=int(target["repositoryId"]),
-        )
+    return await _database_write_async(
+        enqueue_mcp_review_trigger,
+        event=event,
+        repository_id=int(target["repositoryId"]),
     )
 
 
 @diffuse_mcp.tool()
-def get_code_review(
+async def get_code_review(
     codeReviewId: Annotated[
         str,
         Field(validation_alias=AliasChoices("codeReviewId", "code_review_id")),
     ],
 ) -> dict[str, object]:
     """Get one review's report, provenance, coverage, and structured findings."""
-    return _database_query(
+    return await _database_query_async(
         get_mcp_code_review,
         code_review_id=codeReviewId,
     )
 
 
 @diffuse_mcp.tool()
-def get_fix_handoff(
+async def get_fix_handoff(
     codeReviewId: Annotated[
         str,
         Field(validation_alias=AliasChoices("codeReviewId", "code_review_id")),
@@ -668,7 +690,7 @@ def get_fix_handoff(
     agent: AgentTarget = "mcp",
 ) -> dict[str, object]:
     """Build a revision-safe handoff for one current finding."""
-    return _database_query(
+    return await _database_query_async(
         get_mcp_fix_handoff,
         code_review_id=codeReviewId,
         finding_fingerprint=findingFingerprint,
@@ -677,7 +699,7 @@ def get_fix_handoff(
 
 
 @diffuse_mcp.tool()
-def get_fix_all_handoff(
+async def get_fix_all_handoff(
     codeReviewId: Annotated[
         str,
         Field(validation_alias=AliasChoices("codeReviewId", "code_review_id")),
@@ -685,7 +707,7 @@ def get_fix_all_handoff(
     agent: AgentTarget = "mcp",
 ) -> dict[str, object]:
     """Build a revision-safe handoff for every current finding in a review."""
-    return _database_query(
+    return await _database_query_async(
         get_mcp_fix_all_handoff,
         code_review_id=codeReviewId,
         agent=agent,
@@ -693,7 +715,7 @@ def get_fix_all_handoff(
 
 
 @diffuse_mcp.tool()
-def list_merge_request_comments(
+async def list_merge_request_comments(
     name: Annotated[
         str,
         Field(validation_alias=AliasChoices("name", "repository_name")),
@@ -720,7 +742,7 @@ def list_merge_request_comments(
     offset: int = 0,
 ) -> dict[str, object]:
     """List each current published Diffuse finding lineage for a pull request."""
-    return _database_query(
+    return await _database_query_async(
         list_mcp_merge_request_comments,
         repository_name=name,
         remote=remote,
@@ -735,7 +757,7 @@ def list_merge_request_comments(
 
 
 @diffuse_mcp.tool()
-def search_review_comments(
+async def search_review_comments(
     query: str,
     repository_id: int | None = None,
     include_addressed: bool = False,
@@ -743,7 +765,7 @@ def search_review_comments(
     offset: int = 0,
 ) -> dict[str, object]:
     """Search current published findings by title, body, evidence, or file path."""
-    return _database_query(
+    return await _database_query_async(
         search_mcp_review_comments,
         query=query,
         repository_id=repository_id,
@@ -754,7 +776,7 @@ def search_review_comments(
 
 
 @diffuse_mcp.tool()
-def search_greptile_comments(
+async def search_greptile_comments(
     query: str,
     limit: int = 10,
     includeAddressed: Annotated[
@@ -763,7 +785,7 @@ def search_greptile_comments(
     ] = False,
 ) -> dict[str, object]:
     """Compatibility alias for organization-wide Diffuse finding search."""
-    return _database_query(
+    return await _database_query_async(
         search_mcp_review_comments,
         query=query,
         include_addressed=includeAddressed,
@@ -773,7 +795,7 @@ def search_greptile_comments(
 
 
 @diffuse_mcp.tool()
-def list_custom_context(
+async def list_custom_context(
     repository_id: int | None = None,
     status: McpCustomContextStatus | None = None,
     type: Annotated[
@@ -788,7 +810,7 @@ def list_custom_context(
     offset: int = 0,
 ) -> dict[str, object]:
     """List inspectable feedback-derived rules and their repository scope."""
-    return _database_query(
+    return await _database_query_async(
         list_mcp_custom_context,
         repository_id=repository_id,
         status=status,
@@ -800,7 +822,7 @@ def list_custom_context(
 
 
 @diffuse_mcp.tool()
-def get_custom_context(
+async def get_custom_context(
     customContextId: Annotated[
         str,
         Field(
@@ -812,21 +834,21 @@ def get_custom_context(
     ],
 ) -> dict[str, object]:
     """Get operator context or a learned rule with provenance history."""
-    return _database_query(
+    return await _database_query_async(
         get_mcp_custom_context,
         custom_context_id=customContextId,
     )
 
 
 @diffuse_mcp.tool()
-def search_custom_context(
+async def search_custom_context(
     query: str,
     repository_id: int | None = None,
     limit: int = 10,
     offset: int = 0,
 ) -> dict[str, object]:
     """Search authorized custom context and learned rules by literal content."""
-    return _database_query(
+    return await _database_query_async(
         search_mcp_custom_context,
         query=query,
         repository_id=repository_id,
@@ -836,7 +858,7 @@ def search_custom_context(
 
 
 @diffuse_mcp.tool()
-def create_custom_context(
+async def create_custom_context(
     repository_id: int,
     body: str,
     applies_to: list[str],
@@ -846,7 +868,7 @@ def create_custom_context(
 ) -> dict[str, object]:
     """Create audited repository-scoped context; requires diffuse:mcp:write."""
     return {
-        "customContext": _database_write(
+        "customContext": await _database_write_async(
             create_custom_context_record,
             repository_id=repository_id,
             context_type=context_type,
@@ -859,7 +881,7 @@ def create_custom_context(
 
 
 @diffuse_mcp.tool()
-def update_custom_context(
+async def update_custom_context(
     customContextId: Annotated[
         str,
         Field(
@@ -897,7 +919,7 @@ def update_custom_context(
     metadata: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Edit operator context with optimistic concurrency and immutable audit."""
-    return _database_write(
+    return await _database_write_async(
         update_custom_context_record,
         custom_context_id=customContextId,
         expected_updated_at=expectedUpdatedAt,
@@ -910,7 +932,7 @@ def update_custom_context(
 
 
 @diffuse_mcp.tool()
-def delete_custom_context(
+async def delete_custom_context(
     customContextId: Annotated[
         str,
         Field(
@@ -933,7 +955,7 @@ def delete_custom_context(
     ],
 ) -> dict[str, object]:
     """Permanently delete operator context while retaining an audit tombstone."""
-    return _database_write(
+    return await _database_write_async(
         delete_custom_context_record,
         custom_context_id=customContextId,
         expected_updated_at=expectedUpdatedAt,

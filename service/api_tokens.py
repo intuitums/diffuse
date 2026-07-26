@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -54,6 +55,16 @@ class ServiceTokenRecord(ServiceTokenAccess):
     revoked_at: datetime | None
     revoked_by: str | None
     revocation_reason: str | None
+
+
+def generate_api_token() -> str:
+    """Mint a 32-byte CSPRNG service token. The operator sees it exactly once.
+
+    A single unsalted SHA-256 digest is only a safe credential store for a
+    high-entropy secret, so Diffuse mints the value instead of trusting an
+    operator-chosen string that a wordlist could recover from a database dump.
+    """
+    return secrets.token_urlsafe(32)
 
 
 def validate_api_token(value: str) -> str:

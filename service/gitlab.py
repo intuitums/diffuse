@@ -278,7 +278,19 @@ def verify_gitlab_webhook(
             raise _configuration_error(
                 "GitLab webhook authentication is not configured"
             )
-        if not legacy_token or not hmac.compare_digest(secret, legacy_token):
+        if not secret.isascii():
+            raise _configuration_error(
+                "GITLAB_WEBHOOK_SECRET must contain only ASCII characters"
+            )
+        # A caller-supplied header can carry non-ASCII codepoints (latin-1
+        # decoded obs-text), and hmac.compare_digest raises TypeError on those;
+        # such a token can never equal an ASCII secret, so reject it as an
+        # authentication failure rather than letting it become a 500.
+        if (
+            not legacy_token
+            or not legacy_token.isascii()
+            or not hmac.compare_digest(secret, legacy_token)
+        ):
             raise _authentication_error()
         delivery_id = idempotency_key or event_uuid
         authentication = "legacy_token"

@@ -13,7 +13,11 @@ from service.repository_indexing import (
     repository_api_base_url,
     repository_index_event,
 )
-from service.repository_mirror import RepositoryMirror, RepositoryMirrorError
+from service.repository_mirror import (
+    RepositoryMirror,
+    RepositoryMirrorError,
+    max_repository_bytes,
+)
 from service.scm import validate_repository_name
 
 
@@ -201,3 +205,91 @@ def test_repository_index_event_uses_enterprise_api_and_exact_commit(monkeypatch
     assert event.before_sha == "a" * 40
     assert event.after_sha == "b" * 40
     assert event.api_base_url == "https://github.example.com/api/v3"
+
+
+def _bomb_repository(tmp_path, *, payload):
+    source = tmp_path / "bomb-source"
+    remote = tmp_path / "bomb-remote.git"
+    source.mkdir()
+    _git(source, "init", "-b", "main")
+    _git(source, "config", "user.name", "Diffuse Test")
+    _git(source, "config", "user.email", "diffuse@example.invalid")
+    (source / "payload.txt").write_text(payload)
+    _git(source, "add", "payload.txt")
+    _git(source, "commit", "-m", "payload")
+    subprocess.run(
+        ["git", "clone", "--bare", str(source), str(remote)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return remote, _git(source, "rev-parse", "HEAD").stdout.strip()
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_repository_byte_ceiling_must_be_positive(monkeypatch, value):
+    monkeypatch.setenv("DIFFUSE_MAX_REPOSITORY_BYTES", value)
+
+    with pytest.raises(ValueError, match="DIFFUSE_MAX_REPOSITORY_BYTES must be positive"):
+        max_repository_bytes()
+
+
+def test_clone_over_the_byte_ceiling_is_refused_before_it_is_promoted(monkeypatch, tmp_path):
+    remote, commit = _bomb_repository(tmp_path, payload="content\n")
+    mirror_root = tmp_path / "mirrors"
+    repository = RegisteredRepository(
+        id=21,
+        scm_provider="github",
+        scm_base_url="https://github.com",
+        full_name="owner/repo",
+        default_branch="main",
+        clone_url=str(remote),
+        enabled=True,
+        mirror_state="unconfigured",
+        last_fetched_sha=None,
+        last_error_code=None,
+    )
+    monkeypatch.setenv("DIFFUSE_MAX_REPOSITORY_BYTES", "1024")
+    mirror = RepositoryMirror(repository, root=mirror_root)
+
+    with (
+        pytest.raises(RepositoryMirrorError, match="mirror exceeds the configured size limit"),
+        mirror.checkout(commit),
+    ):
+        pass
+
+    assert not mirror.mirror_path.exists()
+    assert not list(mirror_root.glob(".21-clone-*"))
+
+
+def test_checkout_refuses_a_tree_that_expands_past_the_byte_ceiling(monkeypatch, tmp_path):
+    # The payload compresses to a few kilobytes in the pack, so only measuring the
+    # expanded tree can catch it.
+    remote, commit = _bomb_repository(tmp_path, payload=("x" * 63 + "\n") * 65536)
+    mirror_root = tmp_path / "mirrors"
+    repository = RegisteredRepository(
+        id=22,
+        scm_provider="github",
+        scm_base_url="https://github.com",
+        full_name="owner/repo",
+        default_branch="main",
+        clone_url=str(remote),
+        enabled=True,
+        mirror_state="unconfigured",
+        last_fetched_sha=None,
+        last_error_code=None,
+    )
+    mirror = RepositoryMirror(repository, root=mirror_root)
+
+    monkeypatch.setenv("DIFFUSE_MAX_REPOSITORY_BYTES", str(64 * 1024 * 1024))
+    with mirror.checkout(commit) as checkout:
+        assert (checkout / "payload.txt").stat().st_size == 4 * 1024 * 1024
+
+    monkeypatch.setenv("DIFFUSE_MAX_REPOSITORY_BYTES", str(1024 * 1024))
+    with (
+        pytest.raises(RepositoryMirrorError, match="checkout exceeds the configured size limit"),
+        mirror.checkout(commit),
+    ):
+        pass
+
+    assert not list(mirror_root.glob(".22-worktree-*"))

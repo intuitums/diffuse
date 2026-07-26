@@ -40,6 +40,19 @@ def test_webhook_rejects_bad_signature(monkeypatch):
     assert response.status_code == 401
 
 
+def test_webhook_rejects_non_ascii_signature_as_unauthorized(monkeypatch):
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
+
+    # Raw obs-text bytes reach the app as a latin-1 decoded, non-ASCII str.
+    response = client.post(
+        "/webhook/github",
+        content=b"{}",
+        headers={b"X-Hub-Signature-256": b"sha256=\xc3\xa9"},
+    )
+
+    assert response.status_code == 401
+
+
 def test_webhook_rejects_oversized_body_before_parsing(monkeypatch):
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", SECRET)
     body = b"x" * (webhook_server.MAX_WEBHOOK_BODY_BYTES + 1)

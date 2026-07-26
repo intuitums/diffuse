@@ -19,6 +19,27 @@ BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 ACTION_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 TRIGGER_KINDS = {"automatic", "manual"}
 REVIEW_COMMENT_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+# `urlsplit().hostname` already lowercases and strips the brackets from an IPv6
+# literal, so these are the exact forms a parsed origin can present.
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+PLAINTEXT_ORIGIN_VARIABLE = "DIFFUSE_ALLOW_PLAINTEXT_ORIGINS"
+
+
+def plaintext_origin_allowed(hostname: str | None) -> bool:
+    """Decide whether an http:// origin may still receive a Diffuse credential.
+
+    Every origin normalized here goes on to carry an API token, a clone
+    credential, or the OAuth client-secret exchange, so plaintext hands those to
+    anyone on path. Loopback is exempt because the traffic never leaves the host
+    (and the CLI's own callback listener is loopback-only); the opt-out exists
+    for lab instances where the operator has accepted that risk knowingly.
+    """
+    if hostname in LOOPBACK_HOSTS:
+        return True
+    raw = os.environ.get(PLAINTEXT_ORIGIN_VARIABLE, "").strip()
+    if raw not in {"", "0", "1"}:
+        raise ValueError(f"{PLAINTEXT_ORIGIN_VARIABLE} must be 0 or 1")
+    return raw == "1"
 
 
 def scm_api_timeout_seconds() -> float:
@@ -42,6 +63,11 @@ def normalize_base_url(value: str, *, field_name: str) -> str:
         or any(part in {".", ".."} for part in unquote(parsed.path).split("/"))
     ):
         raise ValueError(f"{field_name} must be an absolute HTTP(S) URL without credentials")
+    if parsed.scheme == "http" and not plaintext_origin_allowed(parsed.hostname):
+        raise ValueError(
+            f"{field_name} must use https; plaintext is accepted only for loopback "
+            f"or when {PLAINTEXT_ORIGIN_VARIABLE}=1"
+        )
     return normalized
 
 

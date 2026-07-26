@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -578,6 +579,74 @@ def test_policy_globs_have_deterministic_repository_semantics(
     matches: bool,
 ):
     assert path_matches(pattern, path) is matches
+
+
+# Run the pathological patterns in a child interpreter: a backtracking matcher holds the
+# GIL, so an in-process guard would hang the whole suite instead of reporting a failure.
+_GLOB_COMPLEXITY_PROBE = """
+import json
+import time
+
+from repository_policy.models import PolicyLayer, RepositoryConfig, RepositoryPolicySnapshot
+from repository_policy.resolve import filter_matches, path_matches, resolve_review_policy
+
+pattern = "**/" * 20 + "x"
+path = "a/" * 30 + "b"
+measured = {}
+
+started = time.perf_counter()
+measured["path_match"] = path_matches(pattern, path)
+measured["path_seconds"] = time.perf_counter() - started
+
+started = time.perf_counter()
+measured["filter_match"] = filter_matches("**" * 12 + "x", "a" * 200 + "b")
+measured["filter_seconds"] = time.perf_counter() - started
+
+snapshot = RepositoryPolicySnapshot(
+    layers=(
+        PolicyLayer(
+            directory_path="",
+            source_path=".diffuse/config.json",
+            config=RepositoryConfig.model_validate(
+                {"version": 1, "review": {"ignored_paths": [pattern, "**/" * 20 + "b"]}}
+            ),
+        ),
+    )
+)
+started = time.perf_counter()
+resolved = resolve_review_policy(snapshot, (path,))
+measured["resolve_seconds"] = time.perf_counter() - started
+measured["ignored"] = not resolved.allows_path(path)
+
+print(json.dumps(measured))
+"""
+
+
+def test_repeated_globstar_patterns_cannot_wedge_matching():
+    # `.diffuse` config is attacker-supplied repository content, and this 61-character
+    # pattern never terminated while globs were translated into backtracking regexes.
+    completed = subprocess.run(
+        [sys.executable, "-c", _GLOB_COMPLEXITY_PROBE],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    measured = json.loads(completed.stdout)
+    assert measured["path_match"] is False
+    assert measured["filter_match"] is False
+    assert measured["ignored"] is True
+    assert measured["path_seconds"] < 1
+    assert measured["filter_seconds"] < 1
+    assert measured["resolve_seconds"] < 1
+
+    # Collapsing repeated globstars must not change ordinary glob semantics.
+    assert path_matches("**/" * 20 + "b", "a/" * 30 + "b") is True
+    assert path_matches("**/*.py", "src/nested/app.py") is True
+    assert path_matches("src/*.py", "src/nested/app.py") is False
+    assert filter_matches("release/{stable,latest}", "RELEASE/Stable") is True
 
 
 def test_empty_policy_fingerprint_is_stable():
