@@ -59,5 +59,4 @@ publication controls do not depend on model obedience.
 The current foundation is repository-scoped. Organization/team/dashboard rules,
 authorized API mutation, audit history, richer Cursor front matter, negative
 glob patterns, instruction precedence interoperability, and generated
-summaries/embeddings for policy documents remain parity work. ADR 0034 adds a
-strict compatibility import for current public root `greptile.json` concepts.
+summaries/embeddings for policy documents remain outstanding.

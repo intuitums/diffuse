@@ -668,9 +668,6 @@ def test_mcp_read_projections_use_durable_review_lineage_and_context():
         assert merge_request["mergeRequest"]["reviewsCount"] == 1
         assert merge_request["mergeRequest"]["commentsCount"] == 2
         assert compatible_merge_request == merge_request
-        assert compatible_merge_request["mergeRequest"]["greptileComments"] == (
-            compatible_merge_request["mergeRequest"]["diffuseComments"]
-        )
         assert reviews["total"] == 1
         assert compatible_reviews == reviews
         assert reviews["codeReviews"][0]["id"] == f"review_{review_id}"
@@ -734,7 +731,6 @@ def test_mcp_read_projections_use_durable_review_lineage_and_context():
         assert not validation_comment["addressed"]
         assert validation_comment["commentId"] == "github-comment-456"
         assert validation_comment["diffuseGenerated"]
-        assert validation_comment["greptileGenerated"]
         assert compatible_comments == comments
         assert non_generated_comments["total"] == 0
         assert search["total"] == 1

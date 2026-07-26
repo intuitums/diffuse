@@ -454,7 +454,6 @@ POLICY_BEARING_PATHS = (
     ".diffuse/rules.md",
     ".diffuse/files.json",
     "services/api/.diffuse/config.json",
-    "greptile.json",
     "AGENTS.md",
     "CLAUDE.md",
     "CONTRIBUTING.md",

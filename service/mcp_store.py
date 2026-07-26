@@ -738,7 +738,6 @@ def get_mcp_merge_request(
         "mergeRequest": {
             **_pull_request_json(dict(row), detailed=True),
             "diffuseComments": comments["comments"],
-            "greptileComments": comments["comments"],
             "codeReviews": reviews["codeReviews"],
         }
     }
@@ -827,8 +826,7 @@ def _finding_json(row: dict) -> dict[str, object]:
         "hasSuggestion": row["suggested_fix"] is not None,
         "suggestedFix": row["suggested_fix"],
         "addressed": row["lineage_status"] == "addressed",
-        # Compatibility clients use this public field to mean reviewer-generated.
-        "greptileGenerated": True,
+        # Public field meaning the comment was authored by the reviewer, not a human.
         "diffuseGenerated": True,
         "linkedMemory": None,
         "createdAt": _timestamp(row["finding_created_at"]),
@@ -1041,7 +1039,7 @@ def list_mcp_merge_request_comments(
 ) -> dict[str, object]:
     limit, offset = _page(limit, offset)
     if generated is not None and type(generated) is not bool:
-        raise ValueError("greptileGenerated must be a boolean")
+        raise ValueError("diffuseGenerated must be a boolean")
     repository_id = _repository_filter_id(
         conn,
         authorized_repository_ids=authorized_repository_ids,
@@ -1475,7 +1473,6 @@ def _custom_context_json(row: dict) -> dict[str, object]:
         "category": row["category"],
         "evidenceCount": int(row["evidence_count"]),
         "metadata": {},
-        "greptileGenerated": True,
         "diffuseGenerated": True,
         "repository": {
             "id": int(row["repository_id"]),
