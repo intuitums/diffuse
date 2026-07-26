@@ -42,7 +42,11 @@ def verify_signature(body: bytes, signature: str, secret: str) -> None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Webhook secret is not configured",
         )
-    if not signature.startswith("sha256="):
+    # Starlette decodes header bytes as latin-1 and the HTTP parsers accept
+    # obs-text, so an attacker can put non-ASCII codepoints in the header;
+    # hmac.compare_digest raises TypeError on those, which would surface as a
+    # 500 instead of an authentication failure.
+    if not signature.isascii() or not signature.startswith("sha256="):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid webhook signature",

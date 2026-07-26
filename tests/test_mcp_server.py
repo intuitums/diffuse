@@ -1,3 +1,6 @@
+import inspect
+import threading
+
 import httpx
 import pytest
 from mcp import ClientSession
@@ -868,6 +871,36 @@ async def test_mcp_review_trigger_dispatches_gitlab_with_instance_api(monkeypatc
     ]
 
 
+def test_github_api_base_url_keeps_enterprise_host_without_configured_api(monkeypatch):
+    monkeypatch.setenv("GITHUB_WEB_URL", "https://ghe.corp.example")
+    monkeypatch.delenv("GITHUB_API_URL", raising=False)
+
+    assert review_trigger.github_api_base_url("https://ghe.corp.example") == (
+        "https://ghe.corp.example/api/v3"
+    )
+    assert review_trigger.github_api_base_url("https://other.corp.example/") == (
+        "https://other.corp.example/api/v3"
+    )
+
+
+def test_github_api_base_url_uses_configured_primary_api(monkeypatch):
+    monkeypatch.setenv("GITHUB_WEB_URL", "https://ghe.corp.example")
+    monkeypatch.setenv("GITHUB_API_URL", "https://api.ghe.corp.example/v3/")
+
+    assert review_trigger.github_api_base_url("https://ghe.corp.example") == (
+        "https://api.ghe.corp.example/v3"
+    )
+
+
+def test_github_api_base_url_maps_public_github_to_public_api(monkeypatch):
+    monkeypatch.delenv("GITHUB_WEB_URL", raising=False)
+    monkeypatch.delenv("GITHUB_API_URL", raising=False)
+
+    assert review_trigger.github_api_base_url("https://github.com") == (
+        "https://api.github.com"
+    )
+
+
 def test_gitlab_api_base_url_uses_configured_primary_api(monkeypatch):
     monkeypatch.setenv("GITLAB_WEB_URL", "https://gitlab.internal")
     monkeypatch.setenv(
@@ -988,6 +1021,50 @@ def test_database_query_injects_repository_authorization(monkeypatch):
     assert connection.closed
 
 
+def test_every_registered_mcp_tool_is_async():
+    tools = mcp_server.diffuse_mcp._tool_manager.list_tools()
+    assert len(tools) >= 21
+
+    # FastMCP runs a synchronous tool inline on the event loop the webhook app shares,
+    # so a blocking tool stalls deliveries and the /ready healthcheck until it returns.
+    blocking = sorted(
+        tool.name for tool in tools if not inspect.iscoroutinefunction(tool.fn)
+    )
+    assert blocking == []
+    assert all(tool.is_async for tool in tools)
+
+
+@pytest.mark.anyio
+async def test_mcp_tool_runs_blocking_database_work_off_the_event_loop(monkeypatch):
+    class Connection:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    callback_threads = []
+
+    def list_repositories(conn, **kwargs):
+        callback_threads.append(threading.get_ident())
+        return {"repositories": []}
+
+    monkeypatch.setattr(mcp_server, "get_conn", lambda: connection)
+    monkeypatch.setattr(mcp_server, "list_mcp_repositories", list_repositories)
+    monkeypatch.setattr(
+        mcp_server,
+        "_authorized_repository_ids",
+        lambda: frozenset({7}),
+    )
+
+    result = await mcp_server.list_repositories(enabled=True, limit=5, offset=0)
+
+    assert result == {"repositories": []}
+    assert len(callback_threads) == 1
+    assert callback_threads[0] != threading.get_ident()
+    assert connection.closed
+
+
 def test_mcp_public_url_and_host_configuration_are_strict(monkeypatch):
     monkeypatch.setenv("DIFFUSE_PUBLIC_URL", "https://diffuse.example.com/")
     monkeypatch.setenv(
@@ -1006,3 +1083,13 @@ def test_mcp_public_url_and_host_configuration_are_strict(monkeypatch):
     monkeypatch.setenv("DIFFUSE_MCP_ALLOWED_HOSTS", "valid.example.com,bad/host")
     with pytest.raises(ValueError, match="hosts"):
         mcp_server._allowed_hosts()
+
+
+def test_mcp_public_url_requires_tls_off_loopback(monkeypatch):
+    monkeypatch.delenv("DIFFUSE_ALLOW_PLAINTEXT_ORIGINS", raising=False)
+    monkeypatch.setenv("DIFFUSE_PUBLIC_URL", "http://diffuse.example.com")
+    with pytest.raises(ValueError, match="must use https"):
+        mcp_server._public_url()
+
+    monkeypatch.setenv("DIFFUSE_PUBLIC_URL", "http://localhost:8000")
+    assert mcp_server._public_url() == "http://localhost:8000"

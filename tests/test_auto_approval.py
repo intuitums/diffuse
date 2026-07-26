@@ -447,3 +447,68 @@ def test_auto_approval_requires_full_clean_review(report, unresolved, reason):
 
     assert not decision.eligible
     assert decision.reason_code == reason
+
+
+POLICY_BEARING_PATHS = (
+    ".diffuse/config.json",
+    ".diffuse/rules.md",
+    ".diffuse/files.json",
+    "services/api/.diffuse/config.json",
+    "greptile.json",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    ".cursorrules",
+    "packages/web/AGENTS.md",
+    "packages/web/CONTRIBUTING.md",
+    ".cursor/rules/review.mdc",
+    "packages/web/.cursor/rules/review.mdc",
+    ".github/copilot-instructions.md",
+    "packages/web/.github/copilot-instructions.md",
+)
+
+
+@pytest.mark.parametrize("path", POLICY_BEARING_PATHS)
+def test_policy_bearing_paths_are_critical_risk(path):
+    assert (
+        assess_change_risk(
+            (path,),
+            changed_file_count=1,
+            changed_line_count=20,
+            diff_chars=800,
+        )
+        is AutoApprovalRisk.CRITICAL
+    )
+
+
+@pytest.mark.parametrize("path", POLICY_BEARING_PATHS)
+def test_policy_bearing_paths_are_never_auto_approved(path):
+    decision = evaluate_auto_approval(
+        _policy(
+            {
+                "auto_approval": {
+                    "enabled": True,
+                    "risk_ceiling": "critical",
+                }
+            },
+            (path,),
+        ),
+        _event(),
+        _diff(path, path),
+        _report(),
+    )
+
+    assert not decision.eligible
+    assert decision.reason_code == "critical_risk"
+
+
+def test_ordinary_documentation_stays_auto_approvable():
+    decision = evaluate_auto_approval(
+        _policy({"auto_approval": {"enabled": True}}, ("docs/contributing.md",)),
+        _event(),
+        _diff("docs/contributing.md", "docs/contributing.md"),
+        _report(),
+    )
+
+    assert decision.eligible
+    assert decision.risk_level is AutoApprovalRisk.LOW

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from indexer import chunker
 from indexer.chunker import _iter_files, chunk_file
 
 
@@ -50,3 +51,20 @@ def test_crlf_line_endings_preserve_definition_line_numbers(tmp_path: Path):
         (3, "first"),
         (6, "second"),
     ]
+
+
+def test_a_file_that_exhausts_the_stack_is_skipped_not_fatal(monkeypatch, tmp_path: Path):
+    (tmp_path / "hostile.py").write_text("value = " + " + ".join(["1"] * 20000) + "\n")
+    (tmp_path / "healthy.py").write_text("def normalize(value):\n    return value\n")
+    original_chunk_file = chunker.chunk_file
+
+    def failing_chunk_file(path: Path, repo_root: Path, **keywords):
+        if path.name == "hostile.py":
+            raise RecursionError("maximum recursion depth exceeded")
+        return original_chunk_file(path, repo_root, **keywords)
+
+    monkeypatch.setattr(chunker, "chunk_file", failing_chunk_file)
+
+    chunks = chunker.chunk_repo(tmp_path)
+
+    assert {chunk.file_path for chunk in chunks} == {"healthy.py"}
