@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import subprocess
 from collections.abc import Iterator
@@ -12,6 +13,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .graph_models import CodeSymbol
+
+LOGGER = logging.getLogger(__name__)
 
 DEFINITION_PATTERNS = {
     ".py": re.compile(r"^(?:async\s+def|def|class)\s+\w+", re.MULTILINE),
@@ -410,11 +413,16 @@ def chunk_repo(
     chunks: list[Chunk] = []
     for path in iter_repository_files(repo_root):
         file_path = path.relative_to(repo_root).as_posix()
-        chunks.extend(
-            chunk_file(
-                path,
-                repo_root,
-                symbols=symbols_by_file.get(file_path) if symbols is not None else None,
+        try:
+            chunks.extend(
+                chunk_file(
+                    path,
+                    repo_root,
+                    symbols=symbols_by_file.get(file_path) if symbols is not None else None,
+                )
             )
-        )
+        except RecursionError as error:
+            # Hostile nesting can exhaust the interpreter stack; skipping the file
+            # keeps the rest of the repository indexable.
+            LOGGER.warning("Skipping %s: %s", file_path, error)
     return chunks

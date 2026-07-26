@@ -18,13 +18,16 @@ def github_api_base_url(scm_base_url: str) -> str:
         "GITHUB_WEB_URL",
         "https://github.com",
     ).rstrip("/")
-    if scm_base_url.rstrip("/") == configured_web_url:
-        return os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip(
-            "/"
-        )
-    if scm_base_url.rstrip("/") == "https://github.com":
+    normalized = scm_base_url.rstrip("/")
+    if normalized == configured_web_url:
+        # Only an explicit GITHUB_API_URL may override the host-derived endpoint: defaulting
+        # to api.github.com here would send an enterprise token to public GitHub.
+        configured_api_url = os.environ.get("GITHUB_API_URL")
+        if configured_api_url:
+            return configured_api_url.rstrip("/")
+    if normalized == "https://github.com":
         return "https://api.github.com"
-    return f"{scm_base_url.rstrip('/')}/api/v3"
+    return f"{normalized}/api/v3"
 
 
 def gitlab_api_base_url(scm_base_url: str) -> str:
