@@ -1,0 +1,38 @@
+{
+  "schema_version": "diffuse-evaluation-v1",
+  "name": "synthetic-review-baseline",
+  "model": "openai/gpt-4.1-mini",
+  "pricing": {
+    "input_usd_per_million_tokens": 0,
+    "output_usd_per_million_tokens": 0
+  },
+  "cases": [
+    {
+      "case_id": "signature-bypass",
+      "expected": [
+        {
+          "finding_id": "signature-bypass-1",
+          "file_path": "service/webhook.py",
+          "line": 42,
+          "category": "security",
+          "severity": "critical",
+          "line_tolerance": 3
+        }
+      ],
+      "observed": [],
+      "addressed_finding_ids": [],
+      "latency_ms": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0
+    },
+    {
+      "case_id": "clean-documentation-change",
+      "expected": [],
+      "observed": [],
+      "addressed_finding_ids": [],
+      "latency_ms": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0
+    }
+  ]
+}
