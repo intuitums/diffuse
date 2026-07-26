@@ -6,20 +6,15 @@ Status: Accepted
 
 ## Context
 
-Greptile's documented review anatomy exposes a 0–5 confidence score, a review
-counter, a link to the last reviewed commit, and a re-trigger control. Diffuse
-already stored a 0–10 risk score and pinned GitHub review publication to a
-commit, but it did not expose a distinct merge-readiness score or a durable
-human-readable review sequence.
+A published review needs to expose a 0–5 confidence score, a review counter, a
+link to the last reviewed commit, and a re-trigger control. Diffuse already
+stored a 0–10 risk score and pinned GitHub review publication to a commit, but
+it did not expose a distinct merge-readiness score or a durable human-readable
+review sequence.
 
 Letting a model state its own confidence would make the merge signal hard to
 audit. Counting remote comments at render time would make numbering sensitive
 to eventual consistency, deleted comments, and publication retries.
-
-Public references:
-
-- <https://www.greptile.com/docs/code-review/first-pr-review>
-- <https://www.greptile.com/docs/code-review/greptile-json-reference>
 
 ## Decision
 

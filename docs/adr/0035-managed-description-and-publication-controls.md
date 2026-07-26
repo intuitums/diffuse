@@ -6,7 +6,7 @@ Status: Accepted
 
 ## Context
 
-The public `greptile.json` contract can place review output in a pull-request
+Repository configuration needs to place review output in a pull-request
 description, disable the main status comment, and disable AI-fix prompts.
 Diffuse already separated review generation from retryable provider
 publication, so resolving any of these settings at publication time would let
@@ -19,7 +19,6 @@ blind writes could apply an old report to a newer head.
 
 Public provider contracts:
 
-- <https://www.greptile.com/docs/code-review/greptile-json-reference>
 - <https://docs.github.com/en/rest/pulls/pulls>
 - <https://docs.gitlab.com/api/merge_requests/>
 
@@ -51,8 +50,8 @@ Public provider contracts:
 
 ## Consequences
 
-Repositories can migrate all three public publication preferences without a
-lossy compatibility exception. GitHub and GitLab retries converge on one
+Repositories can adopt all three publication preferences without a lossy
+compatibility exception. GitHub and GitLab retries converge on one
 commit-linked description region, preserve human text, and refuse stale-head
 writes. The loop guard is content-based rather than actor-based, so it works
 with tokens, apps, and self-managed instances without trusting a mutable bot

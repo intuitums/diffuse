@@ -17,11 +17,8 @@ Plain search reads an existing immutable index, while repository Q&A invokes a
 generation model. A generic read credential must not implicitly authorize that
 cost or data-processing action.
 
-Relevant public contracts:
+Relevant specification:
 
-- <https://www.greptile.com/docs/introduction.md>
-- <https://www.greptile.com/docs/mcp-v2/tools.md>
-- <https://www.greptile.com/docs/analytics.md>
 - <https://www.rfc-editor.org/rfc/rfc9457>
 
 ## Decision

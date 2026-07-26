@@ -6,20 +6,15 @@ Status: Accepted
 
 ## Context
 
-Greptile's public MCP surface connects pull-request discovery, review
-triggering, findings, and custom context. Diffuse already exposed review
-outcomes, but could not safely list PR lifecycle state, re-run a review from an
-IDE, or create context that actually influenced future reviews.
+The MCP surface needs to connect pull-request discovery, review triggering,
+findings, and custom context. Diffuse already exposed review outcomes, but could
+not safely list PR lifecycle state, re-run a review from an IDE, or create
+context that actually influenced future reviews.
 
 Treating MCP input or the last webhook payload as authoritative for a re-run
 would risk reviewing a stale commit. Storing context without incorporating it
 into immutable review provenance would make the tool appear successful while
 leaving review behavior unchanged.
-
-Public references:
-
-- <https://www.greptile.com/docs/mcp/overview>
-- <https://www.greptile.com/docs/mcp/tools>
 
 ## Decision
 
@@ -52,8 +47,8 @@ can create standards that affect subsequent reviews without bypassing source
 control or authorization boundaries. Historical review provenance remains
 stable even if context later changes or is removed.
 
-Organization/team context remains future parity work. Public repository
-descriptor and comment-tool compatibility is addressed by ADR 0024;
+Organization/team context remains future work. The repository descriptor and
+comment-tool contract is addressed by ADR 0024;
 revision-safe agent handoff is addressed by ADR 0025; audited
 update/deactivate/delete operations are addressed by ADR 0027; provider-neutral
 GitHub/GitLab MCP review triggering is addressed by ADR 0033.

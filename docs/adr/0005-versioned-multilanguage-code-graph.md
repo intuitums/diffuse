@@ -52,5 +52,4 @@ size but avoid a broad runtime language pack and runtime executable downloads.
 The foundation does not yet provide full compiler-grade type resolution,
 conditional-build interpretation, macro expansion, generated-code mapping, or
 stable rename identity. Language-specific eval sets and richer usage,
-interface, test, schema, and package-resolution edges remain required for full
-parity.
+interface, test, schema, and package-resolution edges remain outstanding.

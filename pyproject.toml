@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=75"]
+# >=77 is required for the SPDX license expression below.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +8,11 @@ name = "diffuse-code-review"
 version = "0.1.0"
 description = "Self-hostable code intelligence and review platform"
 requires-python = ">=3.12"
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
+# Diffuse is proprietary and must never be published to a public index.
+# PyPI rejects any distribution carrying this classifier.
+classifiers = ["Private :: Do Not Upload"]
 dynamic = ["dependencies"]
 
 [project.scripts]

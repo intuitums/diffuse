@@ -16,10 +16,9 @@ could be ignored by the model, and would leave no reliable record of why a
 review did not appear. Trusting arbitrary issue commenters to force model work
 would also create a cost-abuse path.
 
-Greptile's public review contract includes draft/update controls,
-label/author/target-branch/keyword filters, file-change limits, and manual PR
-comment triggers. Diffuse needs the same operator outcomes inside its
-self-hosted boundary.
+Operators need draft/update controls, label/author/target-branch/keyword
+filters, file-change limits, and manual PR comment triggers, and those outcomes
+must be reachable entirely inside the self-hosted boundary.
 
 ## Decision
 

@@ -1,0 +1,98 @@
+Diffuse — Proprietary Software License
+
+Copyright (c) 2026 intuitumxyz. All rights reserved.
+
+This software and its source code, documentation, configuration, and
+accompanying materials (collectively, the "Software") are the confidential and
+proprietary property of intuitumxyz. The Software is licensed, not sold.
+
+NOTICE
+
+This is not open-source software. No license under any copyright, patent,
+trademark, or other intellectual property right is granted except as expressly
+stated in this notice or in a separate written agreement signed by intuitumxyz
+(a "Commercial Agreement").
+
+The Software being self-hostable does not make it open source. A right to
+operate the Software inside infrastructure you control is a deployment right
+conveyed under a Commercial Agreement. It is not a license to the source
+repository.
+
+PERMITTED USE
+
+Absent a Commercial Agreement, and only for a person or entity that has
+received the Software directly from intuitumxyz with written authorization, the
+Software may be used solely for internal evaluation of its fitness for purpose.
+Evaluation use confers no right to operate the Software in production, to
+process third-party data with it, or to rely on it for any business purpose.
+
+Any other use requires a Commercial Agreement.
+
+RESTRICTIONS
+
+Except as expressly permitted by a Commercial Agreement or by law that cannot
+be waived by contract, you may not:
+
+  (a) copy, publish, disclose, distribute, sublicense, sell, rent, lease, or
+      otherwise make the Software available to any third party;
+  (b) modify, adapt, translate, or create derivative works of the Software;
+  (c) reverse engineer, decompile, or disassemble the Software, or attempt to
+      derive its source code from any executable artifact;
+  (d) remove, obscure, or alter any proprietary notice, attribution, or license
+      mechanism in the Software;
+  (e) use the Software to develop, train, or improve a competing product or
+      service, or to benchmark it for publication;
+  (f) operate the Software as a hosted, managed, or multi-tenant service for
+      any third party; or
+  (g) use the name, logo, or trademarks of intuitumxyz without prior written
+      permission.
+
+CONFIDENTIALITY
+
+The Software constitutes a trade secret of intuitumxyz. You must protect it
+using at least the care you use for your own confidential information of like
+importance, and must not disclose it to any person other than your employees
+and contractors who need access for a permitted use and who are bound by
+confidentiality obligations no less protective than these.
+
+THIRD-PARTY COMPONENTS
+
+The Software incorporates third-party open-source components, which remain
+governed by their own licenses. Those licenses apply to those components only
+and grant no rights in the Software as a whole.
+
+DATA
+
+The Software is designed so that repository source, mirrors, embeddings,
+findings, and review state remain within the operator's environment. Nothing in
+this notice grants intuitumxyz any right to your source code or data.
+Configuring the Software to use an external model provider or integration sends
+data to that third party under that third party's terms, not these.
+
+NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NONINFRINGEMENT. WITHOUT LIMITING
+THE FOREGOING, THE SOFTWARE PERFORMS AUTOMATED CODE REVIEW USING PROBABILISTIC
+MODELS. IT DOES NOT GUARANTEE THE DETECTION OF ANY DEFECT, VULNERABILITY, OR
+DEFICIENCY, AND IT IS NOT A SUBSTITUTE FOR HUMAN REVIEW, TESTING, OR SECURITY
+ASSESSMENT.
+
+LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL INTUITUMXYZ BE LIABLE
+FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR
+ITS USE, INCLUDING ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY,
+OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS, REVENUE, DATA, OR GOODWILL.
+
+TERMINATION
+
+Any right granted here terminates automatically and immediately upon breach of
+this notice, and may be terminated by intuitumxyz at any time for evaluation
+use. On termination you must cease all use and destroy all copies of the
+Software in your possession or control. Termination of an entitlement does not
+prevent backup, export, or safe shutdown of data you own.
+
+Questions about licensing: legal@intuitum.xyz

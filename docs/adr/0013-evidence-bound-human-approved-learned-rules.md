@@ -6,9 +6,9 @@ Status: Accepted
 
 ## Context
 
-Greptile documents suggested rules inferred from repeated team behavior after
-roughly ten pull requests. Suggestions can be inspected, modified, approved,
-or ignored, and custom-context entries expose evidence, scopes, and
+Teams need suggested rules inferred from repeated team behavior after roughly
+ten pull requests. Suggestions must be inspectable, modifiable, approvable, or
+ignorable, and custom-context entries must expose evidence, scopes, and
 `SUGGESTED`, `ACTIVE`, or `INACTIVE` state.
 
 Feeding raw comments or reaction totals directly into review prompts would make
@@ -16,12 +16,6 @@ behavior opaque, non-reproducible, and vulnerable to prompt injection. A model
 also cannot be allowed to activate its own inferred policy. Generation may race
 new feedback, retries may repeat output, and a later rule edit must not rewrite
 the provenance of an earlier review.
-
-Public references:
-
-- <https://www.greptile.com/docs/code-review/custom-standards>
-- <https://www.greptile.com/docs/how-greptile-works/memory-and-learning>
-- <https://www.greptile.com/docs/mcp/custom-context>
 
 ## Decision
 
@@ -66,4 +60,4 @@ The current implementation learns only from Diffuse finding-thread feedback and
 commit outcomes. Top-level human review comments, GitLab, organization/team
 scope, verified web/API identities, semantic clustering beyond bounded
 near-duplicate comparison, evaluation dashboards, and adaptive noise ranking
-remain parity work.
+remain outstanding.
