@@ -46,6 +46,48 @@ GitHub / GitLab / CLI / MCP / Web app
            model and embedding gateway
 ```
 
+## Deployment and ownership boundary
+
+Diffuse uses one PostgreSQL-backed data plane in two operating models:
+
+```text
+Proprietary self-hosted
+  Customer operator
+        |
+  Diffuse API + workers + web app
+        |
+  Customer PostgreSQL/pgvector + repository storage
+
+Managed cloud
+  Diffuse cloud control plane
+    accounts / billing / entitlements / provisioning / fleet projections
+        |
+  Managed Diffuse API + workers + web app
+        |
+  Managed PostgreSQL/pgvector + repository storage
+```
+
+The managed service runs the same application and migration artifacts as the
+self-hosted product. PostgreSQL remains authoritative for repository,
+source-derived, review, workflow, feedback, and learning state in both modes.
+A future cloud control plane may use Convex or another application backend for
+cloud-only concerns, but standalone installations do not depend on it.
+
+Connected installations communicate with a cloud control plane through signed,
+versioned, idempotent commands and events. Cloud status and fleet views are
+rebuildable projections, never a second source of truth. Source, diffs,
+embeddings, prompts, evidence, findings, and learned rules are excluded from
+that control-plane contract. Self-hosted telemetry and diagnostic upload are
+opt-in.
+
+Proprietary releases are delivered as authenticated, signed, digest-pinned
+artifacts built from the private source repository. Runtime images omit the
+source checkout and build-only material and may compile the Python application
+to avoid shipping plain source files. This raises the cost of inspection but
+does not claim to prevent a customer who controls the host from reverse
+engineering an executable. ADR 0040 records the distribution and ownership
+decision.
+
 ### Control plane
 
 - Web UI and versioned REST API. The v1 REST foundation already exposes
@@ -55,6 +97,9 @@ GitHub / GitLab / CLI / MCP / Web app
 - Organizations, teams, users, roles, repositories, integrations, policies,
   rules, model settings, audit events, analytics, and operational state.
 - OAuth/OIDC/SAML and scoped service-token authentication.
+- In managed cloud, a separate provider-operated control plane owns
+  subscriptions, entitlements, provisioning, deployment registry, and fleet
+  operations without owning source-derived data-plane state.
 
 ### SCM adapters
 
@@ -257,6 +302,32 @@ The review workflow is stateful and multi-turn:
 
 Model output is parsed into a versioned schema. Raw model text is never posted
 directly as an SCM action.
+
+Before any review-model call, the worker fetches a bounded list of commit
+metadata from the SCM and classifies authors, committers, verified bot
+identities, and attribution trailers with deterministic rules. The classifier
+never receives source and never invokes an LLM. High-confidence Anthropic or
+OpenAI provenance makes the configured opposing family the candidate generator
+and keeps the other configured model as the independent verifier; routing
+permutes the configured pair and never contracts it onto a single model, so the
+second opinion survives exactly where it matters most. Mixed or tool-only
+attribution such as Cursor or Copilot retains cross-family candidate and
+verifier models because the underlying generation model is not provable.
+
+Only identities the SCM itself asserts—a bot login, or an agent email on a
+commit whose signature the provider verified—can reach the routing threshold.
+Git author names, author emails, and commit-message trailers are written by
+whoever produced the commit, so they are recorded as evidence but capped below
+it; otherwise the author of a change could choose which model reviews it.
+GitHub returns the actor and verification state with the commit list. GitLab
+returns neither, so for merge-request commits that name a recognized agent
+identity Diffuse makes one bounded additional request for GitLab's own
+signature verdict; without it GitLab provenance would be detectable but never
+routable. Commits with no recognized identity cost no extra request, and a
+failed or unavailable lookup leaves the commit unverified.
+Missing, stale, or forgeable metadata can only increase uncertainty: it never
+disables a review or selects a weaker trigger policy. The evidence, confidence,
+model plan, and routing reason are commit-pinned review-run state.
 
 GitHub publication attaches eligible findings to exact diff lines and creates
 Checks annotations. GitLab publication uses the API-authoritative

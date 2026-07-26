@@ -14,7 +14,10 @@ observable system.
   adoption, status/verification commands, and a Compose startup gate. Add
   release-by-release downgrade policy, backup/restore drills, and migration
   compatibility CI across supported versions.
-- Create baseline retrieval/review/security eval fixtures.
+- The versioned review-evaluation harness now measures labeled true bugs,
+  false positives/negatives, addressed findings, precision/recall/F1, median
+  latency, tokens, and estimated cost. Replace the committed synthetic example
+  with reviewed private PR fixtures and establish release gates.
 - Replace free-form environment access with validated configuration.
 
 Exit: every planned capability has an owner component, data boundary, and
@@ -228,11 +231,39 @@ expose control-plane credentials.
   policy-eligibility and versioned cost inputs, usage limits, and governance
   policy.
 - Ship supported Compose, Helm/Kubernetes, and air-gapped distributions.
-- Add backups, restore drills, migration rollback, telemetry controls,
-  structured observability, signed images, and SBOMs.
+- Extend the existing private multi-architecture image pipeline and
+  digest-pinned Compose bundle with Helm/Kubernetes and air-gapped profiles.
+  The current final image already packages one non-root executable without
+  plain Python source or build-only material.
+- Extend the existing keyless image signing, provenance, and SBOM attestations
+  with connected update entitlement, offline signed entitlement files and
+  update bundles, and documented commercial support windows.
+- Add backups, restore drills, migration rollback, opt-in telemetry controls,
+  structured observability, and safe data export independent of entitlement
+  state.
 
 Exit: small and large self-hosted installations have documented SLOs,
-recoverability, upgrade paths, and security controls.
+recoverability, upgrade paths, proprietary distribution, and security
+controls without a required Diffuse-hosted control plane.
+
+## Phase 7 — Managed cloud service
+
+- Operate the same versioned API, worker, PostgreSQL/pgvector, repository
+  storage, and migration artifacts used by self-hosted installations.
+- Build cloud account, subscription, entitlement, provisioning, regional
+  placement, deployment registry, support, and fleet-operation capabilities.
+- Add a signed, replay-bounded data-plane status contract for rebuildable
+  projections, with a durable outbox, per-deployment key rotation, version
+  negotiation, and idempotent command handling.
+- Keep source, diffs, embeddings, prompts, evidence, findings, workflow state,
+  and learned rules in the managed data plane rather than the cloud
+  control-plane database.
+- Add tenant isolation, managed secret storage, regional backups, restore
+  drills, capacity management, metering, billing reconciliation, SLOs, and
+  incident-response procedures.
+
+Exit: online customers can buy the same Diffuse engine as a managed service
+without forking its database, review behavior, or release train.
 
 ## Continuous workstreams
 
