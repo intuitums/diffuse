@@ -407,10 +407,18 @@ to the SCM.
 Before generation, Diffuse deterministically inspects bounded PR/MR commit
 metadata—authors, committers, bot identities, verification state, and Git
 trailers such as `Co-authored-by` and `Made-with`. No model is called for this
-classification. Strong Anthropic attribution selects a configured non-Anthropic
-reviewer and strong OpenAI attribution selects a non-OpenAI reviewer. Cursor,
+classification. Strong Anthropic attribution makes a configured non-Anthropic
+model the candidate generator, and strong OpenAI attribution makes a non-OpenAI
+model the generator; the other configured model stays on as the independent
+verifier, so routing reorders the pair rather than collapsing it. Cursor,
 Copilot, mixed, incomplete, or absent attribution cannot weaken or skip a
-review; those cases retain the configured candidate/verifier pair. Set
+review; those cases retain the configured candidate/verifier pair.
+
+Only identities GitHub or GitLab themselves assert—a bot login, or an agent
+email on a verified-signature commit—can reach the routing threshold. Git author
+names, emails, and trailers are freely settable by whoever wrote the commit, so
+they are recorded as evidence but never route on their own; without this a
+pull-request author could pick the model that reviews their own change. Set
 `REVIEW_PROVENANCE_MIN_CONFIDENCE` to control when an opposing-family route is
 allowed. The evidence, confidence, selected models, and routing reason are
 stored with the immutable review run.

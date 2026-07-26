@@ -307,12 +307,21 @@ Before any review-model call, the worker fetches a bounded list of commit
 metadata from the SCM and classifies authors, committers, verified bot
 identities, and attribution trailers with deterministic rules. The classifier
 never receives source and never invokes an LLM. High-confidence Anthropic or
-OpenAI provenance routes every review stage to the configured opposing family;
-mixed or tool-only attribution such as Cursor or Copilot retains cross-family
-candidate and verifier models because the underlying generation model is not
-provable. Missing, stale, or forgeable metadata can only increase uncertainty:
-it never disables a review or selects a weaker trigger policy. The evidence,
-confidence, model plan, and routing reason are commit-pinned review-run state.
+OpenAI provenance makes the configured opposing family the candidate generator
+and keeps the other configured model as the independent verifier; routing
+permutes the configured pair and never contracts it onto a single model, so the
+second opinion survives exactly where it matters most. Mixed or tool-only
+attribution such as Cursor or Copilot retains cross-family candidate and
+verifier models because the underlying generation model is not provable.
+
+Only identities the SCM itself asserts—a bot login, or an agent email on a
+commit whose signature the provider verified—can reach the routing threshold.
+Git author names, author emails, and commit-message trailers are written by
+whoever produced the commit, so they are recorded as evidence but capped below
+it; otherwise the author of a change could choose which model reviews it.
+Missing, stale, or forgeable metadata can only increase uncertainty: it never
+disables a review or selects a weaker trigger policy. The evidence, confidence,
+model plan, and routing reason are commit-pinned review-run state.
 
 GitHub publication attaches eligible findings to exact diff lines and creates
 Checks annotations. GitLab publication uses the API-authoritative

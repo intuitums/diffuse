@@ -112,3 +112,14 @@ jobs:
               \( -name "*.py" -o -name "*.pyc" -o -name "*.pyo" \) \
               -print -quit | grep -q .
           '
+          # Parser distribution metadata must ship, or INDEX_FORMAT_VERSION
+          # stops tracking grammar upgrades and stale indexes survive an
+          # upgrade. See indexer/index_version.py.
+          docker run --rm --entrypoint /bin/sh diffuse:test -c '
+            for dist in tree_sitter tree_sitter_c tree_sitter_cpp tree_sitter_go \
+                tree_sitter_java tree_sitter_javascript tree_sitter_php \
+                tree_sitter_ruby tree_sitter_rust tree_sitter_typescript; do
+              ls -d /opt/diffuse/_internal/"${dist}"-*.dist-info >/dev/null 2>&1 \
+                || { echo "missing parser metadata: ${dist}" >&2; exit 1; }
+            done
+          '

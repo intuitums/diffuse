@@ -6,47 +6,27 @@ import argparse
 import json
 import os
 
+from service.model_providers import model_family, resolve_provider
 from service.review_engine import (
     review_model,
     review_verifier_model,
     verify_model_connection,
 )
-from service.review_provenance import model_family
-
-
-def _provider(model: str) -> tuple[str, tuple[str, ...], bool]:
-    lowered = model.casefold()
-    if lowered.startswith("openrouter/"):
-        return "openrouter", ("OPENROUTER_API_KEY",), True
-    if lowered.startswith(("openai/", "gpt-", "o1", "o3", "o4")):
-        return "openai", ("OPENAI_API_KEY", "OPENAI_KEY"), True
-    if lowered.startswith(("anthropic/", "claude")):
-        return "anthropic", ("ANTHROPIC_API_KEY",), True
-    if lowered.startswith(("gemini/", "google/")):
-        return "google", ("GEMINI_API_KEY",), True
-    if lowered.startswith("azure/"):
-        return "azure", ("AZURE_API_KEY",), True
-    if lowered.startswith("bedrock/"):
-        return (
-            "aws-bedrock",
-            ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE"),
-            True,
-        )
-    if lowered.startswith(("ollama/", "hosted_vllm/")):
-        return "self-hosted", ("REVIEW_API_BASE",), False
-    return "custom", ("REVIEW_API_BASE",), False
 
 
 def _credential_status(model: str) -> tuple[str, tuple[str, ...], bool]:
-    provider, credential_names, requires_credential = _provider(model)
+    record = resolve_provider(model)
+    credential_names = record.credential_env_names
     configured_names = tuple(name for name in credential_names if os.environ.get(name))
-    configured = bool(configured_names) or not requires_credential
-    if provider == "aws-bedrock":
+    configured = bool(configured_names) or not record.credential_required
+    if record.provider_id == "aws-bedrock":
+        # Bedrock accepts either a shared profile or an explicit key pair, so a
+        # single non-empty name is not sufficient evidence.
         configured = bool(os.environ.get("AWS_PROFILE")) or bool(
             os.environ.get("AWS_ACCESS_KEY_ID")
             and os.environ.get("AWS_SECRET_ACCESS_KEY")
         )
-    return provider, credential_names, configured
+    return record.provider_id, credential_names, configured
 
 
 def model_status() -> dict[str, object]:

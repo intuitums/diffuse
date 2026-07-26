@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from service.model_providers import model_family as resolve_model_family
+
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
 TRAILER_PATTERN = re.compile(
     r"^(?P<key>co-authored-by|assisted-by|generated-by|made-with)"
@@ -17,6 +19,15 @@ TRAILER_PATTERN = re.compile(
 EMAIL_PATTERN = re.compile(r"<(?P<email>[^<>\s]{1,254})>\s*$")
 MODEL_FAMILIES = frozenset({"anthropic", "google", "openai"})
 PROVENANCE_CONFIDENCE_DEFAULT = 0.8
+
+# Author names, author emails, and commit-message trailers are all written by
+# whoever produced the commit, so a pull-request author can set any of them with
+# `git commit --author=` or a hand-written trailer. They are useful evidence but
+# must not on their own reach PROVENANCE_CONFIDENCE_DEFAULT, or the author of a
+# change could select which model reviews it. Only identities the SCM itself
+# asserts — a bot login, or an email on a commit whose signature the provider
+# verified — are allowed above this ceiling.
+UNVERIFIED_IDENTITY_MAX_STRENGTH = 0.7
 
 
 @dataclass(frozen=True)
@@ -231,13 +242,13 @@ def _identity_signal(
         return None
     is_bot = actor_type.strip().casefold() == "bot" or normalized_login.endswith("[bot]")
     if identity_kind == "bot_login":
+        # A bot login comes from the SCM API actor, not from Git, so a
+        # pull-request author cannot set it.
         strength = 1.0 if verified and is_bot else 0.98
     elif identity_kind == "email":
-        strength = 0.92
+        strength = 0.92 if verified else UNVERIFIED_IDENTITY_MAX_STRENGTH
     else:
-        # Raw Git author names are freely chosen. They are useful evidence but
-        # cannot independently select a reviewer family.
-        strength = 0.7
+        strength = UNVERIFIED_IDENTITY_MAX_STRENGTH
     return ProvenanceSignal(
         tool=tool_family[0],
         model_family=tool_family[1],
@@ -255,45 +266,58 @@ def _trailer_signal(
 ) -> ProvenanceSignal | None:
     email_match = EMAIL_PATTERN.search(value)
     email = email_match.group("email") if email_match else ""
+    display_name = (
+        value[: email_match.start()].strip() if email_match else value.strip()
+    )
+    source = f"commit_trailer_{key.casefold().replace('-', '_')}"
     identity = _identity_signal(
-        name=value[: email_match.start()].strip() if email_match else value.strip(),
+        name=display_name,
         email=email,
         login="",
         actor_type="",
-        source=f"commit_trailer_{key.casefold().replace('-', '_')}",
+        source=source,
         commit_sha=commit_sha,
         verified=False,
     )
     if identity is not None:
+        # A trailer is part of the commit message, so it carries no signature the
+        # provider could have verified. It cannot exceed the unverified ceiling
+        # however specific the identity it names looks.
         return ProvenanceSignal(
             tool=identity.tool,
             model_family=identity.model_family,
             source=identity.source,
-            strength=0.9 if email else 0.78,
+            strength=UNVERIFIED_IDENTITY_MAX_STRENGTH,
             commit_sha=commit_sha,
         )
 
-    normalized = value.strip().casefold()
-    textual_markers = (
-        ("claude", "claude_code", "anthropic"),
-        ("anthropic", "claude_code", "anthropic"),
-        ("cursor", "cursor", None),
-        ("github copilot", "github_copilot", None),
-        ("copilot", "github_copilot", None),
-        ("openai codex", "codex", "openai"),
-        ("codex", "codex", "openai"),
-        ("gemini", "gemini", "google"),
-        ("devin", "devin", None),
-    )
-    for marker, tool, family in textual_markers:
-        if normalized == marker or normalized.startswith(f"{marker} "):
-            return ProvenanceSignal(
-                tool=tool,
-                model_family=family,
-                source=f"commit_trailer_{key.casefold().replace('-', '_')}",
-                strength=0.78,
-                commit_sha=commit_sha,
-            )
+    # Match the display name exactly. Scanning the whole trailer value, or
+    # accepting a prefix, attributes a human co-author whose given name collides
+    # with a product name ("Claude Dubois", "Devin Jones") to that agent.
+    normalized = display_name.casefold()
+    textual_markers = {
+        "claude": ("claude_code", "anthropic"),
+        "claude code": ("claude_code", "anthropic"),
+        "anthropic": ("claude_code", "anthropic"),
+        "cursor": ("cursor", None),
+        "cursor agent": ("cursor", None),
+        "copilot": ("github_copilot", None),
+        "github copilot": ("github_copilot", None),
+        "codex": ("codex", "openai"),
+        "openai codex": ("codex", "openai"),
+        "gemini": ("gemini", "google"),
+        "gemini code assist": ("gemini", "google"),
+        "devin": ("devin", None),
+    }
+    marker = textual_markers.get(normalized)
+    if marker is not None:
+        return ProvenanceSignal(
+            tool=marker[0],
+            model_family=marker[1],
+            source=source,
+            strength=UNVERIFIED_IDENTITY_MAX_STRENGTH,
+            commit_sha=commit_sha,
+        )
     return None
 
 
@@ -438,29 +462,13 @@ def classify_pull_request_provenance(
 
 
 def model_family(model: str) -> str | None:
-    """Infer a provider family from a LiteLLM/OpenRouter model identifier."""
+    """Infer a provider family from a LiteLLM/OpenRouter model identifier.
 
-    normalized = model.strip().casefold()
-    if normalized.startswith("openrouter/"):
-        normalized = normalized.removeprefix("openrouter/")
-    if (
-        normalized.startswith(("anthropic/", "claude", "bedrock/anthropic"))
-        or "/anthropic/" in normalized
-    ):
-        return "anthropic"
-    if (
-        normalized.startswith(
-            ("openai/", "gpt-", "o1", "o3", "o4", "azure/", "azure_ai/")
-        )
-        or "/openai/" in normalized
-    ):
-        return "openai"
-    if (
-        normalized.startswith(("google/", "gemini/", "gemini", "vertex_ai/"))
-        or "/google/" in normalized
-    ):
-        return "google"
-    return None
+    Re-exported from :mod:`service.model_providers`, which is the single prefix
+    table shared with credential and base-URL resolution.
+    """
+
+    return resolve_model_family(model)
 
 
 def select_review_model_plan(
@@ -490,10 +498,16 @@ def select_review_model_plan(
             if model_family(model) is not None and model_family(model) != origin
         )
         if opposing:
+            # Routing permutes the configured pair; it never contracts it. Using
+            # the opposing model for both stages would make the model that
+            # proposes findings the same one that verifies them, losing the
+            # independent second opinion REVIEW_VERIFIER_MODEL exists to provide
+            # on exactly the changes this feature targets.
             selected = opposing[0]
+            remaining = tuple(model for model in configured if model != selected)
             return ReviewModelPlan(
                 candidate_model=selected,
-                verifier_model=selected,
+                verifier_model=remaining[0] if remaining else selected,
                 reason_code=f"opposing_{origin}_reviewer",
                 detected_family=origin,
             )

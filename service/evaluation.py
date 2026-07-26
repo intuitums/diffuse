@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from service.review_models import Category, Severity
@@ -107,26 +109,57 @@ def _matches(expected: ExpectedFinding, observed: ObservedFinding) -> bool:
 
 
 def _score_case(case: EvaluationCase) -> CaseScore:
-    unmatched_observed = set(range(len(case.observed)))
-    true_positives = 0
-    matched_ids: set[str] = set()
-    # Prefer the closest same-path/category match so one observed finding can
-    # never receive credit for multiple labels.
+    # Maximum-cardinality bipartite matching between labels and observations.
+    #
+    # Taking each label's nearest free observation in list order is not the same
+    # thing: a label processed early can consume the only observation a later,
+    # stricter label could have matched, and that starved label is then charged
+    # as both a false negative and a false positive. Two labels a few lines
+    # apart in one file are enough to trigger it at the default line tolerance,
+    # so the score would depend on the order labels happen to be written in.
+    #
+    # `_matches` requires equality on file path and category, so the graph
+    # decomposes into independent buckets and each augmenting search stays
+    # small. Adjacency is ordered by (line distance, observation index) and
+    # labels are visited in list order, which keeps the chosen assignment — and
+    # therefore `addressed_findings` — stable across runs and across
+    # reorderings of the observed list.
+    buckets: dict[tuple[str, object], list[int]] = defaultdict(list)
+    for index, observed in enumerate(case.observed):
+        buckets[(observed.file_path, observed.category)].append(index)
+
+    adjacency: list[list[int]] = []
     for expected in case.expected:
         candidates = [
             index
-            for index in unmatched_observed
+            for index in buckets.get((expected.file_path, expected.category), ())
             if _matches(expected, case.observed[index])
         ]
-        if not candidates:
-            continue
-        selected = min(
-            candidates,
-            key=lambda index: abs(expected.line - case.observed[index].line),
-        )
-        unmatched_observed.remove(selected)
-        matched_ids.add(expected.finding_id)
-        true_positives += 1
+        candidates.sort(key=lambda index: (abs(expected.line - case.observed[index].line), index))
+        adjacency.append(candidates)
+
+    observed_to_expected: dict[int, int] = {}
+
+    def _augment(expected_index: int, visited: set[int]) -> bool:
+        for observed_index in adjacency[expected_index]:
+            if observed_index in visited:
+                continue
+            visited.add(observed_index)
+            holder = observed_to_expected.get(observed_index)
+            if holder is None or _augment(holder, visited):
+                observed_to_expected[observed_index] = expected_index
+                return True
+        return False
+
+    for expected_index in range(len(case.expected)):
+        _augment(expected_index, set())
+
+    true_positives = len(observed_to_expected)
+    matched_ids = {
+        case.expected[expected_index].finding_id
+        for expected_index in observed_to_expected.values()
+    }
+    unmatched_observed = set(range(len(case.observed))) - observed_to_expected.keys()
     return CaseScore(
         case_id=case.case_id,
         true_positives=true_positives,

@@ -46,12 +46,28 @@ RUN pyinstaller \
         --collect-submodules service \
         --collect-data tiktoken \
         --collect-submodules tiktoken_ext \
+        --copy-metadata tree-sitter \
+        --copy-metadata tree-sitter-c \
+        --copy-metadata tree-sitter-cpp \
+        --copy-metadata tree-sitter-go \
+        --copy-metadata tree-sitter-java \
+        --copy-metadata tree-sitter-javascript \
+        --copy-metadata tree-sitter-php \
+        --copy-metadata tree-sitter-ruby \
+        --copy-metadata tree-sitter-rust \
+        --copy-metadata tree-sitter-typescript \
         --add-data /src/service/git_askpass.sh:service \
         --add-data /src/sql:sql \
         /src/service/runtime.py \
     && test -x /build/diffuse/diffuse \
     && test -f /build/diffuse/_internal/sql/schema.sql \
     && test -x /build/diffuse/_internal/service/git_askpass.sh \
+    && for dist in tree_sitter tree_sitter_c tree_sitter_cpp tree_sitter_go \
+            tree_sitter_java tree_sitter_javascript tree_sitter_php \
+            tree_sitter_ruby tree_sitter_rust tree_sitter_typescript; do \
+        ls -d /build/diffuse/_internal/"${dist}"-*.dist-info >/dev/null 2>&1 \
+            || { echo "missing parser metadata: ${dist}" >&2; exit 1; }; \
+    done \
     && ! find /build/diffuse -type f \
         \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit \
         | grep -q .
