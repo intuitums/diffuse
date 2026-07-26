@@ -35,7 +35,21 @@ RISK_ORDER = {
 }
 
 CRITICAL_PATH_PATTERNS = (
-    ".github/**",
+    # Diffuse's own policy sources decide whether a change may be approved at
+    # all, so approving them would let a pull request widen the rules that
+    # approved it.
+    "**/.diffuse/**",
+    "greptile.json",
+    # Repository prose steers the reviewer prompt, which makes these files
+    # configuration rather than documentation despite their .md extension.
+    "**/AGENTS.md",
+    "**/CLAUDE.md",
+    "**/CONTRIBUTING.md",
+    "**/.cursorrules",
+    "**/.cursor/rules/**",
+    # Matched at any depth because a nested .github/copilot-instructions.md is
+    # discovered as guidance for its own subtree.
+    "**/.github/**",
     ".circleci/**",
     ".gitlab-ci.yml",
     "**/.env*",

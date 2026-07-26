@@ -14,6 +14,7 @@ from service.api_tokens import (
     ALLOWED_API_TOKEN_SCOPES,
     ServiceTokenRecord,
     create_service_token,
+    generate_api_token,
     list_service_tokens,
     revoke_service_token,
 )
@@ -57,17 +58,23 @@ def _add_token(args: argparse.Namespace) -> None:
         if not 1 <= args.expires_in_days <= 3650:
             raise ValueError("--expires-in-days must be between 1 and 3650")
         expires_at = datetime.now(UTC) + timedelta(days=args.expires_in_days)
+    minted = args.token_env is None
+    token = generate_api_token() if minted else _token_from_environment(args.token_env)
     with closing(get_conn()) as conn, conn:
         record = create_service_token(
             conn,
             name=args.name,
-            token=_token_from_environment(args.token_env),
+            token=token,
             scopes=tuple(args.scope),
             repository_ids=tuple(args.repository_id or ()),
             all_repositories=args.all_repositories,
             actor=args.actor,
             expires_at=expires_at,
         )
+    if minted:
+        # Only the digest is stored, so this line is the operator's single
+        # chance to copy the credential; the metadata record never carries it.
+        print(f"token: {token}")
     print(json.dumps(_record_json(record), indent=2, sort_keys=True))
 
 
@@ -99,10 +106,16 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
 
     add = subparsers.add_parser(
         "add",
-        help="Store a hashed service token read from an environment variable",
+        help="Mint a service token, print it once, and store only its digest",
     )
     add.add_argument("name")
-    add.add_argument("--token-env", required=True)
+    add.add_argument(
+        "--token-env",
+        help=(
+            "Legacy: adopt an operator-supplied credential from this "
+            "environment variable instead of minting a high-entropy one"
+        ),
+    )
     add.add_argument(
         "--scope",
         action="append",

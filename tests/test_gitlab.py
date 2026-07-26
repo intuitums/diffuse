@@ -216,6 +216,20 @@ def test_invalid_standard_signature_never_downgrades_to_legacy(monkeypatch):
     assert error.value.status_code == 401
 
 
+def test_non_ascii_legacy_token_is_rejected_as_unauthenticated(monkeypatch):
+    monkeypatch.setenv("GITLAB_WEBHOOK_SECRET", "legacy-secret")
+    monkeypatch.setenv("GITLAB_WEB_URL", "https://gitlab.com")
+
+    with pytest.raises(HTTPException) as error:
+        verify_gitlab_webhook(
+            b"{}",
+            legacy_token="legacy-secr\xe9t",
+            event_uuid="event-123",
+        )
+
+    assert error.value.status_code == 401
+
+
 def test_legacy_webhook_requires_stable_identity_and_allowlisted_instance(monkeypatch):
     monkeypatch.setenv("GITLAB_WEBHOOK_SECRET", "legacy-secret")
     monkeypatch.setenv("GITLAB_WEB_URL", "https://gitlab.com")

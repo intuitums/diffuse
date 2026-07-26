@@ -1,6 +1,7 @@
 import pytest
 
 from service.scm import (
+    PLAINTEXT_ORIGIN_VARIABLE,
     FeedbackSyncEvent,
     PullRequestEvent,
     PushEvent,
@@ -102,6 +103,47 @@ def test_event_payload_schema_is_closed():
 def test_base_url_rejects_unsafe_shapes(value):
     with pytest.raises(ValueError, match="absolute HTTP"):
         normalize_base_url(value, field_name="SCM_URL")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://github.example.com",
+        "http://github.example.com/api/v3",
+        "http://192.0.2.10:8080",
+        "http://127.0.0.1.evil.example.com",
+    ],
+)
+def test_base_url_rejects_plaintext_non_loopback_origins(monkeypatch, value):
+    monkeypatch.delenv(PLAINTEXT_ORIGIN_VARIABLE, raising=False)
+    with pytest.raises(ValueError, match="must use https"):
+        normalize_base_url(value, field_name="SCM_URL")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://github.example.com",
+        "http://localhost:8000",
+        "http://127.0.0.1:53123",
+        "http://[::1]:8000",
+    ],
+)
+def test_base_url_accepts_tls_and_loopback_plaintext(monkeypatch, value):
+    monkeypatch.delenv(PLAINTEXT_ORIGIN_VARIABLE, raising=False)
+    assert normalize_base_url(value, field_name="SCM_URL") == value
+
+
+def test_base_url_plaintext_opt_out_is_explicit(monkeypatch):
+    monkeypatch.setenv(PLAINTEXT_ORIGIN_VARIABLE, "1")
+    assert (
+        normalize_base_url("http://github.example.com", field_name="SCM_URL")
+        == "http://github.example.com"
+    )
+
+    monkeypatch.setenv(PLAINTEXT_ORIGIN_VARIABLE, "yes")
+    with pytest.raises(ValueError, match=f"{PLAINTEXT_ORIGIN_VARIABLE} must be 0 or 1"):
+        normalize_base_url("http://github.example.com", field_name="SCM_URL")
 
 
 def test_timestamp_requires_timezone():

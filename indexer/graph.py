@@ -344,10 +344,24 @@ def extract_python_file_graph(path: Path, repo_root: Path) -> FileGraph:
 
 
 def extract_file_graph(path: Path, repo_root: Path) -> FileGraph:
-    if path.suffix.lower() == ".py":
-        return extract_python_file_graph(path, repo_root)
-    if adapter := adapter_for_path(path):
-        return adapter.extract(path, repo_root)
+    try:
+        if path.suffix.lower() == ".py":
+            return extract_python_file_graph(path, repo_root)
+        if adapter := adapter_for_path(path):
+            return adapter.extract(path, repo_root)
+    except RecursionError as error:
+        # Deeply nested untrusted source exhausts the interpreter stack inside the
+        # recursive parsers and visitors; one hostile file must not end an index run.
+        return FileGraph(
+            symbols=(),
+            relationships=(),
+            diagnostics=(
+                GraphDiagnostic(
+                    file_path=path.relative_to(repo_root).as_posix(),
+                    message=f"file skipped: {error}",
+                ),
+            ),
+        )
     return FileGraph(symbols=(), relationships=())
 
 

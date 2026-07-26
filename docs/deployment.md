@@ -42,6 +42,11 @@ URL. Also set:
   instance allowlist; and
 - the model credentials or self-hosted model endpoint.
 
+Every configured origin ends up carrying a token, a clone credential, or the
+OAuth client-secret exchange, so `http://` is refused for anything other than
+loopback. `DIFFUSE_ALLOW_PLAINTEXT_ORIGINS=1` lifts that for a lab instance and
+should never be set in production.
+
 Do not commit `.env`, copy it into an image, or place its values on command
 lines. Back it up separately in an encrypted secret manager.
 
@@ -192,7 +197,8 @@ or an unversioned schema, stop and investigate rather than bypassing the gate.
 
 - Exercise one test repository end to end before adding private production
   repositories.
-- Provision repository-scoped service tokens and reserve
+- Provision repository-scoped service tokens with `diffuse token add`, which
+  mints a high-entropy credential and prints it once, and reserve
   `DIFFUSE_API_TOKEN` for bootstrap/recovery.
 - Keep the SCM instance allowlists narrow.
 - Monitor `/ready`, PostgreSQL disk growth, Docker volume capacity, container
