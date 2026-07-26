@@ -7,11 +7,15 @@ from retriever.context_models import (
     RepositoryContextSnapshot,
 )
 from retriever.retrieve import (
+    DEFAULT_MAX_CONTEXT_CHARS,
+    DEFAULT_MAX_CONTEXT_CHUNKS,
     RetrievedContext,
     build_retrieval_query,
     extract_lexical_terms,
     extract_query_terms,
     format_as_extra_instructions,
+    max_context_chars,
+    max_context_chunks,
     normalize_code_query,
     parse_changed_files,
     parse_changed_line_ranges,
@@ -363,3 +367,92 @@ def test_query_retrieval_uses_path_scoped_lexical_semantic_and_graph_channels():
     assert semantic.call_args.kwargs["path_prefix"] == "src"
     assert graph.call_args.kwargs["path_prefix"] == "src"
     assert graph.call_args.args[4] == {"src/auth.py": [(10, 20)]}
+
+
+def test_context_budget_defaults_are_configurable_and_validated(monkeypatch):
+    monkeypatch.delenv("MAX_CONTEXT_CHUNKS", raising=False)
+    monkeypatch.delenv("MAX_CONTEXT_CHARS", raising=False)
+    assert max_context_chunks() == DEFAULT_MAX_CONTEXT_CHUNKS
+    assert max_context_chars() == DEFAULT_MAX_CONTEXT_CHARS
+
+    monkeypatch.setenv("MAX_CONTEXT_CHUNKS", "12")
+    monkeypatch.setenv("MAX_CONTEXT_CHARS", "40000")
+    assert max_context_chunks() == 12
+    assert max_context_chars() == 40000
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "21", "not-a-number", ""])
+def test_max_context_chunks_rejects_out_of_range_values(monkeypatch, value):
+    monkeypatch.setenv("MAX_CONTEXT_CHUNKS", value)
+    with pytest.raises(ValueError):
+        max_context_chunks()
+
+
+@pytest.mark.parametrize("value", ["0", "-500", "eight-thousand"])
+def test_max_context_chars_rejects_non_positive_values(monkeypatch, value):
+    monkeypatch.setenv("MAX_CONTEXT_CHARS", value)
+    with pytest.raises(ValueError):
+        max_context_chars()
+
+
+def test_context_char_override_is_honored_end_to_end(monkeypatch):
+    context = RetrievedContext(
+        file_path="service/example.py",
+        symbol_name="example",
+        start_line=1,
+        end_line=200,
+        content="x" * 40_000,
+        similarity=0.8,
+        retrieval_reason="semantic",
+    )
+
+    monkeypatch.setenv("MAX_CONTEXT_CHARS", "6000")
+    assert len(format_as_extra_instructions([context])) <= 6000
+
+    monkeypatch.setenv("MAX_CONTEXT_CHARS", "30000")
+    widened = format_as_extra_instructions([context])
+    assert 6000 < len(widened) <= 30000
+
+
+def test_context_chunk_override_is_honored_end_to_end(monkeypatch):
+    connection = MagicMock()
+    plan = CrossRepositoryContextPlan(
+        primary_repository_id=1,
+        primary_repository_full_name="owner/app",
+        primary_snapshot_id=11,
+        primary_commit_sha="a" * 40,
+    )
+    semantic_rows = [
+        {
+            "file_path": f"service/module_{index}.py",
+            "symbol_name": f"symbol_{index}",
+            "start_line": 1,
+            "end_line": 8,
+            "content": f"def symbol_{index}(): ...",
+            "similarity": 0.9 - index / 100,
+        }
+        for index in range(16)
+    ]
+    diff = """\
+--- a/service/api.py
++++ b/service/api.py
+@@ -3 +3 @@
+-old()
++new()
+"""
+
+    def retrieve() -> tuple[RetrievedContext, ...]:
+        with (
+            patch("retriever.retrieve.get_conn", return_value=connection),
+            patch("retriever.retrieve.embed_text", return_value=[0.1, 0.2]),
+            patch("retriever.retrieve.search_graph_related_chunks", return_value=[]),
+            patch("retriever.retrieve.search_lexical", return_value=[]),
+            patch("retriever.retrieve.search_similar", return_value=semantic_rows),
+        ):
+            return retrieve_context_from_plan(diff, plan).contexts
+
+    monkeypatch.setenv("MAX_CONTEXT_CHUNKS", "6")
+    assert len(retrieve()) == 6
+
+    monkeypatch.setenv("MAX_CONTEXT_CHUNKS", "16")
+    assert len(retrieve()) == 16

@@ -33,7 +33,7 @@ from service.scm import normalize_base_url
 LOGGER = logging.getLogger(__name__)
 
 PROMPT_VERSION = "native-review-v6-review-diagrams"
-DEFAULT_REVIEW_MODEL = "openai/gpt-4.1-mini"
+DEFAULT_REVIEW_MODEL = "anthropic/claude-sonnet-5"
 DEFAULT_PASSES = ("correctness", "security", "performance", "tests")
 PASS_INSTRUCTIONS = {
     "correctness": (
