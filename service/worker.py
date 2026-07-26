@@ -9,6 +9,7 @@ import os
 import socket
 import time
 from contextlib import closing
+from datetime import datetime
 from functools import partial
 
 import anyio
@@ -132,6 +133,7 @@ from service.learning_store import (
 )
 from service.repositories import get_repository, update_mirror_state
 from service.repository_mirror import RepositoryMirror, RepositoryMirrorError
+from service.retention_store import purge_expired_records
 from service.review_engine import (
     PROMPT_VERSION,
     generate_review,
@@ -155,10 +157,13 @@ from service.review_store import (
 )
 from service.scm import (
     FeedbackSyncEvent,
+    ProviderPaginationLimitError,
+    ProviderRateLimitError,
     PullRequestEvent,
     PushEvent,
     ReviewConversationEvent,
 )
+from service.worker_liveness import touch_liveness
 from service.workflow import (
     NonRetryableError,
     WorkflowJob,
@@ -214,11 +219,16 @@ def _lease_seconds() -> int:
 
 def _claim(worker_id: str) -> WorkflowJob | None:
     with closing(get_conn()) as conn, conn:
-        return claim_workflow_job(
+        job = claim_workflow_job(
             conn,
             worker_id,
             lease_seconds=_lease_seconds(),
         )
+    # A completed claim round trip is the strongest cheap proof the worker is
+    # progressing: the loop turned and the queue was reachable. A worker wedged
+    # anywhere between two claims stops refreshing this and fails its probe.
+    touch_liveness()
+    return job
 
 
 def _schedule_feedback_syncs() -> int:
@@ -264,6 +274,14 @@ def _schedule_rule_learning() -> int:
         )
 
 
+def _purge_expired_records() -> dict[str, int]:
+    # No `with conn:` here on purpose: a retention pass commits each table
+    # separately so one failing statement cannot roll back — or hold locks
+    # across — the other eight.
+    with closing(get_conn()) as conn:
+        return purge_expired_records(conn)
+
+
 def _heartbeat_and_check_current(job_id: int, worker_id: str) -> bool:
     with closing(get_conn()) as conn, conn:
         heartbeat_workflow_job(
@@ -272,7 +290,11 @@ def _heartbeat_and_check_current(job_id: int, worker_id: str) -> bool:
             worker_id,
             lease_seconds=_lease_seconds(),
         )
-        return workflow_job_is_current(conn, job_id, worker_id)
+        current = workflow_job_is_current(conn, job_id, worker_id)
+    # A long review legitimately outlives the poll interval, so lease
+    # heartbeats double as the liveness signal while a job is in flight.
+    touch_liveness()
+    return current
 
 
 def _heartbeat_and_check_latest(job_id: int, worker_id: str) -> bool:
@@ -283,18 +305,23 @@ def _heartbeat_and_check_latest(job_id: int, worker_id: str) -> bool:
             worker_id,
             lease_seconds=_lease_seconds(),
         ):
-            return False
-        return workflow_job_is_latest(conn, job_id, worker_id)
+            latest = False
+        else:
+            latest = workflow_job_is_latest(conn, job_id, worker_id)
+    touch_liveness()
+    return latest
 
 
 def _heartbeat_lease(job_id: int, worker_id: str) -> bool:
     with closing(get_conn()) as conn, conn:
-        return heartbeat_workflow_job(
+        held = heartbeat_workflow_job(
             conn,
             job_id,
             worker_id,
             lease_seconds=_lease_seconds(),
         )
+    touch_liveness()
+    return held
 
 
 def _complete(job_id: int, worker_id: str) -> bool:
@@ -307,15 +334,37 @@ def _supersede(job_id: int, worker_id: str) -> bool:
         return supersede_workflow_job(conn, job_id, worker_id)
 
 
-def _fail(job_id: int, worker_id: str, *, retryable: bool) -> str | None:
+def _fail(
+    job_id: int,
+    worker_id: str,
+    *,
+    retryable: bool,
+    retry_at: datetime | None = None,
+    error_code: str = "workflow_processing_failed",
+) -> str | None:
+    if retry_at is not None:
+        error_code = "provider_rate_limited"
     with closing(get_conn()) as conn, conn:
         return fail_workflow_job(
             conn,
             job_id,
             worker_id,
-            "workflow_processing_failed",
+            error_code,
             retryable=retryable,
+            retry_at=retry_at,
         )
+
+
+def _provider_rate_limit(error: BaseException) -> ProviderRateLimitError | None:
+    """Find a rate-limit failure that a provider helper wrapped on its way up."""
+    seen: set[int] = set()
+    candidate: BaseException | None = error
+    while candidate is not None and id(candidate) not in seen:
+        if isinstance(candidate, ProviderRateLimitError):
+            return candidate
+        seen.add(id(candidate))
+        candidate = candidate.__cause__ or candidate.__context__
+    return None
 
 
 def _set_mirror_state(
@@ -1113,7 +1162,10 @@ def _index_repository_job(job: WorkflowJob, event: PushEvent, worker_id: str) ->
 
     _set_mirror_state(repository.id, state="syncing")
     try:
-        mirror = RepositoryMirror(repository)
+        mirror = RepositoryMirror(
+            repository,
+            progress_callback=report_progress,
+        )
         with mirror.checkout(event.after_sha) as worktree:
             report_progress()
             index_repo(
@@ -1786,8 +1838,24 @@ async def run_once(worker_id: str) -> bool:
         await process_job(job, worker_id)
     except Exception as error:
         retryable = not isinstance(error, ValueError)
+        rate_limit = _provider_rate_limit(error) if retryable else None
+        # An idempotency scan that outran its page budget is not a processing
+        # fault; naming it separately is what tells an operator reading
+        # last_error_code that the fix is a page budget, not a redeploy.
+        error_code = (
+            "provider_pagination_exhausted"
+            if isinstance(error, ProviderPaginationLimitError)
+            else "workflow_processing_failed"
+        )
         next_status = await anyio.to_thread.run_sync(
-            partial(_fail, job.id, worker_id, retryable=retryable)
+            partial(
+                _fail,
+                job.id,
+                worker_id,
+                retryable=retryable,
+                retry_at=rate_limit.retry_at if rate_limit is not None else None,
+                error_code=error_code,
+            )
         )
         if (
             job.job_type == "review_pull_request"
@@ -1846,8 +1914,16 @@ async def run_forever(worker_id: str, poll_seconds: float) -> None:
     )
     if learning_scheduler_seconds <= 0:
         raise ValueError("RULE_LEARNING_SCHEDULER_SECONDS must be positive")
+    retention_scheduler_seconds = float(
+        os.environ.get("RETENTION_SCHEDULER_SECONDS", "900")
+    )
+    if retention_scheduler_seconds <= 0:
+        raise ValueError("RETENTION_SCHEDULER_SECONDS must be positive")
     next_feedback_schedule = 0.0
     next_learning_schedule = 0.0
+    # Retention is bounded per pass, so the first pass waits one interval rather
+    # than competing with the queue drain a freshly started worker owes.
+    next_retention_schedule = time.monotonic() + retention_scheduler_seconds
     while True:
         now = time.monotonic()
         if now >= next_feedback_schedule:
@@ -1876,6 +1952,17 @@ async def run_forever(worker_id: str, poll_seconds: float) -> None:
             except Exception:
                 LOGGER.exception("Failed to schedule suggested-rule generation")
             next_learning_schedule = now + learning_scheduler_seconds
+        if now >= next_retention_schedule:
+            try:
+                removed = await anyio.to_thread.run_sync(_purge_expired_records)
+                purged = {
+                    table: count for table, count in removed.items() if count
+                }
+                if purged:
+                    LOGGER.info("Purged rows past their retention window %s", purged)
+            except Exception:
+                LOGGER.exception("Failed to purge rows past their retention window")
+            next_retention_schedule = now + retention_scheduler_seconds
         claimed = await run_once(worker_id)
         if not claimed:
             await anyio.sleep(poll_seconds)

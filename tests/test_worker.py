@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -41,6 +42,8 @@ from service.review_models import (
 from service.review_store import PublicationHandle, ReviewRunHandle
 from service.scm import (
     FeedbackSyncEvent,
+    ProviderPaginationLimitError,
+    ProviderRateLimitError,
     PullRequestEvent,
     PushEvent,
     ReviewConversationEvent,
@@ -1092,8 +1095,17 @@ def _capture_failure_classification(monkeypatch, job, error):
     """Drive run_once through a failing job and capture how it was classified."""
     recorded: dict = {}
 
-    def fail(_job_id, _worker_id, *, retryable):
+    def fail(
+        _job_id,
+        _worker_id,
+        *,
+        retryable,
+        retry_at=None,
+        error_code="workflow_processing_failed",
+    ):
         recorded["retryable"] = retryable
+        recorded["retry_at"] = retry_at
+        recorded["error_code"] = error_code
         return "queued" if retryable else "failed"
 
     monkeypatch.setattr(worker, "_claim", lambda *_args: job)
@@ -1120,7 +1132,11 @@ async def test_malformed_model_output_is_retried(monkeypatch):
 
     assert await worker.run_once("worker-1")
 
-    assert recorded == {"retryable": True}
+    assert recorded == {
+        "retryable": True,
+        "retry_at": None,
+        "error_code": "workflow_processing_failed",
+    }
 
 
 @pytest.mark.anyio
@@ -1135,7 +1151,11 @@ async def test_embedding_dimension_mismatch_is_retried(monkeypatch):
 
     assert await worker.run_once("worker-1")
 
-    assert recorded == {"retryable": True}
+    assert recorded == {
+        "retryable": True,
+        "retry_at": None,
+        "error_code": "workflow_processing_failed",
+    }
 
 
 @pytest.mark.anyio
@@ -1149,7 +1169,86 @@ async def test_deterministic_faults_are_not_retried(monkeypatch):
 
     assert await worker.run_once("worker-1")
 
-    assert recorded == {"retryable": False}
+    assert recorded == {
+        "retryable": False,
+        "retry_at": None,
+        "error_code": "workflow_processing_failed",
+    }
+
+
+@pytest.mark.anyio
+async def test_pagination_exhaustion_is_not_retried(monkeypatch):
+    """Re-reading an oversized listing four more times cannot change the answer.
+
+    Classified retryable, an idempotency scan that outgrew its page budget
+    fails identically on every attempt, exhausts the retry policy and lands on
+    the pull request as a terminal red X — permanently, because the listing
+    only ever gets longer. It has to fail once, non-retryably, with a message
+    an operator can act on.
+    """
+    job = _job(_event())
+    recorded = _capture_failure_classification(
+        monkeypatch,
+        job,
+        ProviderPaginationLimitError("github", "pull-request reviews", pages=20),
+    )
+
+    assert await worker.run_once("worker-1")
+
+    assert recorded == {
+        "retryable": False,
+        "retry_at": None,
+        "error_code": "provider_pagination_exhausted",
+    }
+
+
+@pytest.mark.anyio
+async def test_rate_limited_review_defers_instead_of_posting_a_red_x(monkeypatch):
+    """A quota window must park the job, not spend attempts and fail the check."""
+    job = _job(_event())
+    retry_at = datetime.now(tz=UTC) + timedelta(minutes=45)
+    finalize = AsyncMock()
+    error = ProviderRateLimitError(
+        "github rate limited Diffuse",
+        provider="github",
+        retry_at=retry_at,
+    )
+    recorded = _capture_failure_classification(monkeypatch, job, error)
+    monkeypatch.setattr(worker, "_complete_existing_job_check", finalize)
+
+    assert await worker.run_once("worker-1")
+
+    assert recorded == {
+        "retryable": True,
+        "retry_at": retry_at,
+        "error_code": "workflow_processing_failed",
+    }
+    finalize.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_wrapped_rate_limit_still_carries_the_reset_instant(monkeypatch):
+    """Provider helpers re-raise as RuntimeError; the reset must survive that."""
+    job = _job(_event())
+    retry_at = datetime.now(tz=UTC) + timedelta(minutes=20)
+    try:
+        raise ProviderRateLimitError(
+            "gitlab rate limited Diffuse",
+            provider="gitlab",
+            retry_at=retry_at,
+        )
+    except ProviderRateLimitError as cause:
+        error = RuntimeError("GitLab review publication failed")
+        error.__cause__ = cause
+    recorded = _capture_failure_classification(monkeypatch, job, error)
+
+    assert await worker.run_once("worker-1")
+
+    assert recorded == {
+        "retryable": True,
+        "retry_at": retry_at,
+        "error_code": "workflow_processing_failed",
+    }
 
 
 @pytest.mark.anyio
@@ -1179,3 +1278,35 @@ async def test_non_retryable_failure_check_does_not_claim_exhausted_retries(
     message = finalize.await_args.kwargs["message"]
     assert "exhausting" not in message
     assert "retrying cannot resolve" in message
+
+
+class _LivenessConnection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def close(self):
+        return None
+
+
+def test_claiming_and_heartbeating_record_worker_progress(monkeypatch, tmp_path):
+    # `restart: unless-stopped` only catches a worker that exits, so the probe
+    # needs a signal that a wedged-but-running worker stops refreshing.
+    liveness = tmp_path / "diffuse-worker-alive"
+    monkeypatch.setenv("DIFFUSE_WORKER_LIVENESS_FILE", str(liveness))
+    monkeypatch.setattr(worker, "get_conn", _LivenessConnection)
+    monkeypatch.setattr(worker, "claim_workflow_job", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        worker,
+        "heartbeat_workflow_job",
+        lambda *_args, **_kwargs: True,
+    )
+
+    assert worker._claim("worker-1") is None
+    assert liveness.exists()
+
+    liveness.unlink()
+    assert worker._heartbeat_lease(1, "worker-1")
+    assert liveness.exists()

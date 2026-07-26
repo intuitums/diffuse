@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import psycopg2.extras
 
 from service.scm import (
+    MIN_RATE_LIMIT_DELAY_SECONDS,
     FeedbackSyncEvent,
     PullRequestEvent,
     PushEvent,
@@ -19,6 +20,12 @@ from service.scm import (
 )
 
 ERROR_CODE_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
+# A quota deferral refunds its attempt, so on its own it is a retry loop with
+# no budget to exhaust. Bound it in wall-clock time instead: past this much
+# life a job stops getting refunds and spends its attempts like any other
+# failure, so a provider that never lets us back in still ends in a terminal
+# status rather than an immortal job holding its scope key forever.
+MAX_RATE_LIMIT_DEFERRAL_SECONDS = 6 * 3600
 
 
 class NonRetryableError(ValueError):
@@ -1371,15 +1378,38 @@ def fail_workflow_job(
     retryable: bool = True,
     base_delay_seconds: int = 30,
     max_delay_seconds: int = 1800,
+    retry_at: datetime | None = None,
 ) -> str | None:
     error_code = _validated_error_code(error_code)
     if base_delay_seconds <= 0 or max_delay_seconds <= 0:
         raise ValueError("Retry delays must be positive")
+    if retry_at is not None and retry_at.tzinfo is None:
+        raise ValueError("retry_at must include a timezone")
+    if retry_at is not None and not retryable:
+        raise ValueError("retry_at is only meaningful for a retryable failure")
+    # The job parks until the advertised reset whenever the provider gave one,
+    # but never for less than the floor. A reset instant that has already
+    # passed — `Retry-After: 0`, a worker clock ahead of the provider, or a
+    # delta-seconds header read as an epoch — would otherwise leave the job
+    # claimable immediately while its attempt is refunded, which is a
+    # full-speed retry loop against the API that is throttling us and a
+    # scope key held against every other job waiting behind it.
+    parked = retry_at is not None
+    parked_until = (
+        None
+        if retry_at is None
+        else max(
+            retry_at.astimezone(UTC),
+            datetime.now(tz=UTC) + timedelta(seconds=MIN_RATE_LIMIT_DELAY_SECONDS),
+        )
+    )
 
     with conn.cursor() as cursor:
         cursor.execute(
             """
-            SELECT attempt_count, max_attempts
+            SELECT attempt_count,
+                   max_attempts,
+                   created_at > now() - (%s * interval '1 second')
             FROM workflow_jobs
             WHERE id = %s
               AND status = 'running'
@@ -1387,35 +1417,60 @@ def fail_workflow_job(
               AND lease_expires_at > now()
             FOR UPDATE
             """,
-            (job_id, worker_id),
+            (MAX_RATE_LIMIT_DEFERRAL_SECONDS, job_id, worker_id),
         )
         row = cursor.fetchone()
         if not row:
             return None
-        attempt_count, max_attempts = (int(value) for value in row)
-        should_retry = retryable and attempt_count < max_attempts
+        attempt_count, max_attempts = (int(value) for value in row[:2])
+        # A provider quota that stays shut for an hour must not be spent from
+        # the retry budget: the work was never attempted against a healthy API,
+        # so the attempt is refunded and the job simply waits. That refund is
+        # only extended while the job is still young enough to be worth
+        # finishing; after that the parking stays but the attempts start
+        # counting, which is what guarantees the job terminates.
+        quota_deferred = parked and bool(row[2])
+        should_retry = retryable and (quota_deferred or attempt_count < max_attempts)
         next_status = "queued" if should_retry else ("dead" if retryable else "failed")
         delay = min(
             max_delay_seconds,
             base_delay_seconds * (2 ** max(0, attempt_count - 1)),
         )
-        cursor.execute(
-            """
-            UPDATE workflow_attempts
-            SET status = 'failed',
-                error_code = %s,
-                finished_at = now()
-            WHERE workflow_job_id = %s
-              AND attempt_number = %s
-              AND status = 'running'
-            """,
-            (error_code, job_id, attempt_count),
-        )
+        if quota_deferred:
+            # The refunded attempt number is handed back to the next claim, so
+            # its attempts row has to go rather than collide on the unique key.
+            cursor.execute(
+                """
+                DELETE FROM workflow_attempts
+                WHERE workflow_job_id = %s
+                  AND attempt_number = %s
+                  AND status = 'running'
+                """,
+                (job_id, attempt_count),
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE workflow_attempts
+                SET status = 'failed',
+                    error_code = %s,
+                    finished_at = now()
+                WHERE workflow_job_id = %s
+                  AND attempt_number = %s
+                  AND status = 'running'
+                """,
+                (error_code, job_id, attempt_count),
+            )
         cursor.execute(
             """
             UPDATE workflow_jobs
             SET status = %s,
+                attempt_count = CASE
+                    WHEN %s THEN greatest(0, attempt_count - 1)
+                    ELSE attempt_count
+                END,
                 available_at = CASE
+                    WHEN %s THEN greatest(now(), %s::timestamptz)
                     WHEN %s THEN now() + (%s * interval '1 second')
                     ELSE available_at
                 END,
@@ -1428,6 +1483,9 @@ def fail_workflow_job(
             """,
             (
                 next_status,
+                quota_deferred,
+                parked,
+                parked_until,
                 should_retry,
                 delay,
                 error_code,

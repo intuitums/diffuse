@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
+from repository_policy.resolve import neutralize_prompt_delimiters
 from retriever.retrieve import RetrievedContext, format_as_extra_instructions
 from service.conversation_models import (
     ConversationReference,
@@ -103,6 +104,14 @@ def generate_conversation_answer(
 ) -> GeneratedConversationAnswer:
     if progress_callback:
         progress_callback()
+    # Question, diff hunk, thread history and retrieved context are all authored
+    # outside Diffuse, so each is stripped of prompt-structural tags before it is
+    # framed. Otherwise a comment or a committed file could close its own region
+    # and have the text after it read as a trusted instruction.
+    question = neutralize_prompt_delimiters(event.question)
+    diff_hunk = neutralize_prompt_delimiters(event.diff_hunk)
+    history = neutralize_prompt_delimiters(_history_text(previous_turns))
+    context = neutralize_prompt_delimiters(format_as_extra_instructions(contexts))
     response, prompt_tokens, completion_tokens = _call_structured(
         ConversationResponse,
         system_prompt=(
@@ -117,19 +126,19 @@ def generate_conversation_answer(
         ),
         user_prompt=(
             "<untrusted_human_question>\n"
-            f"{event.question}\n"
+            f"{question}\n"
             "</untrusted_human_question>\n\n"
             "<diffuse_finding_json>\n"
             f"{finding.model_dump_json()}\n"
             "</diffuse_finding_json>\n\n"
             "<untrusted_original_diff_hunk>\n"
-            f"{event.diff_hunk or 'No diff hunk was supplied by the SCM.'}\n"
+            f"{diff_hunk or 'No diff hunk was supplied by the SCM.'}\n"
             "</untrusted_original_diff_hunk>\n\n"
             "<untrusted_prior_thread_conversation>\n"
-            f"{_history_text(previous_turns) or 'No prior Diffuse conversation.'}\n"
+            f"{history or 'No prior Diffuse conversation.'}\n"
             "</untrusted_prior_thread_conversation>\n\n"
             "<untrusted_retrieved_repository_context>\n"
-            f"{format_as_extra_instructions(contexts) or 'No compatible indexed context.'}\n"
+            f"{context or 'No compatible indexed context.'}\n"
             "</untrusted_retrieved_repository_context>\n\n"
             f"Review head: {event.head_sha}\n"
             "Return a grounded answer and only directly supported references."

@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
 from service import rest_api
 from service.api_auth import AuthenticatedPrincipal
@@ -15,7 +16,7 @@ from service.api_tokens import (
 )
 from service.repositories import RegisteredRepository
 from service.scm import PullRequestEvent, PushEvent
-from service.webhook_server import app
+from service.webhook_server import app, documentation_urls
 
 API_TOKEN = "r" * 48
 
@@ -702,9 +703,15 @@ async def test_rest_api_hides_unauthorized_resources_and_bounds_json(monkeypatch
 
 
 @pytest.mark.anyio
-async def test_rest_openapi_documents_versioned_bearer_surface():
+async def test_rest_openapi_documents_versioned_bearer_surface(monkeypatch):
+    # The document is no longer served to anonymous callers by default, so it
+    # is generated here instead of fetched. What it must contain is unchanged.
+    monkeypatch.setenv("DIFFUSE_ENABLE_API_DOCS", "true")
+    documented = FastAPI(**documentation_urls())
+    documented.include_router(rest_api.router)
+
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+        transport=httpx.ASGITransport(app=documented),
         base_url="http://testserver",
     ) as client:
         response = await client.get("/openapi.json")

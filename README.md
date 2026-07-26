@@ -108,6 +108,41 @@ no-ops, concurrent migrators serialize, and checksum drift fails closed.
 `GET /health` remains a process liveness probe; `GET /ready` returns `200` only
 when the packaged migration history and baseline database contract are current.
 
+The worker has no HTTP surface, so its healthcheck asks for progress instead:
+the loop refreshes `DIFFUSE_WORKER_LIVENESS_FILE` on every queue poll and on
+every lease heartbeat during a long review, and
+`python -m service.worker_liveness` fails once that file is older than
+`DIFFUSE_WORKER_LIVENESS_MAX_AGE_SECONDS`. A worker wedged on a pathological
+regex, a lock, or an endless retry is therefore reported `(unhealthy)` instead
+of `up`. Plain `docker compose` does not act on that: `restart: unless-stopped`
+only reacts to the process exiting, so a wedged worker stays running and
+labelled unhealthy until an operator intervenes. Surfacing it is the point —
+wire `docker compose ps`/`docker events` into your monitoring, or run an
+autoheal sidecar, Swarm (`deploy.restart_policy` honours health), or Kubernetes
+(a failing `livenessProbe` restarts the pod) if you want the condition acted on
+automatically. Every Compose service also carries CPU, memory and PID limits,
+so a runaway container cannot starve PostgreSQL or invite the kernel OOM killer
+to choose the database; raise the limits together when moving to a larger host.
+
+The worker drains rows past their retention window on a bounded schedule:
+audit events, webhook deliveries and their refusals, pull request lifecycle
+events, review feedback, settled queue rows that produced no durable product
+history, review context provenance, and the embeddings owned by index snapshots
+retrieval can no longer select. Each pass deletes at most a fixed batch per
+table, in its own transaction, so a backlog drains across passes instead of in
+one long transaction and a table that fails cannot disable the other eight.
+Tables that keep some rows forever — jobs behind a review, conversation, or
+rule-learning run; review runs; index snapshots kept for provenance — are
+drained by age rather than by an id window, and a parent only stays a candidate
+while it still owns rows to delete, so an undeletable row can never pin the
+drain. Windows are configured per table in `.env` (see
+`DIFFUSE_*_RETENTION_DAYS`) and the whole drain can be frozen with
+`DIFFUSE_RETENTION_ENABLED=false`; an unrecognised value for that flag is
+rejected rather than treated as consent to delete. Published review and
+conversation history plus rule-learning provenance are never collected: their
+workflow jobs are deliberately retained so cascading foreign keys cannot erase
+those records.
+
 Back up PostgreSQL before upgrading. Inspect or verify schema state with:
 
 ```bash
@@ -363,11 +398,13 @@ uses the configured embedding provider.
 
 ### REST API
 
-Diffuse exposes a versioned control-plane API under `/api/v1`; its
-OpenAPI document is available at `/openapi.json` and the interactive reference
-at `/docs`. It uses the same bootstrap credential, hashed service-token
-lifecycle, repository grants, and PostgreSQL projections as MCP. Provision a
-routine client with API-specific scopes:
+Diffuse exposes a versioned control-plane API under `/api/v1`. Its OpenAPI
+document (`/openapi.json`) and the interactive references (`/docs`, `/redoc`)
+are unauthenticated route and schema listings, so they stay unmounted unless
+`DIFFUSE_ENABLE_API_DOCS=true` is set; leave that off on any
+internet-reachable deployment. The API uses the same bootstrap credential,
+hashed service-token lifecycle, repository grants, and PostgreSQL projections
+as MCP. Provision a routine client with API-specific scopes:
 
 ```bash
 diffuse token add dashboard-reader \
@@ -817,7 +854,20 @@ discovers scoped `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.cursorrules`,
 `.cursor/rules/*.mdc`, and `.github/copilot-instructions.md` files. Cursor MDC
 files support a bounded one-line `globs` front-matter field.
 
-Only tracked, regular UTF-8 files are accepted. Individual policy/context
+Only tracked, regular UTF-8 files are accepted. Conventionally named credential
+files (`.env`/`*.env`/`.envrc`, `*.pem`, `*.key`, `*.p8`, `*.p12`, `*.pfx`,
+`*.jks`, `id_rsa`/`id_ed25519`, `credentials`, `credentials.json`,
+`serviceAccount.json`, `secrets.yaml`, `.git-credentials`, `.netrc`, and
+anything under `.ssh/`, `.aws/`, `.gnupg/`) are dropped, with a warning logged,
+by the same exclusion the indexer uses. That is a name-based filter, not a
+secret scanner: it stops a repository from naming its own `.env` as review
+context, but it cannot detect a key pasted into an ordinary Markdown file, so
+treat everything a repository ships to the model as repository-visible.
+Repository policy is rendered into review prompts as untrusted data describing
+preferences, inside delimiters carrying a per-request random id, with
+prompt-structural tags stripped from the repository text so it cannot close its
+own block: it never outranks Diffuse's own rules and can never suppress a
+finding or authorize an approval. Individual policy/context
 sources and the aggregate policy have strict size limits; duplicate JSON keys,
 unknown rule overrides, parent traversal, absolute paths, untracked context,
 and invalid schemas fail indexing. Policy is fingerprinted and persisted in
@@ -844,7 +894,9 @@ POSTGRES_TEST_DATABASE_URL=postgresql://... pytest -m integration
 
 `tests/integration/conftest.py` also routes application database connections to
 that disposable URL. Production images install the hash-locked
-`requirements.lock`. After intentionally changing runtime dependency ranges,
+`requirements.lock`, and so does CI: it installs `requirements-dev-tools.txt`
+first and the lock last, so the tests exercise the same dependency set a
+deployment runs. After intentionally changing runtime dependency ranges,
 regenerate and review it with:
 
 ```bash

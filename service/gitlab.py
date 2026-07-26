@@ -30,6 +30,7 @@ from service.scm import (
     ReviewFeedbackCommentEvent,
     normalize_base_url,
     normalize_timestamp,
+    raise_for_provider_status,
     validate_repository_name,
 )
 
@@ -367,7 +368,7 @@ async def _get_json(
     user_agent: str,
 ) -> object:
     response = await client.get(url, headers=_headers(user_agent=user_agent))
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="gitlab")
     if len(response.content) > MAX_METADATA_BYTES:
         raise RuntimeError("GitLab metadata exceeds Diffuse's size limit")
     return response.json()
@@ -739,7 +740,7 @@ async def _gitlab_author_association(
     )
     if response.status_code == 404:
         return None
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="gitlab")
     if len(response.content) > MAX_METADATA_BYTES:
         raise RuntimeError("GitLab member metadata exceeds Diffuse's size limit")
     value = response.json()
@@ -767,7 +768,7 @@ async def _find_gitlab_note_discussion(
             headers=_headers(user_agent="diffuse-gitlab-review-interaction"),
             params={"per_page": 100, "page": page},
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="gitlab")
         if len(response.content) > MAX_METADATA_BYTES:
             raise RuntimeError("GitLab discussion metadata exceeds Diffuse's size limit")
         discussions = response.json()

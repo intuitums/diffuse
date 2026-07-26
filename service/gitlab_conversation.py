@@ -12,7 +12,7 @@ from service.conversation_models import ConversationReference
 from service.conversation_store import PublishedConversationReply
 from service.github_conversation import format_conversation_reply
 from service.gitlab_review import MAX_RESPONSE_BYTES, _headers
-from service.scm import ReviewConversationEvent
+from service.scm import ReviewConversationEvent, raise_for_provider_status
 
 DISCUSSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,255}$")
 
@@ -35,7 +35,7 @@ async def _find_existing_reply(
     event: ReviewConversationEvent,
 ) -> PublishedConversationReply | None:
     response = await client.get(_discussion_url(event), headers=_headers())
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="gitlab")
     if len(response.content) > MAX_RESPONSE_BYTES:
         raise RuntimeError("GitLab discussion response exceeds Diffuse's size limit")
     value = response.json()
@@ -103,7 +103,7 @@ async def publish_gitlab_conversation_reply(
                 )
             },
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="gitlab")
         if len(response.content) > MAX_RESPONSE_BYTES:
             raise RuntimeError(
                 "GitLab conversation reply exceeds Diffuse's size limit"
