@@ -11,7 +11,11 @@ import httpx
 from service.conversation_models import ConversationReference
 from service.conversation_store import PublishedConversationReply
 from service.github import GITHUB_API_VERSION
-from service.scm import ReviewConversationEvent
+from service.scm import (
+    ProviderPaginationLimitError,
+    ReviewConversationEvent,
+    raise_for_provider_status,
+)
 
 MAX_COMMENT_PAGES = 20
 MAX_CONVERSATION_REPLY_CHARS = 10_000
@@ -97,13 +101,24 @@ async def _find_existing_reply(
     event: ReviewConversationEvent,
 ) -> PublishedConversationReply | None:
     marker = _marker(event)
+    reached_end = False
     for page in range(1, MAX_COMMENT_PAGES + 1):
         response = await client.get(
             _comments_url(event),
             headers=_headers(),
-            params={"per_page": 100, "page": page},
+            # Newest first. The reply being looked for was posted by an earlier
+            # attempt of this same job, so it sits at the front of the listing
+            # and the scan ends on page one — which is what keeps the page cap
+            # unreachable on a long-lived, bot-heavy pull request instead of a
+            # wall a review can never get past.
+            params={
+                "sort": "created",
+                "direction": "desc",
+                "per_page": 100,
+                "page": page,
+            },
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="github")
         value = response.json()
         if not isinstance(value, list):
             raise RuntimeError("GitHub returned an invalid pull-request comment list")
@@ -126,7 +141,16 @@ async def _find_existing_reply(
                 external_url=comment.get("html_url"),
             )
         if len(value) < 100:
+            reached_end = True
             break
+    if not reached_end:
+        # The caller posts the answer when this returns None, so a capped scan
+        # would answer the same question twice.
+        raise ProviderPaginationLimitError(
+            "github",
+            "pull-request review comments",
+            pages=MAX_COMMENT_PAGES,
+        )
     return None
 
 
@@ -173,7 +197,7 @@ async def _publish_with_client(
         headers=_headers(),
         json={"body": format_conversation_reply(event, answer, references)},
     )
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="github")
     value = response.json()
     if not isinstance(value, dict) or value.get("id") is None:
         raise RuntimeError("GitHub returned an invalid conversation reply")

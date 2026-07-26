@@ -6,13 +6,15 @@ import pytest
 
 from service.github_review import format_review_body
 from service.gitlab_review import (
+    MAX_DISCUSSION_PAGES,
+    MAX_NOTE_PAGES,
     fetch_gitlab_merge_request_diff,
     fetch_gitlab_pull_request_update_diff,
     publish_gitlab_review,
 )
 from service.review_description import merge_review_description
 from service.review_models import Category, ReviewFinding, ReviewReport, Severity
-from service.scm import PullRequestEvent
+from service.scm import ProviderPaginationLimitError, PullRequestEvent
 
 DIFF = (
     "diff --git a/service/read.py b/service/read.py\n"
@@ -626,3 +628,179 @@ async def test_removed_line_discussion_uses_only_old_line(monkeypatch):
     assert "position[new_line]" not in position
     assert position["position[old_path]"] == ["service/removed.py"]
     assert position["position[new_path]"] == ["service/removed.py"]
+
+
+@pytest.mark.anyio
+async def test_note_pagination_cap_does_not_authorize_a_duplicate_note(monkeypatch):
+    """Exhausting the note-scan cap is not evidence the summary note is absent."""
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+    finding_marker = f"<!-- diffuse-finding:{'f' * 64} -->"
+    methods: list[str] = []
+    note_pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.url.path.endswith("/discussions"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "discussion-1",
+                        "notes": [
+                            {
+                                "id": 201,
+                                "body": finding_marker,
+                                "url": _event().web_url + "#note_201",
+                            }
+                        ],
+                    }
+                ],
+            )
+        note_pages.append(int(request.url.params["page"]))
+        # Every page is full and none carries the marker, so the scan can never
+        # prove the summary note is missing.
+        return httpx.Response(
+            200,
+            json=[{"id": index, "body": "unrelated"} for index in range(100)],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(
+            ProviderPaginationLimitError,
+            match="cannot tell whether it already published",
+        ):
+            await publish_gitlab_review(
+                _event(),
+                review_run_id=42,
+                report=_report(),
+                diff_text=DIFF,
+                client=client,
+            )
+
+    assert note_pages == list(range(1, MAX_NOTE_PAGES + 1))
+    assert "POST" not in methods
+
+
+def _marker_discussion(finding_marker: str) -> dict:
+    """A discussion that already carries the published finding comment."""
+    return {
+        "id": "discussion-marker",
+        "notes": [
+            {
+                "id": 201,
+                "body": finding_marker,
+                "url": _event().web_url + "#note_201",
+            }
+        ],
+    }
+
+
+def _unrelated_discussions(count: int, *, offset: int = 0) -> list[dict]:
+    """Well-formed discussions carrying no Diffuse finding marker."""
+    return [
+        {
+            "id": f"discussion-{offset + index}",
+            "notes": [
+                {
+                    "id": 700_000 + offset + index,
+                    "body": "reviewer comment",
+                    "url": "https://example/note",
+                }
+            ],
+        }
+        for index in range(count)
+    ]
+
+
+@pytest.mark.anyio
+async def test_existing_summary_note_is_found_past_the_note_page_cap(monkeypatch):
+    """A busy merge request must not put Diffuse's own note out of reach.
+
+    Scanned oldest-first, the summary note an earlier attempt wrote is the
+    newest of thousands, so the scan burns its page budget and fails closed —
+    and it fails the same way on every future attempt, so the merge request can
+    never be reviewed again. Newest-first finds it on page one.
+    """
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+    marker = f"<!-- diffuse-review:42:{'a' * 40} -->"
+    finding_marker = f"<!-- diffuse-finding:{'f' * 64} -->"
+    corpus = [{"id": 5000 + index, "body": "unrelated"} for index in range(2500)]
+    corpus.append({"id": 9001, "body": f"Diffuse review\n\n{marker}"})
+    methods: list[str] = []
+    note_pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.url.path.endswith("/discussions"):
+            return httpx.Response(200, json=[_marker_discussion(finding_marker)])
+        params = request.url.params
+        note_pages.append(int(params["page"]))
+        ordered = list(corpus)
+        if params.get("sort") == "desc":
+            ordered.reverse()
+        start = (int(params["page"]) - 1) * int(params["per_page"])
+        return httpx.Response(
+            200,
+            json=ordered[start : start + int(params["per_page"])],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        published = await publish_gitlab_review(
+            _event(),
+            review_run_id=42,
+            report=_report(),
+            diff_text=DIFF,
+            client=client,
+        )
+
+    assert published.external_id == "9001"
+    assert note_pages == [1]
+    assert "POST" not in methods
+
+
+@pytest.mark.anyio
+async def test_discussion_scan_outlives_a_merge_request_with_thousands_of_threads(
+    monkeypatch,
+):
+    """The discussion budget must be unreachable, not a wall a review dies on.
+
+    GitLab's discussion listing takes no ordering parameter, so the only
+    protection is a budget large enough that a real merge request never meets
+    it. At 20 pages a thread-heavy merge request stops being reviewable at all:
+    the scan fails closed on every attempt and the review never lands.
+    """
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+    marker = f"<!-- diffuse-review:42:{'a' * 40} -->"
+    finding_marker = f"<!-- diffuse-finding:{'f' * 64} -->"
+    total = 2_150
+    discussion_pages: list[int] = []
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.url.path.endswith("/discussions"):
+            page = int(request.url.params["page"])
+            discussion_pages.append(page)
+            start = (page - 1) * 100
+            body = _unrelated_discussions(
+                max(0, min(start + 100, total) - start),
+                offset=start,
+            )
+            if start <= total - 1 < start + 100:
+                body[-1] = _marker_discussion(finding_marker)
+            return httpx.Response(200, json=body)
+        return httpx.Response(200, json=[{"id": 9001, "body": marker}])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        published = await publish_gitlab_review(
+            _event(),
+            review_run_id=42,
+            report=_report(),
+            diff_text=DIFF,
+            client=client,
+        )
+
+    assert published.external_id == "9001"
+    assert discussion_pages == list(range(1, 23))
+    assert "POST" not in methods
+    assert MAX_DISCUSSION_PAGES >= 100

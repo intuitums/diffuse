@@ -16,6 +16,7 @@ from service.repository_indexing import (
 from service.repository_mirror import (
     RepositoryMirror,
     RepositoryMirrorError,
+    RepositorySizeLimitError,
     max_repository_bytes,
 )
 from service.scm import validate_repository_name
@@ -260,6 +261,117 @@ def test_clone_over_the_byte_ceiling_is_refused_before_it_is_promoted(monkeypatc
 
     assert not mirror.mirror_path.exists()
     assert not list(mirror_root.glob(".21-clone-*"))
+
+
+class _MonitoredGitProcess:
+    def __init__(self, monitored_path, *, bytes_after_first_poll):
+        self.args = ["git", "fetch"]
+        self.pid = 999_999_999
+        self.returncode = None
+        self.monitored_path = monitored_path
+        self.bytes_after_first_poll = bytes_after_first_poll
+        self.communicate_calls = 0
+        self.killed = False
+
+    def communicate(self, timeout=None):
+        self.communicate_calls += 1
+        if self.communicate_calls == 1:
+            self.monitored_path.mkdir(parents=True, exist_ok=True)
+            (self.monitored_path / "incoming.pack").write_bytes(
+                b"x" * self.bytes_after_first_poll
+            )
+            raise subprocess.TimeoutExpired(self.args, timeout)
+        self.returncode = -9 if self.killed else 0
+        return "", ""
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
+def test_running_git_transfer_is_stopped_as_soon_as_it_crosses_the_byte_ceiling(
+    monkeypatch,
+    tmp_path,
+):
+    monitored_path = tmp_path / "incoming.git"
+    process = _MonitoredGitProcess(
+        monitored_path,
+        bytes_after_first_poll=2048,
+    )
+    progress_calls = []
+    monkeypatch.setenv("DIFFUSE_MAX_REPOSITORY_BYTES", "1024")
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    repository = RegisteredRepository(
+        id=23,
+        scm_provider="github",
+        scm_base_url="https://github.com",
+        full_name="owner/repo",
+        default_branch="main",
+        clone_url="https://github.com/owner/repo.git",
+        enabled=True,
+        mirror_state="unconfigured",
+        last_fetched_sha=None,
+        last_error_code=None,
+    )
+    mirror = RepositoryMirror(
+        repository,
+        root=tmp_path / "mirrors",
+        progress_callback=lambda: progress_calls.append("tick"),
+    )
+
+    with pytest.raises(
+        RepositorySizeLimitError,
+        match="mirror exceeds the configured size limit",
+    ):
+        mirror._run_git(
+            ["fetch"],
+            operation="fetch_mirror",
+            size_limit_path=monitored_path,
+        )
+
+    assert process.killed
+    assert progress_calls == ["tick"]
+
+
+def test_running_git_operation_refreshes_progress_before_it_finishes(
+    monkeypatch,
+    tmp_path,
+):
+    monitored_path = tmp_path / "incoming.git"
+    process = _MonitoredGitProcess(
+        monitored_path,
+        bytes_after_first_poll=128,
+    )
+    progress_calls = []
+    monkeypatch.setenv("DIFFUSE_MAX_REPOSITORY_BYTES", "4096")
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    repository = RegisteredRepository(
+        id=24,
+        scm_provider="github",
+        scm_base_url="https://github.com",
+        full_name="owner/repo",
+        default_branch="main",
+        clone_url="https://github.com/owner/repo.git",
+        enabled=True,
+        mirror_state="unconfigured",
+        last_fetched_sha=None,
+        last_error_code=None,
+    )
+    mirror = RepositoryMirror(
+        repository,
+        root=tmp_path / "mirrors",
+        progress_callback=lambda: progress_calls.append("tick"),
+    )
+
+    result = mirror._run_git(
+        ["fetch"],
+        operation="fetch_mirror",
+        size_limit_path=monitored_path,
+    )
+
+    assert result.returncode == 0
+    assert not process.killed
+    assert progress_calls == ["tick"]
 
 
 def test_checkout_refuses_a_tree_that_expands_past_the_byte_ceiling(monkeypatch, tmp_path):

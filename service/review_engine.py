@@ -11,7 +11,7 @@ from collections.abc import Callable
 import litellm
 from pydantic import BaseModel, ValidationError
 
-from repository_policy.resolve import ResolvedReviewPolicy
+from repository_policy.resolve import ResolvedReviewPolicy, neutralize_prompt_delimiters
 from retriever.retrieve import RetrievedContext, format_as_extra_instructions
 from service.diff_parser import ParsedDiff, pack_diff_files, parse_unified_diff
 from service.review_models import (
@@ -260,13 +260,19 @@ def _candidate_user_prompt(
     policy_text: str = "",
     security_policy_text: str = "",
 ) -> str:
+    # The diff and the retrieved context are both repository-authored, so they
+    # get the same delimiter neutralization the policy block gets. Without it a
+    # committed file containing a closing tag pushes the text after it outside
+    # the untrusted region, where it reads as a trusted operator instruction.
+    diff = neutralize_prompt_delimiters(diff_chunk)
+    context = neutralize_prompt_delimiters(context_text)
     return (
         f"Review pass: {pass_name}\n\n"
         "<untrusted_pull_request_diff>\n"
-        f"{diff_chunk}\n"
+        f"{diff}\n"
         "</untrusted_pull_request_diff>\n\n"
         "<untrusted_retrieved_repository_context>\n"
-        f"{context_text or 'No compatible indexed context was available.'}\n"
+        f"{context or 'No compatible indexed context was available.'}\n"
         "</untrusted_retrieved_repository_context>\n\n"
         "<repository_review_policy_json>\n"
         f"{json.dumps(policy_text)}\n"
@@ -467,10 +473,10 @@ def _diagram_prompt(
         f"{json.dumps(changed_paths)}\n"
         "</changed_paths_json>\n\n"
         "<untrusted_pull_request_diff>\n"
-        f"{chr(10).join(diff_chunks)[:diff_limit]}\n"
+        f"{neutralize_prompt_delimiters(chr(10).join(diff_chunks)[:diff_limit])}\n"
         "</untrusted_pull_request_diff>\n\n"
         "<untrusted_retrieved_repository_context>\n"
-        f"{context_text[:context_limit]}\n"
+        f"{neutralize_prompt_delimiters(context_text[:context_limit])}\n"
         "</untrusted_retrieved_repository_context>"
     )
 

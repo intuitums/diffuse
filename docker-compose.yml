@@ -1,7 +1,28 @@
+# Every service is capped for CPU, memory and PIDs. Without caps a single
+# runaway — a pathological regex in a review, a fork bomb in a cloned
+# repository's tooling, a leaking embedding batch — burns every core alongside
+# PostgreSQL and lets the kernel OOM killer pick whichever container it likes,
+# which in practice is often the database. The caps below confine a runaway to
+# its own container: it is OOM-killed inside its own cgroup, the process exits,
+# and `restart: unless-stopped` brings it back — a restart instead of a host
+# outage. (A container that is wedged rather than runaway never exits, so no
+# restart policy applies to it; see the worker healthcheck note below.) Sized
+# for the documented single-host deployment (roughly 4 cores / 8 GiB); raise
+# them together with the host, and keep the sum below the host's real capacity.
 services:
   db:
     image: pgvector/pgvector:pg17
     restart: unless-stopped
+    # PostgreSQL is the one process that must never be the OOM victim, so it
+    # gets the largest share: pgvector HNSW searches are memory hungry and an
+    # index build is CPU hungry. 64 MiB of /dev/shm (Docker's default) is not
+    # enough for parallel query workers, which fail with "could not resize
+    # shared memory segment" long before memory is actually exhausted.
+    mem_limit: 3g
+    mem_reservation: 1g
+    cpus: 2.0
+    pids_limit: 256
+    shm_size: 512m
     environment:
       POSTGRES_USER: diffuse
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
@@ -28,6 +49,11 @@ services:
     init: true
     security_opt:
       - no-new-privileges:true
+    # Runs DDL and exits. It needs almost nothing, but an unbounded migration
+    # container would still be free to take the host down with it.
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 64
     command: ["diffuse", "database", "migrate"]
     depends_on:
       db:
@@ -48,6 +74,12 @@ services:
     init: true
     security_opt:
       - no-new-privileges:true
+    # Webhook ingress: bodies are capped at 1 MB and the heavy work is handed
+    # to the worker, so one core and a gigabyte is generous. The PID cap bounds
+    # a thread-pool leak in the ASGI app.
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -90,6 +122,13 @@ services:
     init: true
     security_opt:
       - no-new-privileges:true
+    # The worker is the container most likely to run away: it parses untrusted
+    # diffs, runs tree-sitter over cloned repositories, and shells out to git.
+    # One core means a runaway cannot starve PostgreSQL, and the memory cap
+    # makes the worker the OOM killer's obvious victim instead of the database.
+    mem_limit: 2g
+    cpus: 1.0
+    pids_limit: 512
     command: ["python", "-m", "service.worker"]
     depends_on:
       migrate:
@@ -100,6 +139,25 @@ services:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
     volumes:
       - repository_data:/var/lib/diffuse/repositories
+    # A worker that is up but draining nothing is the failure `restart:
+    # unless-stopped` cannot see, so the probe asks for progress rather than
+    # for a process: the loop refreshes this file on every queue poll and on
+    # every lease heartbeat during a long review. Nothing refreshes it while
+    # the worker is wedged on a regex, a lock, or an endless retry.
+    #
+    # This probe SURFACES that condition; it does not remediate it. Plain
+    # `docker compose` never restarts an unhealthy container — `restart:
+    # unless-stopped` only reacts to the process exiting — so a wedged worker
+    # is marked `(unhealthy)` in `docker compose ps` and keeps running. To have
+    # it acted on, alert on the health status, or add an autoheal sidecar, or
+    # run this under Swarm (`deploy.restart_policy`) or Kubernetes, where a
+    # failing liveness probe does restart the container.
+    healthcheck:
+      test: ["CMD", "python", "-m", "service.worker_liveness"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     logging:
       driver: json-file
       options:

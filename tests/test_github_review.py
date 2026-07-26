@@ -5,6 +5,7 @@ import pytest
 
 from service.finding_lineage import FindingSnapshot, ReviewContinuity
 from service.github_review import (
+    MAX_REVIEW_PAGES,
     _finding_comment,
     format_review_body,
     publish_github_review,
@@ -18,7 +19,7 @@ from service.review_models import (
     SecurityClassification,
     Severity,
 )
-from service.scm import PullRequestEvent
+from service.scm import ProviderPaginationLimitError, PullRequestEvent
 
 
 def _event() -> PullRequestEvent:
@@ -731,3 +732,40 @@ async def test_continuity_publishes_only_new_inline_findings(monkeypatch):
     assert "1 new · 1 still open · 0 reopened · 1 addressed" in review_payloads[0]["body"]
     assert "Remove the stale bypass" in review_payloads[0]["body"]
     assert published.finding_comments[0].external_id == "114"
+
+
+@pytest.mark.anyio
+async def test_review_pagination_cap_does_not_authorize_a_duplicate_review(monkeypatch):
+    """Exhausting the review-scan cap is not evidence the marker is absent."""
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    methods: list[str] = []
+    review_pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if "page" in request.url.params:
+            review_pages.append(int(request.url.params["page"]))
+        # Every page is full and none carries the marker, so the scan can never
+        # prove the earlier Diffuse review is missing.
+        return httpx.Response(
+            200,
+            json=[
+                {"id": index, "html_url": f"https://example/review/{index}", "body": ""}
+                for index in range(100)
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(
+            ProviderPaginationLimitError,
+            match="cannot tell whether it already published",
+        ):
+            await publish_github_review(
+                _event(),
+                review_run_id=42,
+                report=_report(),
+                client=client,
+            )
+
+    assert review_pages == list(range(1, MAX_REVIEW_PAGES + 1))
+    assert "POST" not in methods

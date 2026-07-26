@@ -9,7 +9,11 @@ import httpx
 
 from service.feedback_models import ReviewReaction
 from service.github import GITHUB_API_VERSION
-from service.scm import FeedbackSyncEvent
+from service.scm import (
+    FeedbackSyncEvent,
+    ProviderPaginationLimitError,
+    raise_for_provider_status,
+)
 
 MAX_REACTION_PAGES = 20
 
@@ -48,7 +52,7 @@ async def _is_collaborator(
     )
     if response.status_code == 404:
         return False
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="github")
     return response.status_code == 204
 
 
@@ -85,7 +89,7 @@ async def _fetch_with_client(
             headers=_headers(),
             params={"per_page": 100, "page": page},
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="github")
         value = response.json()
         if not isinstance(value, list):
             raise RuntimeError("GitHub returned an invalid review-reaction list")
@@ -121,8 +125,10 @@ async def _fetch_with_client(
             reached_end = True
             break
     if not reached_end:
-        raise RuntimeError(
-            "GitHub review reactions exceed Diffuse's safe pagination limit"
+        raise ProviderPaginationLimitError(
+            "github",
+            "review reactions",
+            pages=MAX_REACTION_PAGES,
         )
 
     authorization: dict[str, bool] = {}

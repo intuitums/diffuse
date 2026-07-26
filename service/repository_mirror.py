@@ -9,7 +9,8 @@ import shutil
 import signal
 import subprocess
 import tempfile
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -22,9 +23,17 @@ DEFAULT_MAX_REPOSITORY_BYTES = 5 * 1024**3
 # holds, so the size scan itself has to stop long before it walks all of them.
 MAX_CHECKOUT_TREE_ENTRIES = 2_000_000
 STREAM_CHUNK_BYTES = 65536
+# Git subprocesses are polled instead of waited on in one blocking call. This
+# bounds both how far a transfer can overshoot its disk ceiling and how long a
+# healthy operation goes without refreshing its workflow lease/liveness signal.
+PROCESS_MONITOR_INTERVAL_SECONDS = 1.0
 
 
 class RepositoryMirrorError(RuntimeError):
+    pass
+
+
+class RepositorySizeLimitError(RepositoryMirrorError):
     pass
 
 
@@ -63,6 +72,7 @@ class RepositoryMirror:
         repository: RegisteredRepository,
         *,
         root: str | Path | None = None,
+        progress_callback: Callable[[], None] | None = None,
     ) -> None:
         self.repository = repository
         configured_root = root or os.environ.get(
@@ -72,6 +82,7 @@ class RepositoryMirror:
         self.root = Path(configured_root)
         self.mirror_path = self.root / f"{repository.id}.git"
         self.lock_path = self.root / f".{repository.id}.lock"
+        self.progress_callback = progress_callback
 
     def _ensure_root(self) -> None:
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -130,6 +141,7 @@ class RepositoryMirror:
         operation: str,
         timeout: int = 600,
         check: bool = True,
+        size_limit_path: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         process = subprocess.Popen(
             ["git", *arguments],
@@ -142,9 +154,34 @@ class RepositoryMirror:
             # timeout can tear down as a whole.
             start_new_session=True,
         )
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
+        deadline = time.monotonic() + timeout
+        timed_out = False
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=min(PROCESS_MONITOR_INTERVAL_SECONDS, remaining)
+                )
+                break
+            except subprocess.TimeoutExpired:
+                try:
+                    if self.progress_callback is not None:
+                        self.progress_callback()
+                    if (
+                        size_limit_path is not None
+                        and self._exceeds_byte_ceiling(size_limit_path)
+                    ):
+                        raise RepositorySizeLimitError(
+                            "Repository mirror exceeds the configured size limit"
+                        )
+                except BaseException:
+                    _terminate_process_group(process)
+                    process.communicate()
+                    raise
+        if timed_out:
             _terminate_process_group(process)
             stdout, stderr = process.communicate()
             if check:
@@ -163,6 +200,7 @@ class RepositoryMirror:
     def _exceeds_byte_ceiling(self, path: Path) -> bool:
         limit = max_repository_bytes()
         total = 0
+        next_progress_at = time.monotonic() + PROCESS_MONITOR_INTERVAL_SECONDS
         for directory, _directories, file_names in os.walk(path, followlinks=False):
             for file_name in file_names:
                 try:
@@ -173,6 +211,14 @@ class RepositoryMirror:
                     # The verdict can no longer change and a hostile repository can
                     # hold millions of entries, so stop walking once it is decided.
                     return True
+                if (
+                    self.progress_callback is not None
+                    and time.monotonic() >= next_progress_at
+                ):
+                    self.progress_callback()
+                    next_progress_at = (
+                        time.monotonic() + PROCESS_MONITOR_INTERVAL_SECONDS
+                    )
         return False
 
     def _checkout_exceeds_byte_ceiling(self, commit_sha: str) -> bool:
@@ -197,6 +243,7 @@ class RepositoryMirror:
         total = 0
         entries = 0
         pending = b""
+        next_progress_at = time.monotonic() + PROCESS_MONITOR_INTERVAL_SECONDS
         try:
             while chunk := stream.read(STREAM_CHUNK_BYTES):
                 records = (pending + chunk).split(b"\0")
@@ -206,6 +253,14 @@ class RepositoryMirror:
                     total += _tree_entry_bytes(record)
                     if total > limit or entries > MAX_CHECKOUT_TREE_ENTRIES:
                         return True
+                if (
+                    self.progress_callback is not None
+                    and time.monotonic() >= next_progress_at
+                ):
+                    self.progress_callback()
+                    next_progress_at = (
+                        time.monotonic() + PROCESS_MONITOR_INTERVAL_SECONDS
+                    )
         finally:
             # The stream is abandoned as soon as the ceiling is crossed, so the
             # reader must not leave git writing into a pipe nobody drains.
@@ -272,28 +327,45 @@ class RepositoryMirror:
                     str(temporary_mirror),
                 ],
                 operation="clone_mirror",
+                size_limit_path=temporary_mirror,
             )
             if self._exceeds_byte_ceiling(temporary_mirror):
-                raise RepositoryMirrorError("Repository mirror exceeds the configured size limit")
+                raise RepositorySizeLimitError(
+                    "Repository mirror exceeds the configured size limit"
+                )
             os.replace(temporary_mirror, self.mirror_path)
         finally:
             shutil.rmtree(temporary_parent, ignore_errors=True)
 
     def _fetch_locked(self) -> None:
         self._ensure_mirror_locked()
-        self._run_git(
-            [
-                f"--git-dir={self.mirror_path}",
-                "fetch",
-                "--prune",
-                "--tags",
-                "origin",
-                "+refs/heads/*:refs/heads/*",
-            ],
-            operation="fetch_mirror",
-        )
-        if self._exceeds_byte_ceiling(self.mirror_path):
-            raise RepositoryMirrorError("Repository mirror exceeds the configured size limit")
+        try:
+            if self._exceeds_byte_ceiling(self.mirror_path):
+                raise RepositorySizeLimitError(
+                    "Repository mirror exceeds the configured size limit"
+                )
+            self._run_git(
+                [
+                    f"--git-dir={self.mirror_path}",
+                    "fetch",
+                    "--prune",
+                    "--tags",
+                    "origin",
+                    "+refs/heads/*:refs/heads/*",
+                ],
+                operation="fetch_mirror",
+                size_limit_path=self.mirror_path,
+            )
+            if self._exceeds_byte_ceiling(self.mirror_path):
+                raise RepositorySizeLimitError(
+                    "Repository mirror exceeds the configured size limit"
+                )
+        except RepositorySizeLimitError:
+            # A mirror is a rebuildable cache. If fetch crossed the ceiling,
+            # remove every object it brought in rather than leaving an
+            # oversized cache to consume the shared database volume forever.
+            shutil.rmtree(self.mirror_path, ignore_errors=True)
+            raise
 
     def _resolve_locked(self, revision: str) -> str:
         result = self._run_git(
@@ -354,16 +426,21 @@ class RepositoryMirror:
                 added = True
                 yield worktree
             finally:
-                if added:
-                    self._run_git(
-                        [
-                            f"--git-dir={self.mirror_path}",
-                            "worktree",
-                            "remove",
-                            "--force",
-                            str(worktree),
-                        ],
-                        operation="remove_worktree",
-                        check=False,
-                    )
-                shutil.rmtree(temporary_parent, ignore_errors=True)
+                try:
+                    if added:
+                        self._run_git(
+                            [
+                                f"--git-dir={self.mirror_path}",
+                                "worktree",
+                                "remove",
+                                "--force",
+                                str(worktree),
+                            ],
+                            operation="remove_worktree",
+                            check=False,
+                        )
+                finally:
+                    # Progress callbacks may deliberately abort a long cleanup
+                    # after the job is superseded. The disposable checkout must
+                    # still be removed in that case.
+                    shutil.rmtree(temporary_parent, ignore_errors=True)

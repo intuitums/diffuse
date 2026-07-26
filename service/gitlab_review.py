@@ -20,12 +20,21 @@ from service.github_review import (
 )
 from service.review_description import merge_review_description
 from service.review_models import ReviewFinding, ReviewReport
-from service.scm import PullRequestEvent
+from service.scm import (
+    ProviderPaginationLimitError,
+    PullRequestEvent,
+    raise_for_provider_status,
+)
 
 MAX_DIFF_BYTES = 2_000_000
 MAX_RESPONSE_BYTES = 2_000_000
 MAX_MERGE_REQUEST_DESCRIPTION_CHARS = 1_048_576
-MAX_DISCUSSION_PAGES = 20
+# GitLab's discussion listing accepts no ordering parameter, so unlike the
+# note scan it cannot put Diffuse's own markers first. The budget is instead
+# set high enough that reaching it means something is genuinely wrong: 100
+# pages is 10,000 discussions on a single merge request.
+MAX_DISCUSSION_PAGES = 100
+MAX_NOTE_PAGES = 20
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
 
 
@@ -74,7 +83,7 @@ async def _fetch_bytes(
 ) -> bytes:
     content = bytearray()
     async with client.stream("GET", url, headers=headers, params=params) as response:
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="gitlab")
         async for chunk in response.aiter_bytes():
             content.extend(chunk)
             if len(content) > limit:
@@ -222,18 +231,25 @@ async def _find_existing_note(
     marker: str,
 ) -> PublishedReview | None:
     url = f"{_merge_request_path(event)}/notes"
-    for page in range(1, 21):
+    reached_end = False
+    for page in range(1, MAX_NOTE_PAGES + 1):
         response = await client.get(
             url,
             headers=_headers(),
+            # Newest first: the summary note this is looking for carries the
+            # current review run's marker, so if it exists an earlier attempt
+            # of this same job wrote it moments ago. Reading from the oldest
+            # end instead would walk a long-lived merge request's entire note
+            # history first, which is how a page cap turns into a merge
+            # request Diffuse can never review again.
             params={
                 "order_by": "created_at",
-                "sort": "asc",
+                "sort": "desc",
                 "per_page": 100,
                 "page": page,
             },
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="gitlab")
         if len(response.content) > MAX_RESPONSE_BYTES:
             raise RuntimeError("GitLab note list exceeds Diffuse's size limit")
         notes = response.json()
@@ -255,7 +271,17 @@ async def _find_existing_note(
                     ),
                 )
         if len(notes) < 100:
+            reached_end = True
             break
+    if not reached_end:
+        # Stopping at the cap makes "not found" a guess. Reporting absence here
+        # would authorize a second review note on a merge request that already
+        # carries one, so fail closed and let the retry budget cover it.
+        raise ProviderPaginationLimitError(
+            "gitlab",
+            "merge-request notes",
+            pages=MAX_NOTE_PAGES,
+        )
     return None
 
 
@@ -326,13 +352,14 @@ async def _published_finding_discussions(
 ) -> dict[str, PublishedFindingComment]:
     comments: dict[str, PublishedFindingComment] = {}
     url = f"{_merge_request_path(event)}/discussions"
+    reached_end = False
     for page in range(1, MAX_DISCUSSION_PAGES + 1):
         response = await client.get(
             url,
             headers=_headers(),
             params={"per_page": 100, "page": page},
         )
-        response.raise_for_status()
+        raise_for_provider_status(response, provider="gitlab")
         if len(response.content) > MAX_RESPONSE_BYTES:
             raise RuntimeError("GitLab discussion list exceeds Diffuse's size limit")
         value = response.json()
@@ -343,7 +370,17 @@ async def _published_finding_discussions(
             if comment is not None:
                 comments.setdefault(comment.fingerprint, comment)
         if len(value) < 100:
+            reached_end = True
             break
+    if not reached_end:
+        # A truncated scan looks identical to "this finding has no discussion
+        # yet", and the caller would open a duplicate thread for every finding
+        # that lives beyond the cap.
+        raise ProviderPaginationLimitError(
+            "gitlab",
+            "merge-request discussions",
+            pages=MAX_DISCUSSION_PAGES,
+        )
     return comments
 
 
@@ -371,7 +408,7 @@ async def _create_finding_discussion(
     )
     if response.status_code in {400, 422}:
         return None
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="gitlab")
     if len(response.content) > MAX_RESPONSE_BYTES:
         raise RuntimeError("GitLab created discussion exceeds Diffuse's size limit")
     comment = _published_discussion(event, response.json())
@@ -429,7 +466,7 @@ def _validated_merge_request(
     response: httpx.Response,
     event: PullRequestEvent,
 ) -> dict[str, object]:
-    response.raise_for_status()
+    raise_for_provider_status(response, provider="gitlab")
     if len(response.content) > MAX_RESPONSE_BYTES:
         raise RuntimeError("GitLab merge-request response exceeds Diffuse's size limit")
     value = response.json()
@@ -578,7 +615,7 @@ async def publish_gitlab_review(
                         "merge_request_diff_head_sha": event.head_sha,
                     },
                 )
-                response.raise_for_status()
+                raise_for_provider_status(response, provider="gitlab")
                 if len(response.content) > MAX_RESPONSE_BYTES:
                     raise RuntimeError(
                         "GitLab created-note response exceeds Diffuse's size limit"

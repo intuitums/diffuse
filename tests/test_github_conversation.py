@@ -144,3 +144,62 @@ async def test_conversation_reply_recovers_remote_create_without_duplication(
 
     assert result.external_id == "1302"
     assert methods == ["GET"]
+
+
+def _sorted_page(request: httpx.Request, corpus: list[dict]) -> httpx.Response:
+    """Serve a corpus the way GitHub serves it: oldest first unless asked."""
+    params = request.url.params
+    ordered = list(corpus)
+    if params.get("direction") == "desc":
+        ordered.reverse()
+    page = int(params["page"])
+    per_page = int(params["per_page"])
+    start = (page - 1) * per_page
+    return httpx.Response(200, json=ordered[start : start + per_page])
+
+
+@pytest.mark.anyio
+async def test_existing_reply_is_found_on_a_pull_request_past_the_page_cap(
+    monkeypatch,
+):
+    """A bot-heavy thread must not put the answer out of Diffuse's reach.
+
+    Scanning oldest-first, Diffuse's own reply is the very last comment on a
+    long-lived pull request, so the scan walks into its page cap and gives up.
+    That is a permanent state — the comment list only grows — so the question
+    can never be answered and every attempt ends as a hard failure.
+    """
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    corpus = [
+        {
+            "id": 2000 + index,
+            "body": "unrelated discussion",
+            "in_reply_to_id": 901,
+            "html_url": f"https://example/comment/{2000 + index}",
+        }
+        for index in range(2500)
+    ]
+    corpus.append(
+        {
+            "id": 1302,
+            "body": "Already answered.\n\n<!-- diffuse-conversation:1201 -->",
+            "in_reply_to_id": 901,
+            "html_url": "https://example/comment/1302",
+        }
+    )
+    pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pages.append(int(request.url.params["page"]))
+        return _sorted_page(request, corpus)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await publish_github_conversation_reply(
+            _event(),
+            answer="Stored answer.",
+            references=(),
+            client=client,
+        )
+
+    assert result.external_id == "1302"
+    assert pages == [1]

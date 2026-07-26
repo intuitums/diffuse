@@ -1,8 +1,10 @@
+from unittest.mock import AsyncMock
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
+from service import gitlab_check
 from service.gitlab_check import (
     complete_gitlab_check_run,
     ensure_gitlab_check_run,
@@ -152,3 +154,56 @@ async def test_status_retries_documented_concurrent_update_conflict(monkeypatch)
         )
 
     assert attempts == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status_code", [429, 500, 502, 503, 504])
+async def test_status_retries_transient_gateway_faults(monkeypatch, status_code):
+    """A single 503 used to fail the whole review job instead of backing off."""
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+    monkeypatch.setattr(gitlab_check.anyio, "sleep", AsyncMock())
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(status_code, json={"message": "try again"})
+        return httpx.Response(201, json={"id": 93, "status": "running"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await ensure_gitlab_check_run(
+            _event(),
+            external_key="diffuse-review-run:42",
+            client=client,
+        )
+
+    assert attempts == 2
+
+
+@pytest.mark.anyio
+async def test_status_conflict_backoff_grows_and_is_jittered(monkeypatch):
+    """Racing review jobs must not line their conflict retries up on one instant."""
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+    windows: list[tuple[float, float]] = []
+    monkeypatch.setattr(gitlab_check.anyio, "sleep", AsyncMock())
+
+    def uniform(low: float, high: float) -> float:
+        windows.append((low, high))
+        return low
+
+    monkeypatch.setattr(gitlab_check.random, "uniform", uniform)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"message": "update in progress"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await ensure_gitlab_check_run(
+                _event(),
+                external_key="diffuse-review-run:42",
+                client=client,
+            )
+
+    assert windows == [(0.25, 0.5), (0.5, 1.0)]
+    assert len(windows) == gitlab_check.MAX_STATUS_ATTEMPTS - 1

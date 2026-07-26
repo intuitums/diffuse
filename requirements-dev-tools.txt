@@ -1,0 +1,8 @@
+# Tooling only. Kept separate from requirements-dev.txt so CI can install the
+# hash-pinned production set from requirements.lock and layer these on top,
+# instead of resolving requirements.txt a second time and testing a dependency
+# set no deployment ever runs.
+pytest==9.0.2
+ruff>=0.12,<1
+pip-tools>=7.5,<8
+pip-audit>=2.10,<3

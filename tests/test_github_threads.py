@@ -203,3 +203,58 @@ async def test_reopen_operation_unresolves_before_replying(monkeypatch):
     assert result.external_reply_id == "204"
     assert len(graphql_queries) == 2
     assert "unresolveReviewThread" in graphql_queries[1]
+
+
+@pytest.mark.anyio
+async def test_existing_thread_reply_is_found_past_the_comment_page_cap(monkeypatch):
+    """The addressed notice must stay reachable on a long-lived pull request.
+
+    Read oldest-first, Diffuse's own reply is the newest comment of thousands,
+    so the scan exhausts its page budget and fails — permanently, since the
+    comment list only grows. Reading newest-first finds it on page one.
+    """
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    marker = "<!-- diffuse-thread-operation:21:address -->"
+    corpus = [
+        {
+            "id": 3000 + index,
+            "body": "unrelated discussion",
+            "in_reply_to_id": 101,
+            "html_url": f"https://example/comment/{3000 + index}",
+        }
+        for index in range(2500)
+    ]
+    corpus.append(
+        {
+            "id": 202,
+            "body": f"already addressed\n\n{marker}",
+            "in_reply_to_id": 101,
+            "html_url": "https://example/comment/202",
+        }
+    )
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.url.path == "/graphql":
+            return httpx.Response(200, json=_thread_query_response(resolved=True))
+        params = request.url.params
+        ordered = list(corpus)
+        if params.get("direction") == "desc":
+            ordered.reverse()
+        start = (int(params["page"]) - 1) * int(params["per_page"])
+        return httpx.Response(
+            200,
+            json=ordered[start : start + int(params["per_page"])],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await apply_github_thread_operation(
+            _event(),
+            _operation(),
+            client=client,
+        )
+
+    assert result.external_reply_id == "202"
+    # One listing page, then the GraphQL thread lookup — and no duplicate post.
+    assert methods.count("GET") == 1
