@@ -24,6 +24,7 @@ from repository_policy.resolve import (
     apply_approved_custom_contexts,
     apply_approved_learned_rules,
     evaluate_trigger,
+    repository_failure_comment_enabled,
     resolve_review_policy,
 )
 from repository_policy.store import load_repository_policy
@@ -108,7 +109,11 @@ from service.github_check import (
 )
 from service.github_conversation import publish_github_conversation_reply
 from service.github_feedback import fetch_github_review_reactions
-from service.github_review import PublishedReview, publish_github_review
+from service.github_review import (
+    PublishedReview,
+    post_github_review_failure_notice,
+    publish_github_review,
+)
 from service.github_threads import apply_github_thread_operation
 from service.gitlab_approval import publish_gitlab_approval
 from service.gitlab_check import (
@@ -121,6 +126,7 @@ from service.gitlab_review import (
     fetch_gitlab_merge_request_commits,
     fetch_gitlab_merge_request_diff,
     fetch_gitlab_pull_request_update_diff,
+    post_gitlab_review_failure_notice,
     publish_gitlab_review,
 )
 from service.gitlab_threads import apply_gitlab_thread_operation
@@ -147,6 +153,10 @@ from service.review_engine import (
     review_passes,
     review_provenance_minimum_confidence,
     review_verifier_model,
+)
+from service.review_failure_notice import (
+    TerminalReviewFailure,
+    terminal_review_failure,
 )
 from service.review_models import ReviewFinding, ReviewReport
 from service.review_provenance import (
@@ -729,9 +739,36 @@ def _mark_native_review_superseded(review_run_id: int) -> None:
         mark_review_superseded(conn, review_run_id)
 
 
-def _mark_native_review_terminal_failed(workflow_job_id: int) -> None:
+def _mark_native_review_terminal_failed(
+    workflow_job_id: int,
+    error_code: str,
+) -> None:
     with closing(get_conn()) as conn, conn:
-        mark_review_terminal_failed(conn, workflow_job_id)
+        mark_review_terminal_failed(conn, workflow_job_id, error_code=error_code)
+
+
+def _failure_notice_enabled(
+    repo_full_name: str,
+    repository_id: int | None,
+) -> bool:
+    """Resolve whether this repository wants terminal-failure notices.
+
+    Fails open: the whole point of the notice is that the default experience is
+    not silence, so a policy that cannot be read still gets a notice.
+    """
+    try:
+        snapshot_id = compatible_snapshot_id(repo_full_name, repository_id)
+        if snapshot_id is None:
+            return True
+        with closing(get_conn()) as conn:
+            snapshot = load_repository_policy(conn, snapshot_id)
+    except Exception:
+        LOGGER.exception(
+            "Failed to resolve the review failure-notice policy repo=%s",
+            repo_full_name,
+        )
+        return True
+    return repository_failure_comment_enabled(snapshot)
 
 
 def _latest_native_review_head(
@@ -1167,6 +1204,44 @@ async def _complete_existing_job_check(
         conclusion=conclusion,
         message=message,
     )
+
+
+async def _post_terminal_failure_notice(
+    job: WorkflowJob,
+    event: PullRequestEvent,
+    failure: TerminalReviewFailure,
+) -> None:
+    """Tell the pull request that Diffuse gave up on it.
+
+    Best effort by construction: the review has already failed, so every error
+    here is logged and swallowed rather than allowed to mask the original
+    failure or to queue more work.
+    """
+    try:
+        enabled = await anyio.to_thread.run_sync(
+            partial(_failure_notice_enabled, event.repo_full_name, job.repository_id)
+        )
+        if not enabled:
+            return
+        if event.provider == "github":
+            await post_github_review_failure_notice(event, failure=failure)
+        elif event.provider == "gitlab":
+            await post_gitlab_review_failure_notice(event, failure=failure)
+        else:
+            LOGGER.error(
+                "Cannot report a terminal review failure on provider=%s job=%s",
+                event.provider,
+                job.id,
+            )
+    except Exception:
+        LOGGER.exception(
+            "Failed to post the terminal review failure notice "
+            "job=%s provider=%s repo=%s number=%s",
+            job.id,
+            event.provider,
+            event.repo_full_name,
+            event.number,
+        )
 
 
 def _index_repository_job(job: WorkflowJob, event: PushEvent, worker_id: str) -> None:
@@ -1897,38 +1972,55 @@ async def run_once(worker_id: str) -> bool:
             job.job_type == "review_pull_request"
             and next_status in {"dead", "failed"}
         ):
+            failure = terminal_review_failure(
+                job.id,
+                retries_exhausted=next_status == "dead",
+            )
             try:
                 await anyio.to_thread.run_sync(
-                    partial(_mark_native_review_terminal_failed, job.id)
+                    partial(
+                        _mark_native_review_terminal_failed,
+                        job.id,
+                        failure.error_code,
+                    )
                 )
             except Exception:
                 LOGGER.exception(
                     "Failed to finalize terminal review lineage job=%s",
                     job.id,
                 )
-            if next_status == "dead":
-                terminal_message = (
-                    "Diffuse could not complete this review after exhausting "
-                    "its retry policy."
-                )
-            else:
-                terminal_message = (
-                    "Diffuse could not complete this review because the job "
-                    "failed in a way that retrying cannot resolve."
-                )
             try:
                 event = PullRequestEvent.from_payload(job.payload)
-                await _complete_existing_job_check(
-                    job,
-                    event,
-                    conclusion="failure",
-                    message=terminal_message,
-                )
             except Exception:
+                event = None
                 LOGGER.exception(
-                    "Failed to finalize terminal review check job=%s",
+                    "Failed to decode the terminal review payload job=%s",
                     job.id,
                 )
+            if event is not None:
+                LOGGER.error(
+                    "Terminal review failure job=%s provider=%s repo=%s "
+                    "number=%s head=%s error_code=%s",
+                    job.id,
+                    event.provider,
+                    event.repo_full_name,
+                    event.number,
+                    event.head_sha,
+                    failure.error_code,
+                )
+                try:
+                    await _complete_existing_job_check(
+                        job,
+                        event,
+                        conclusion="failure",
+                        message=failure.summary,
+                    )
+                except Exception:
+                    LOGGER.exception(
+                        "Failed to finalize terminal review check job=%s",
+                        job.id,
+                    )
+                await _post_terminal_failure_notice(job, event, failure)
         LOGGER.exception(
             "Workflow job failed job=%s job_type=%s error_type=%s next_status=%s",
             job.id,

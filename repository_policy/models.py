@@ -218,6 +218,7 @@ class TriggerSettingsPatch(StrictPolicyModel):
     exclude_keywords: tuple[str, ...] | None = Field(default=None, max_length=100)
     file_change_limit: int | None = Field(default=None, ge=1, le=100_000)
     status_check: bool | None = None
+    failure_comment: bool | None = None
     blocking_severities: tuple[SeverityName, ...] | None = Field(
         default=None,
         min_length=1,

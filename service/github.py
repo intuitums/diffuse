@@ -241,6 +241,7 @@ def normalize_manual_review_request(payload: dict) -> ManualReviewRequest | None
     if (
         actor_type.casefold() == "bot"
         or author_association not in MANUAL_TRIGGER_ASSOCIATIONS
+        or is_diffuse_generated(body)
         or not is_manual_review_trigger(body)
     ):
         return None
