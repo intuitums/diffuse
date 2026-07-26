@@ -723,6 +723,96 @@ async def test_worker_publishes_exact_review_status_check(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_worker_refuses_to_review_without_a_compatible_index(monkeypatch):
+    """A PR opened mid-index must not publish a context-free, policy-free review."""
+    event = _event()
+    job = _job(event)
+
+    monkeypatch.setattr(
+        worker,
+        "fetch_pull_request_diff",
+        AsyncMock(return_value="diff --git a/app.py b/app.py"),
+    )
+    monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_args: None)
+    monkeypatch.setattr(
+        worker,
+        "_heartbeat_and_check_current",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        worker,
+        "_load_review_policy",
+        lambda *_args: pytest.fail("policy must not degrade to an empty snapshot"),
+    )
+    monkeypatch.setattr(
+        worker,
+        "_begin_native_review",
+        lambda *_args: pytest.fail("review must not start without a usable index"),
+    )
+
+    with pytest.raises(worker.MissingRepositoryIndexError) as raised:
+        await worker.process_review_job(job, "worker-1")
+
+    # ValueError subclasses are classified as permanent failures in run_once.
+    assert not isinstance(raised.value, ValueError)
+
+
+@pytest.mark.anyio
+async def test_terminal_failure_before_policy_resolution_completes_the_check(
+    monkeypatch,
+):
+    """A pre-flight failure must still turn an existing check run red."""
+    event = _event()
+    job = _job(event)
+    check_run = CheckRunHandle(
+        id=71,
+        status="in_progress",
+        external_key="diffuse-review-run:41",
+        external_id="81",
+        external_url="https://example/check/81",
+        conclusion=None,
+    )
+    complete_check = AsyncMock()
+
+    monkeypatch.setattr(worker, "_claim", lambda *_args: job)
+    monkeypatch.setattr(
+        worker,
+        "fetch_pull_request_diff",
+        AsyncMock(return_value="diff --git a/app.py b/app.py"),
+    )
+    monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_args: None)
+    monkeypatch.setattr(
+        worker,
+        "_heartbeat_and_check_current",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(worker, "_fail", lambda *_args, **_kwargs: "dead")
+    monkeypatch.setattr(
+        worker,
+        "_mark_native_review_terminal_failed",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        worker,
+        "_get_native_check_for_job",
+        lambda *_args: check_run,
+    )
+    monkeypatch.setattr(worker, "_complete_native_check", complete_check)
+
+    assert await worker.run_once("worker-1")
+
+    complete_check.assert_awaited_once_with(
+        event,
+        check_run,
+        conclusion="failure",
+        message=(
+            "Diffuse could not complete this review after exhausting "
+            "its retry policy."
+        ),
+    )
+
+
+@pytest.mark.anyio
 async def test_worker_persists_trigger_skip_without_retrieval_or_publication(monkeypatch):
     event = _event(is_draft=True)
     job = _job(event)
@@ -1148,6 +1238,23 @@ async def test_embedding_dimension_mismatch_is_retried(monkeypatch):
         monkeypatch,
         job,
         RuntimeError("Embedding model returned 1024 dimensions; expected 1536"),
+    )
+
+    assert await worker.run_once("worker-1")
+
+    assert recorded == {"retryable": True}
+
+
+@pytest.mark.anyio
+async def test_missing_repository_index_is_retried(monkeypatch):
+    """Indexing that has not finished yet is transient, not a permanent fault."""
+    job = _job(_event())
+    recorded = _capture_failure_classification(
+        monkeypatch,
+        job,
+        worker.MissingRepositoryIndexError(
+            "Repository has no compatible active index; run repository sync first"
+        ),
     )
 
     assert await worker.run_once("worker-1")
