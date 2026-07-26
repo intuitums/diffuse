@@ -14,32 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  control-room:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: diffuse-control
-    steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.16.0
-          run_install: false
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: diffuse-control/pnpm-lock.yaml
-      - name: Install locked control-room dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Lint control room
-        run: pnpm lint --max-warnings 10
-      - name: Type-check control room and Convex functions
-        run: pnpm typecheck
-      - name: Build control room
-        run: pnpm build
-
   lint-and-unit:
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -186,31 +186,6 @@ Never test a restore over the live database. Record the exact restore procedure
 for the server's backup system and rehearse it before the first production
 upgrade.
 
-## Optional managed control-plane connection
-
-This is not required for self-hosting. To expose operational status in the
-managed control room, configure the Convex HTTP-actions URL and a private
-signing-key file:
-
-```dotenv
-DIFFUSE_CONTROL_PLANE_URL=https://your-deployment.convex.site
-DIFFUSE_CONTROL_PLANE_SIGNING_SECRET_FILE=/run/secrets/diffuse-control-plane-signing-key
-```
-
-The secret file must contain at least 32 random bytes and must not be readable
-by group or world. The same value is configured as
-`DIFFUSE_CONTROL_PLANE_SIGNING_KEY` in the Convex deployment. Publish a
-validated snapshot with:
-
-```bash
-diffuse control-plane publish /private/path/status-snapshot.json
-```
-
-The JSON schema is enforced by `service.control_plane.ControlPlaneSnapshot`.
-It deliberately cannot represent repository content or credentials. Automating
-snapshot publication from the durable worker is a later reliability step; the
-explicit command is the current operator-controlled seam.
-
 ## Upgrades
 
 For every upgrade:

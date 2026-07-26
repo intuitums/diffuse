@@ -223,10 +223,8 @@ expose control-plane credentials.
 
 ## Phase 6 — Web control plane and enterprise operation
 
-- The first reactive operator control room now shows bounded deployment,
-  repository/index, review, evaluation, and model-readiness projections. Build
-  credential-backed onboarding, settings, context/rules, finding detail,
-  analytics, audit, and operator experiences.
+- Build onboarding, repository, settings, context/rules, review, analytics,
+  audit, and operator experiences.
 - Add organizations, teams, RBAC, OAuth/OIDC, SAML, interactive token
   administration/rotation, and optional SCIM.
 - Add analytics UI, CSV/JSON exports, scheduled weekly reports, historical
@@ -254,17 +252,12 @@ controls without a required Diffuse-hosted control plane.
   storage, and migration artifacts used by self-hosted installations.
 - Build cloud account, subscription, entitlement, provisioning, regional
   placement, deployment registry, support, and fleet-operation capabilities.
-- The first HMAC-signed, replay-bounded data-plane snapshot and internal Convex
-  ingest mutation establish rebuildable status projections. Add a durable
-  outbox, per-deployment key rotation, version negotiation, and idempotent
-  command handling.
+- Add a signed, replay-bounded data-plane status contract for rebuildable
+  projections, with a durable outbox, per-deployment key rotation, version
+  negotiation, and idempotent command handling.
 - Keep source, diffs, embeddings, prompts, evidence, findings, workflow state,
   and learned rules in the managed data plane rather than the cloud
   control-plane database.
-- The Convex development control plane now serves the first reactive
-  repository/review projection without becoming a self-host runtime
-  dependency. Run it against real review events and SLO/load tests before
-  production adoption.
 - Add tenant isolation, managed secret storage, regional backups, restore
   drills, capacity management, metering, billing reconciliation, SLOs, and
   incident-response procedures.

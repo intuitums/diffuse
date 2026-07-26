@@ -205,25 +205,6 @@ only on changed primary-repository lines. Cluster shell access is the current
 operator authorization boundary; tenant/RBAC enforcement and cross-repository
 graph edges remain future work.
 
-### Optional managed control plane
-
-The self-hosted PostgreSQL service is the authoritative **data plane**. The
-optional `diffuse-control` Next.js + Convex application is a **control plane**
-for fleet visibility and eventual managed provisioning/billing. A signed,
-bounded snapshot can project deployment health, repository/index state,
-review-run status and counts, evaluation metrics, and model readiness.
-
-The projection contract rejects unknown fields and caps each snapshot at 50
-repositories and 40 recent reviews. Source, diffs, embeddings, prompts,
-evidence, finding bodies, SCM credentials, and model credentials have no field
-in the contract and stay in PostgreSQL or the data-plane secret manager. The
-route verifies HMAC-SHA256 over the exact timestamp and body, applies a
-five-minute replay window, and invokes only an internal Convex mutation.
-
-Self-hosted installations operate without this connection. Managed cloud uses
-the same data-plane contract, which prevents the commercial control plane from
-becoming a second code database.
-
 Before retrieval, the worker resolves root-to-leaf policy for every changed
 path from that pinned snapshot. Disabled and ignored files are removed before
 the retrieval query is embedded. Review passes, confidence floors, custom

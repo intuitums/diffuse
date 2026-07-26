@@ -9,5 +9,4 @@ htmlcov/
 *.egg-info/
 build/
 dist/
-.quickstart-bootstrap.log
 uv.lock

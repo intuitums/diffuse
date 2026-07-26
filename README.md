@@ -398,8 +398,7 @@ optionally selects an independent verifier from another model family.
 `REVIEW_API_BASE` can point review generation at an operator-controlled
 OpenAI-compatible endpoint.
 OpenAI, Anthropic, Google Gemini, Azure, AWS Bedrock, Ollama, and other LiteLLM
-routes use their conventional provider configuration in the data plane; model
-credentials are never projected into the optional control plane.
+routes use their conventional provider configuration in the data plane.
 `REVIEW_STRUCTURED_OUTPUT_MODE=auto` uses provider-native schemas when
 available and otherwise uses schema-constrained prompting with local Pydantic
 validation. Invalid model output fails the durable attempt and is never posted
