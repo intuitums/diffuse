@@ -26,6 +26,7 @@ Anthropic family.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -45,7 +46,24 @@ _OPENAI_PREFIXES = ("openai/", "gpt-", "o1", "o3", "o4")
 _ANTHROPIC_PREFIXES = ("anthropic/", "claude")
 _GOOGLE_PREFIXES = ("gemini/", "google/", "gemini")
 _VERTEX_AI_PREFIXES = ("vertex_ai/",)
-_SELF_HOSTED_PREFIXES = ("ollama/", "hosted_vllm/")
+# LiteLLM route prefixes that name an endpoint the operator runs. These are the
+# only prefixed identifiers allowed to reach ``REVIEW_API_BASE`` without a
+# credential; a prefix absent from this module is treated as a managed provider
+# Diffuse has not been taught about, not as a local deployment.
+_SELF_HOSTED_PREFIXES = (
+    "ollama/",
+    "ollama_chat/",
+    "hosted_vllm/",
+    "vllm/",
+    "lm_studio/",
+    "litellm_proxy/",
+    "openai_like/",
+    "custom_openai/",
+)
+
+# A LiteLLM provider prefix, used to name the credential an unlisted managed
+# provider conventionally reads (``mistral/…`` → ``MISTRAL_API_KEY``).
+_PROVIDER_PREFIX_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9_-]{0,38}[a-z0-9])?")
 
 # Ordered: the first matching prefix wins. ``accepts_custom_api_base`` is False
 # for every provider that reaches its own managed endpoint — pointing those at
@@ -107,6 +125,32 @@ _PROVIDER_TABLE: tuple[tuple[tuple[str, ...], ProviderRecord], ...] = (
 )
 
 _CUSTOM_PROVIDER = ProviderRecord("custom", ("REVIEW_API_BASE",), False, True)
+_UNKNOWN_PROVIDER = ProviderRecord("unknown", (), True, False)
+
+
+def _unlisted_managed_provider(normalized: str) -> ProviderRecord:
+    """Contract for a ``provider/model`` route this table does not enumerate.
+
+    LiteLLM supports far more providers than Diffuse names above. Treating
+    ``mistral/…``, ``groq/…``, or ``xai/…`` as a custom local deployment made
+    ``diffuse model`` report ``credential_configured`` for a provider whose key
+    was never set, and — when ``REVIEW_API_BASE`` was configured for the other,
+    genuinely self-hosted model of the pair — sent that provider's model name to
+    the operator's own server. An unrecognised prefix is a managed provider:
+    require its conventional key and never apply the local base URL. Operators
+    pointing Diffuse at their own endpoint declare it through
+    ``_SELF_HOSTED_PREFIXES`` or an unprefixed deployment name.
+    """
+
+    prefix = normalized.partition("/")[0]
+    if not _PROVIDER_PREFIX_PATTERN.fullmatch(prefix):
+        return _UNKNOWN_PROVIDER
+    return ProviderRecord(
+        prefix,
+        (f"{prefix.upper().replace('-', '_')}_API_KEY",),
+        True,
+        False,
+    )
 
 
 def resolve_provider(model: str) -> ProviderRecord:
@@ -116,6 +160,10 @@ def resolve_provider(model: str) -> ProviderRecord:
     for prefixes, record in _PROVIDER_TABLE:
         if normalized.startswith(prefixes):
             return record
+    if "/" in normalized:
+        return _unlisted_managed_provider(normalized)
+    # An unprefixed identifier is a deployment name on the operator's own
+    # OpenAI-compatible endpoint, which is what ``REVIEW_API_BASE`` exists for.
     return _CUSTOM_PROVIDER
 
 

@@ -42,7 +42,12 @@ from service.custom_context_store import load_active_custom_contexts
 from service.diff_parser import ParsedDiff, parse_unified_diff
 from service.learning_store import load_active_learned_rules
 from service.repositories import RegisteredRepository, list_repositories
-from service.review_engine import PROMPT_VERSION, generate_review, review_model
+from service.review_engine import (
+    PROMPT_VERSION,
+    generate_review,
+    review_model,
+    review_verifier_model,
+)
 from service.review_models import ReviewFinding, ReviewReport
 from service.scm import validate_branch_name
 
@@ -72,6 +77,7 @@ class LocalReviewResult:
     local_diff: LocalDiff
     snapshot_id: int
     review_model_name: str
+    review_verifier_model_name: str
     prompt_version: str
     report: ReviewReport
 
@@ -79,7 +85,7 @@ class LocalReviewResult:
 class CliReviewState(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal["diffuse-cli-state-v1"] = "diffuse-cli-state-v1"
+    schema_version: Literal["diffuse-cli-state-v2"] = "diffuse-cli-state-v2"
     status: Literal["running", "failed", "completed"]
     repository_id: int = Field(gt=0)
     repository_full_name: str = Field(min_length=3, max_length=512)
@@ -89,6 +95,11 @@ class CliReviewState(BaseModel):
     index_snapshot_id: int = Field(gt=0)
     policy_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     review_model: str = Field(min_length=1, max_length=512)
+    # Both stages are part of the run's identity. Recording only the candidate
+    # let `--resume` retry with a verifier the operator changed between
+    # attempts, so the stored state no longer described which models produced
+    # the result.
+    review_verifier_model: str = Field(min_length=1, max_length=512)
     prompt_version: str = Field(min_length=1, max_length=255)
     attempt_count: int = Field(ge=1)
     error_code: str | None = Field(
@@ -348,7 +359,10 @@ def _load_state(root: Path) -> CliReviewState:
     try:
         return CliReviewState.model_validate_json(path.read_text())
     except (OSError, ValueError) as error:
-        raise ValueError("Stored Diffuse review state is invalid") from error
+        raise ValueError(
+            "Stored Diffuse review state is invalid or was written by another "
+            "Diffuse version; start a new review without --resume"
+        ) from error
 
 
 def _write_state(root: Path, state: CliReviewState) -> None:
@@ -434,6 +448,7 @@ def run_local_review(
     model = embedding_model()
     dimensions = embedding_dimensions()
     selected_review_model = review_model()
+    selected_verifier_model = review_verifier_model()
     with closing(get_conn()) as conn:
         snapshot_id = active_snapshot_id_for_repository(
             conn,
@@ -467,6 +482,7 @@ def run_local_review(
         previous_state.index_snapshot_id != snapshot_id
         or previous_state.policy_fingerprint != policy.fingerprint
         or previous_state.review_model != selected_review_model
+        or previous_state.review_verifier_model != selected_verifier_model
         or previous_state.prompt_version != PROMPT_VERSION
     ):
         raise ValueError(
@@ -482,6 +498,7 @@ def run_local_review(
         index_snapshot_id=snapshot_id,
         policy_fingerprint=policy.fingerprint,
         review_model=selected_review_model,
+        review_verifier_model=selected_verifier_model,
         prompt_version=PROMPT_VERSION,
         attempt_count=(
             previous_state.attempt_count + 1
@@ -496,6 +513,11 @@ def run_local_review(
             local_diff.diff_text,
             list(context.contexts),
             policy=policy,
+            # Pass the models recorded in the run state rather than letting
+            # generation re-read the environment, so a resumed attempt uses the
+            # pair the drift check just validated.
+            candidate_model=selected_review_model,
+            verifier_model=selected_verifier_model,
         )
     except Exception:
         _write_state(
@@ -522,6 +544,7 @@ def run_local_review(
         local_diff=local_diff,
         snapshot_id=snapshot_id,
         review_model_name=selected_review_model,
+        review_verifier_model_name=selected_verifier_model,
         prompt_version=PROMPT_VERSION,
         report=report,
     )
@@ -664,6 +687,7 @@ def render_json(result: LocalReviewResult, *, include_diff: bool = False) -> str
         "included_untracked": result.local_diff.included_untracked,
         "index_snapshot_id": result.snapshot_id,
         "review_model": result.review_model_name,
+        "review_verifier_model": result.review_verifier_model_name,
         "prompt_version": result.prompt_version,
         "report": result.report.model_dump(mode="json"),
     }

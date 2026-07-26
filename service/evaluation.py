@@ -36,8 +36,13 @@ class EvaluationCase(EvaluationModel):
     observed: list[ObservedFinding] = Field(default_factory=list, max_length=200)
     addressed_finding_ids: list[str] = Field(default_factory=list, max_length=200)
     latency_ms: int = Field(default=0, ge=0)
+    # Candidate-generation tokens. Verification runs against a separately
+    # configured model whose rates need not match, so its tokens are counted and
+    # priced on their own rather than folded in here.
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
+    verifier_prompt_tokens: int = Field(default=0, ge=0)
+    verifier_completion_tokens: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def addressed_findings_are_labeled(self) -> EvaluationCase:
@@ -59,6 +64,8 @@ class EvaluationSuite(EvaluationModel):
     name: str = Field(min_length=1, max_length=200)
     model: str = Field(min_length=1, max_length=512)
     pricing: ModelPricing = Field(default_factory=ModelPricing)
+    verifier_model: str | None = Field(default=None, min_length=1, max_length=512)
+    verifier_pricing: ModelPricing | None = None
     cases: list[EvaluationCase] = Field(min_length=1, max_length=10_000)
 
     @model_validator(mode="after")
@@ -67,6 +74,42 @@ class EvaluationSuite(EvaluationModel):
         if len(set(case_ids)) != len(case_ids):
             raise ValueError("case_id values must be unique")
         return self
+
+    @model_validator(mode="after")
+    def verifier_tokens_are_priced(self) -> EvaluationSuite:
+        """Refuse a suite whose recorded cost would be silently wrong.
+
+        A cross-family pair — the configuration provenance routing exists to
+        use — bills candidate and verification tokens at two different rates.
+        Applying one rate to both produces an `estimated_cost_usd` that looks
+        authoritative and is not, so the label must state the second rate rather
+        than let the suite guess it.
+        """
+
+        verifier_tokens = any(
+            case.verifier_prompt_tokens or case.verifier_completion_tokens
+            for case in self.cases
+        )
+        if verifier_tokens and self.verifier_model is None:
+            raise ValueError("verifier token counts require a verifier_model")
+        if self.verifier_pricing is not None and self.verifier_model is None:
+            raise ValueError("verifier_pricing requires a verifier_model")
+        if (
+            self.verifier_model is not None
+            and self.verifier_model != self.model
+            and self.verifier_pricing is None
+        ):
+            raise ValueError(
+                "a verifier_model that differs from the candidate model requires "
+                "verifier_pricing"
+            )
+        return self
+
+    @property
+    def resolved_verifier_pricing(self) -> ModelPricing:
+        """Rates for verification tokens; the candidate's when the model is shared."""
+
+        return self.verifier_pricing or self.pricing
 
 
 class CaseScore(EvaluationModel):
@@ -79,9 +122,10 @@ class CaseScore(EvaluationModel):
 
 
 class EvaluationScore(EvaluationModel):
-    schema_version: str = "diffuse-evaluation-score-v1"
+    schema_version: str = "diffuse-evaluation-score-v2"
     suite_name: str
     model: str
+    verifier_model: str | None
     case_count: int
     expected_finding_count: int
     observed_finding_count: int
@@ -95,6 +139,10 @@ class EvaluationScore(EvaluationModel):
     median_latency_ms: int
     prompt_tokens: int
     completion_tokens: int
+    candidate_prompt_tokens: int
+    candidate_completion_tokens: int
+    verifier_prompt_tokens: int
+    verifier_completion_tokens: int
     estimated_cost_usd: float
     cases: list[CaseScore]
 
@@ -120,10 +168,21 @@ def _score_case(case: EvaluationCase) -> CaseScore:
     #
     # `_matches` requires equality on file path and category, so the graph
     # decomposes into independent buckets and each augmenting search stays
-    # small. Adjacency is ordered by (line distance, observation index) and
-    # labels are visited in list order, which keeps the chosen assignment — and
-    # therefore `addressed_findings` — stable across runs and across
-    # reorderings of the observed list.
+    # small. Adjacency is ordered by (line distance, observation index), which
+    # keeps the chosen assignment stable across runs and across reorderings of
+    # the observed list.
+    #
+    # Maximum cardinality alone does not pin down *which* labels get matched
+    # when two labels compete for one observation, and `addressed_findings`
+    # counts matched labels. Visiting labels in list order therefore let a
+    # reordering of `expected` change the reported addressed count with
+    # identical labels and observations. Labels named in
+    # `addressed_finding_ids` are visited first instead: augmenting never
+    # unmatches an already-matched label, and matchable label sets form a
+    # transversal matroid, so this both preserves maximum cardinality and
+    # maximises the addressed count over every maximum matching. The
+    # tie-break is the label's identity rather than its position, so list
+    # order no longer decides the score.
     buckets: dict[tuple[str, object], list[int]] = defaultdict(list)
     for index, observed in enumerate(case.observed):
         buckets[(observed.file_path, observed.category)].append(index)
@@ -151,7 +210,15 @@ def _score_case(case: EvaluationCase) -> CaseScore:
                 return True
         return False
 
-    for expected_index in range(len(case.expected)):
+    addressed_ids = set(case.addressed_finding_ids)
+    visit_order = sorted(
+        range(len(case.expected)),
+        key=lambda index: (
+            case.expected[index].finding_id not in addressed_ids,
+            index,
+        ),
+    )
+    for expected_index in visit_order:
         _augment(expected_index, set())
 
     true_positives = len(observed_to_expected)
@@ -193,15 +260,23 @@ def score_evaluation(suite: EvaluationSuite) -> EvaluationScore:
         if len(latencies) % 2
         else round((latencies[middle - 1] + latencies[middle]) / 2)
     )
-    prompt_tokens = sum(case.prompt_tokens for case in suite.cases)
-    completion_tokens = sum(case.completion_tokens for case in suite.cases)
+    candidate_prompt_tokens = sum(case.prompt_tokens for case in suite.cases)
+    candidate_completion_tokens = sum(case.completion_tokens for case in suite.cases)
+    verifier_prompt_tokens = sum(case.verifier_prompt_tokens for case in suite.cases)
+    verifier_completion_tokens = sum(
+        case.verifier_completion_tokens for case in suite.cases
+    )
+    verifier_pricing = suite.resolved_verifier_pricing
     cost = (
-        prompt_tokens * suite.pricing.input_usd_per_million_tokens
-        + completion_tokens * suite.pricing.output_usd_per_million_tokens
+        candidate_prompt_tokens * suite.pricing.input_usd_per_million_tokens
+        + candidate_completion_tokens * suite.pricing.output_usd_per_million_tokens
+        + verifier_prompt_tokens * verifier_pricing.input_usd_per_million_tokens
+        + verifier_completion_tokens * verifier_pricing.output_usd_per_million_tokens
     ) / 1_000_000
     return EvaluationScore(
         suite_name=suite.name,
         model=suite.model,
+        verifier_model=suite.verifier_model,
         case_count=len(suite.cases),
         expected_finding_count=sum(len(case.expected) for case in suite.cases),
         observed_finding_count=sum(len(case.observed) for case in suite.cases),
@@ -213,8 +288,12 @@ def score_evaluation(suite: EvaluationSuite) -> EvaluationScore:
         recall=recall,
         f1=f1,
         median_latency_ms=median_latency,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
+        prompt_tokens=candidate_prompt_tokens + verifier_prompt_tokens,
+        completion_tokens=candidate_completion_tokens + verifier_completion_tokens,
+        candidate_prompt_tokens=candidate_prompt_tokens,
+        candidate_completion_tokens=candidate_completion_tokens,
+        verifier_prompt_tokens=verifier_prompt_tokens,
+        verifier_completion_tokens=verifier_completion_tokens,
         estimated_cost_usd=cost,
         cases=cases,
     )

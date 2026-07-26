@@ -42,6 +42,12 @@ RESOLUTION_CASES = (
     ("bedrock/anthropic.claude-v2", "aws-bedrock", "anthropic", True, False),
     ("ollama/qwen3-coder", "self-hosted", None, False, True),
     ("hosted_vllm/qwen3-coder", "self-hosted", None, False, True),
+    ("lm_studio/qwen3-coder", "self-hosted", None, False, True),
+    ("litellm_proxy/qwen3-coder", "self-hosted", None, False, True),
+    # LiteLLM providers this table does not enumerate are managed, not local.
+    ("mistral/mistral-large-latest", "mistral", None, True, False),
+    ("groq/llama-3.3-70b", "groq", None, True, False),
+    ("xai/grok-4", "xai", None, True, False),
     ("some-unprefixed-id", "custom", None, False, True),
 )
 
@@ -151,3 +157,40 @@ def test_vertex_adc_hints_are_not_forwarded_as_an_api_key(monkeypatch) -> None:
         "VERTEXAI_LOCATION",
     )
     assert _model_api_key(model) is None
+
+
+def test_an_unlisted_managed_provider_needs_its_conventional_key(monkeypatch) -> None:
+    """An unrecognised prefix is a provider Diffuse has not been taught, not localhost.
+
+    Regression: every unknown identifier fell through to the custom branch, so
+    `diffuse model` reported readiness for a provider whose key was never set.
+    """
+
+    monkeypatch.setenv("REVIEW_MODEL", "mistral/mistral-large-latest")
+    monkeypatch.setenv("REVIEW_VERIFIER_MODEL", "mistral/mistral-large-latest")
+
+    assert model_cli.model_status()["credential_env_names"] == ("MISTRAL_API_KEY",)
+    assert model_cli.model_status()["credential_configured"] is False
+
+    monkeypatch.setenv("MISTRAL_API_KEY", "mistral-secret")
+
+    assert model_cli.model_status()["credential_configured"] is True
+    assert _model_api_key("mistral/mistral-large-latest") == "mistral-secret"
+
+
+def test_a_self_hosted_base_url_is_not_applied_to_an_unlisted_provider(
+    monkeypatch,
+) -> None:
+    """Pairing a local model with a managed one must not redirect the managed call.
+
+    Regression: `REVIEW_API_BASE`, set for the self-hosted half of the pair,
+    also applied to the unrecognised managed half, sending that provider's model
+    name and credential to the operator's own server.
+    """
+
+    monkeypatch.setenv("REVIEW_MODEL", "hosted_vllm/qwen3-coder")
+    monkeypatch.setenv("REVIEW_VERIFIER_MODEL", "groq/llama-3.3-70b")
+    monkeypatch.setenv("REVIEW_API_BASE", "https://vllm.internal/v1")
+
+    assert _model_api_base("hosted_vllm/qwen3-coder") == "https://vllm.internal/v1"
+    assert _model_api_base("groq/llama-3.3-70b") is None

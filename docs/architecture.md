@@ -319,6 +319,12 @@ commit whose signature the provider verified—can reach the routing threshold.
 Git author names, author emails, and commit-message trailers are written by
 whoever produced the commit, so they are recorded as evidence but capped below
 it; otherwise the author of a change could choose which model reviews it.
+GitHub returns the actor and verification state with the commit list. GitLab
+returns neither, so for merge-request commits that name a recognized agent
+identity Diffuse makes one bounded additional request for GitLab's own
+signature verdict; without it GitLab provenance would be detectable but never
+routable. Commits with no recognized identity cost no extra request, and a
+failed or unavailable lookup leaves the commit unverified.
 Missing, stale, or forgeable metadata can only increase uncertainty: it never
 disables a review or selects a weaker trigger policy. The evidence, confidence,
 model plan, and routing reason are commit-pinned review-run state.

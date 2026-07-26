@@ -70,12 +70,26 @@ def _run(args: argparse.Namespace) -> None:
     status = model_status()
     if args.live:
         missing: set[str] = set()
+        unrecognized: list[str] = []
         for prefix in ("", "verifier_"):
             model = str(status[f"{prefix}model"])
             configured = bool(status[f"{prefix}credential_configured"])
             record = resolve_provider(model)
-            if not configured and not record.ambient_credentials_supported:
+            if configured or record.ambient_credentials_supported:
+                continue
+            if record.credential_env_names:
                 missing.update(status[f"{prefix}credential_env_names"])
+            else:
+                # No credential name to suggest: the identifier names neither a
+                # provider Diffuse recognises nor a local deployment.
+                unrecognized.append(model)
+        if unrecognized:
+            names = ", ".join(sorted(set(unrecognized)))
+            raise ValueError(
+                f"model identifier names no known provider: {names}; use a LiteLLM "
+                "provider prefix, a self-hosted prefix, or an unprefixed "
+                "REVIEW_API_BASE deployment name"
+            )
         if missing:
             names = ", ".join(sorted(missing))
             raise ValueError(f"model credential is not configured; set one of: {names}")

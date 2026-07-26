@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import replace
 from urllib.parse import quote
 
 import httpx
@@ -20,7 +21,11 @@ from service.github_review import (
 )
 from service.review_description import merge_review_description
 from service.review_models import ReviewFinding, ReviewReport
-from service.review_provenance import CommitMetadata, PullRequestCommits
+from service.review_provenance import (
+    CommitMetadata,
+    PullRequestCommits,
+    commit_names_agent_identity,
+)
 from service.scm import PullRequestEvent
 
 MAX_DIFF_BYTES = 2_000_000
@@ -28,6 +33,8 @@ MAX_RESPONSE_BYTES = 2_000_000
 MAX_COMMIT_METADATA_BYTES = 2_000_000
 MAX_PULL_REQUEST_COMMITS = 250
 MAX_COMMIT_METADATA_PAGES = 3
+MAX_COMMIT_SIGNATURE_LOOKUPS = 25
+MAX_COMMIT_SIGNATURE_BYTES = 64_000
 MAX_MERGE_REQUEST_DESCRIPTION_CHARS = 1_048_576
 MAX_DISCUSSION_PAGES = 20
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
@@ -139,6 +146,87 @@ def _gitlab_commit_metadata(value: object) -> CommitMetadata | None:
         return None
 
 
+async def _commit_signature_is_verified(
+    client: httpx.AsyncClient,
+    event: PullRequestEvent,
+    sha: str,
+) -> bool:
+    """Ask GitLab whether it verified this commit's signature.
+
+    GitLab's merge-request commits endpoint returns only Git-supplied names and
+    emails, all of which the author of the change can set. This is the one
+    identity assertion GitLab makes about a commit, and provenance routing needs
+    it: without it an agent email on a GitLab MR stays capped below the routing
+    threshold, so GitLab changes could be classified but never routed to an
+    opposing model family.
+    """
+
+    url = (
+        f"{event.api_base_url}/projects/{_project_path(event)}/"
+        f"repository/commits/{quote(sha, safe='')}/signature"
+    )
+    response = await client.get(
+        url,
+        headers={
+            **_headers(),
+            "User-Agent": "diffuse-review-provenance",
+        },
+    )
+    if response.status_code in {403, 404}:
+        # Unsigned commits answer 404, and a token without repository scope
+        # answers 403. Neither is an assertion, so neither raises the strength
+        # of a Git-supplied identity.
+        return False
+    response.raise_for_status()
+    if len(response.content) > MAX_COMMIT_SIGNATURE_BYTES:
+        raise RuntimeError("GitLab commit signature exceeds Diffuse's size limit")
+    value = response.json()
+    if not isinstance(value, dict):
+        raise RuntimeError("GitLab returned an invalid commit signature")
+    return value.get("verification_status") == "verified"
+
+
+async def _with_verified_signatures(
+    client: httpx.AsyncClient,
+    event: PullRequestEvent,
+    commits: list[CommitMetadata],
+) -> list[CommitMetadata]:
+    """Attach GitLab's signature verdict to commits that name an agent identity.
+
+    Only those commits are looked up: verification cannot turn an unrecognised
+    identity into a signal, so a request per commit would buy nothing on a
+    human-authored MR. The lookup budget bounds a large MR; commits beyond it
+    keep the unverified default, which is conservative rather than wrong.
+    """
+
+    verified: list[CommitMetadata] = []
+    lookups = 0
+    for commit in commits:
+        if (
+            commit.verified
+            or lookups >= MAX_COMMIT_SIGNATURE_LOOKUPS
+            or not commit_names_agent_identity(commit)
+        ):
+            verified.append(commit)
+            continue
+        lookups += 1
+        try:
+            is_verified = await _commit_signature_is_verified(
+                client,
+                event,
+                commit.sha,
+            )
+        except (httpx.HTTPError, RuntimeError, ValueError):
+            # A signature lookup is an enrichment. Losing one leaves the commit
+            # at its unverified strength rather than failing the whole review.
+            verified.append(commit)
+            continue
+        verified.append(
+            replace(commit, verified=True) if is_verified else commit
+        )
+    return verified
+
+
 async def fetch_gitlab_merge_request_commits(
     event: PullRequestEvent,
     *,
@@ -201,10 +289,12 @@ async def fetch_gitlab_merge_request_commits(
             for commit in commits
         ):
             complete = False
-        return PullRequestCommits(
-            commits=tuple(commits[:MAX_PULL_REQUEST_COMMITS]),
-            complete=complete,
+        bounded = await _with_verified_signatures(
+            active_client,
+            event,
+            commits[:MAX_PULL_REQUEST_COMMITS],
         )
+        return PullRequestCommits(commits=tuple(bounded), complete=complete)
 
     if client is not None:
         return await fetch(client)

@@ -321,9 +321,10 @@ def _trailer_signal(
     return None
 
 
-def _commit_signals(commit: CommitMetadata) -> tuple[ProvenanceSignal, ...]:
-    signals: list[ProvenanceSignal] = []
-    identities = (
+def _commit_identities(
+    commit: CommitMetadata,
+) -> tuple[tuple[str, str, str, str, str, bool], ...]:
+    return (
         (
             commit.author_name,
             commit.author_email,
@@ -341,7 +342,37 @@ def _commit_signals(commit: CommitMetadata) -> tuple[ProvenanceSignal, ...]:
             commit.verified,
         ),
     )
-    for name, email, login, actor_type, source, verified in identities:
+
+
+def commit_names_agent_identity(commit: CommitMetadata) -> bool:
+    """Whether an agent identity appears in this commit's author or committer.
+
+    SCM adapters use this to decide which commits are worth the extra request
+    that loads a provider-asserted signal such as a commit signature: an
+    assertion only raises the strength of an identity Diffuse already
+    recognises, so a commit naming none cannot benefit from one.
+    """
+
+    return any(
+        _identity_signal(
+            name=name,
+            email=email,
+            login=login,
+            actor_type=actor_type,
+            source=source,
+            commit_sha=commit.sha,
+            verified=False,
+        )
+        is not None
+        for name, email, login, actor_type, source, _verified in _commit_identities(
+            commit
+        )
+    )
+
+
+def _commit_signals(commit: CommitMetadata) -> tuple[ProvenanceSignal, ...]:
+    signals: list[ProvenanceSignal] = []
+    for name, email, login, actor_type, source, verified in _commit_identities(commit):
         signal = _identity_signal(
             name=name,
             email=email,
@@ -349,8 +380,9 @@ def _commit_signals(commit: CommitMetadata) -> tuple[ProvenanceSignal, ...]:
             actor_type=actor_type,
             source=source,
             commit_sha=commit.sha,
-            # GitHub's commit verification authenticates the committer identity.
-            # A separately configured author remains freely chosen Git metadata.
+            # Commit-signature verification, on GitHub and on GitLab alike,
+            # authenticates the committer identity. A separately configured
+            # author remains freely chosen Git metadata.
             verified=verified,
         )
         if signal is not None:

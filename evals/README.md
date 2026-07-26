@@ -9,6 +9,17 @@ IDs, latency, and token usage. The resulting JSON reports precision, recall,
 F1, false positives, false negatives, addressed findings, median latency, and
 estimated model cost.
 
+Candidate and verification tokens are counted and priced separately, because a
+cross-family pair does not share a rate card. `prompt_tokens` and
+`completion_tokens` are the candidate stage; add `verifier_prompt_tokens` and
+`verifier_completion_tokens` per case, plus a suite-level `verifier_model` and
+`verifier_pricing`, whenever verification ran on a differently priced model. A
+suite that records verifier tokens without saying what they cost is rejected
+rather than mispriced.
+
+Thresholds must be finite values in `[0, 1]`. `--min-f1 nan` is refused rather
+than accepted as a gate that can never fail.
+
 Start by copying `baseline.example.json`, replacing the illustrative cases
 with real reviewed pull requests, and filling `observed` from a Diffuse run:
 

@@ -395,10 +395,20 @@ Never edit the frozen baseline migration.
 
 `REVIEW_MODEL` accepts LiteLLM model identifiers. `REVIEW_VERIFIER_MODEL`
 optionally selects an independent verifier from another model family.
-`REVIEW_API_BASE` can point review generation at an operator-controlled
-OpenAI-compatible endpoint.
 OpenAI, Anthropic, Google Gemini, Azure, AWS Bedrock, Ollama, and other LiteLLM
-routes use their conventional provider configuration in the data plane.
+routes use their conventional provider configuration in the data plane. A
+provider prefix Diffuse does not name explicitly—`mistral/…`, `groq/…`,
+`xai/…`—is treated as a managed provider and requires that provider's
+conventional `<PROVIDER>_API_KEY`; `diffuse model` reports it as unconfigured
+until the key is set.
+
+`REVIEW_API_BASE` points review generation at an operator-controlled
+OpenAI-compatible endpoint. It applies only to identifiers that name such an
+endpoint: an unprefixed deployment name, or a self-hosted LiteLLM prefix
+(`ollama/`, `ollama_chat/`, `hosted_vllm/`, `vllm/`, `lm_studio/`,
+`litellm_proxy/`, `openai_like/`, `custom_openai/`, and `openai/`). Pairing a
+self-hosted model with a managed one therefore never sends the managed model's
+name or credential to the local endpoint.
 `REVIEW_STRUCTURED_OUTPUT_MODE=auto` uses provider-native schemas when
 available and otherwise uses schema-constrained prompting with local Pydantic
 validation. Invalid model output fails the durable attempt and is never posted
