@@ -23,6 +23,24 @@ See:
 - [Target architecture](docs/architecture.md)
 - [Delivery roadmap](docs/roadmap.md)
 - [Single-server deployment](docs/deployment.md)
+- [Architecture decision records](docs/adr/)
+
+## Contents
+
+- [How it works](#how-it-works)
+- [Local setup](#local-setup) — get an instance running
+- [Connect GitHub](#connect-github) — webhooks, and the GitLab equivalents
+- [MCP](#mcp) — the Streamable HTTP endpoint and its tools
+- [REST API](#rest-api)
+- [Repository review policy](#repository-review-policy) — `.diffuse`
+  configuration, rules, and publication controls
+- [Development](#development) — tests, lint, and dependency management
+- [Current foundation](#current-foundation) — what is implemented today
+- [License](#license)
+
+Contributor setup, the integration-test recipe, and the database-migration
+rule live in [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerability reporting lives
+in [SECURITY.md](SECURITY.md).
 
 ## How it works
 
@@ -72,8 +90,13 @@ Requirements:
 
 ```bash
 cp .env.example .env
-# Fill in POSTGRES_PASSWORD, DIFFUSE_API_TOKEN, the model credentials,
-# and the applicable SCM token and webhook credentials.
+# Fill in the `# --- REQUIRED ---` block at the top of the file. Six variables
+# matter for a first run: POSTGRES_PASSWORD, DIFFUSE_API_TOKEN,
+# DIFFUSE_PUBLIC_URL, OPENAI_API_KEY, and one SCM token/webhook-secret pair
+# (GITHUB_TOKEN + GITHUB_WEBHOOK_SECRET, or GITLAB_TOKEN +
+# GITLAB_WEBHOOK_SIGNING_TOKEN). Compose refuses to start while
+# POSTGRES_PASSWORD, DIFFUSE_API_TOKEN, or DIFFUSE_PUBLIC_URL is empty.
+# Everything below that block already has a working default.
 
 docker compose up -d --build
 
@@ -162,7 +185,48 @@ common directory. `--resume` retries only if the repository, diff, base,
 untracked choice, index snapshot, policy fingerprint, model, and prompt version
 are unchanged; completed or drifted runs require a new review.
 
-### MCP
+## Connect GitHub
+
+Onboarding a repository gives Diffuse a mirror and an index. A webhook is what
+makes it review pull requests automatically.
+
+Configure a GitHub webhook for `push`, `pull_request`, `issue_comment`, and
+`pull_request_review_comment` events at:
+
+```text
+https://your-host.example/webhook/github
+```
+
+Use the same random value for the webhook's GitHub secret and
+`GITHUB_WEBHOOK_SECRET`. Diffuse refuses webhook requests when the secret is
+missing or the signature is invalid.
+
+### Connect GitLab
+
+For GitLab Cloud or Self-Managed, enable merge-request, push, and comment
+events at:
+
+```text
+https://your-host.example/webhook/gitlab
+```
+
+Preferred GitLab signing uses the Standard Webhooks `webhook-id`,
+`webhook-timestamp`, and `webhook-signature` headers. Put the exact `whsec_`
+token returned by GitLab in `GITLAB_WEBHOOK_SIGNING_TOKEN`; Diffuse verifies
+HMAC-SHA256 over the exact raw body and rejects timestamps outside the bounded
+replay window. Older installations can use `X-Gitlab-Token` with
+`GITLAB_WEBHOOK_SECRET`, but must also send GitLab's stable
+`Idempotency-Key` or `X-Gitlab-Event-UUID`. When Standard Webhooks headers are
+present, an invalid signature never falls back to the legacy token.
+
+Set `GITLAB_WEB_URL` and `GITLAB_API_URL` together for the primary
+Self-Managed installation. `X-Gitlab-Instance` is accepted only when it exactly
+matches that origin or an origin in `GITLAB_ALLOWED_INSTANCES`; this prevents a
+signed payload from redirecting API enrichment to an arbitrary host. The
+process-level token and webhook credentials are still shared across configured
+GitLab instances pending encrypted per-installation credentials.
+
+## MCP
 
 Diffuse serves a stateless JSON Streamable HTTP MCP endpoint at `/mcp`.
 `DIFFUSE_API_TOKEN` is a high-entropy bootstrap/recovery credential with
@@ -287,40 +351,6 @@ agent launch are not yet implemented. Diffuse already marks findings addressed
 or reopened from exact subsequent review diffs and projects GitHub/GitLab thread
 state through the comment tools.
 
-Configure a GitHub webhook for `push`, `pull_request`, `issue_comment`, and
-`pull_request_review_comment` events at:
-
-```text
-https://your-host.example/webhook/github
-```
-
-Use the same random value for the webhook's GitHub secret and
-`GITHUB_WEBHOOK_SECRET`. Diffuse refuses webhook requests when the secret is
-missing or the signature is invalid.
-
-For GitLab Cloud or Self-Managed, enable merge-request, push, and comment
-events at:
-
-```text
-https://your-host.example/webhook/gitlab
-```
-
-Preferred GitLab signing uses the Standard Webhooks `webhook-id`,
-`webhook-timestamp`, and `webhook-signature` headers. Put the exact `whsec_`
-token returned by GitLab in `GITLAB_WEBHOOK_SIGNING_TOKEN`; Diffuse verifies
-HMAC-SHA256 over the exact raw body and rejects timestamps outside the bounded
-replay window. Older installations can use `X-Gitlab-Token` with
-`GITLAB_WEBHOOK_SECRET`, but must also send GitLab's stable
-`Idempotency-Key` or `X-Gitlab-Event-UUID`. When Standard Webhooks headers are
-present, an invalid signature never falls back to the legacy token.
-
-Set `GITLAB_WEB_URL` and `GITLAB_API_URL` together for the primary
-Self-Managed installation. `X-Gitlab-Instance` is accepted only when it exactly
-matches that origin or an origin in `GITLAB_ALLOWED_INSTANCES`; this prevents a
-signed payload from redirecting API enrichment to an arbitrary host. The
-process-level token and webhook credentials are still shared across configured
-GitLab instances pending encrypted per-installation credentials.
-
 SCM tokens are passed to Git only through a non-interactive askpass
 environment. They are not embedded in clone URLs, job payloads, database rows,
 or command arguments. Repository onboarding accepts only the configured
@@ -361,7 +391,7 @@ Repository Q&A inherits `REVIEW_MODEL` and `REVIEW_API_BASE`; set
 `search_code` never invokes the generation model, though hybrid retrieval still
 uses the configured embedding provider.
 
-### REST API
+## REST API
 
 Diffuse exposes a versioned control-plane API under `/api/v1`; its
 OpenAPI document is available at `/openapi.json` and the interactive reference
@@ -828,6 +858,10 @@ files are disabled.
 
 ## Development
 
+[CONTRIBUTING.md](CONTRIBUTING.md) is the full contributor guide: virtual
+environment bootstrap, both test suites, and the rule that `sql/schema.sql` is
+frozen and schema changes must be a new file in `sql/migrations/`.
+
 ```bash
 pip install -r requirements-dev.txt
 pip install --no-deps -e .
@@ -836,10 +870,17 @@ ruff check .
 pip-audit -r requirements.lock --disable-pip
 ```
 
-With a disposable pgvector database available:
+The integration tests need a disposable pgvector database, created and migrated
+first. See
+[Run the integration tests](CONTRIBUTING.md#run-the-integration-tests) for the
+complete recipe:
 
 ```bash
-POSTGRES_TEST_DATABASE_URL=postgresql://... pytest -m integration
+docker compose up -d db
+docker compose exec db createdb -U diffuse diffuse_test
+export POSTGRES_TEST_DATABASE_URL="postgresql://diffuse:$POSTGRES_PASSWORD@localhost:5432/diffuse_test"
+DATABASE_URL="$POSTGRES_TEST_DATABASE_URL" diffuse database migrate
+pytest -m integration
 ```
 
 `tests/integration/conftest.py` also routes application database connections to
@@ -999,7 +1040,7 @@ Before a production deployment, add encrypted SCM App/OAuth installation
 onboarding, migration rollback/backup drills, workflow cancellation and
 operator visibility, tenant authorization, and operational metrics.
 
-## Licensing
+## License
 
-Diffuse does not yet include its own license file; choose one before
-distributing this repository.
+Diffuse is released under the [Apache License 2.0](LICENSE). Contributions are
+accepted under the same license.

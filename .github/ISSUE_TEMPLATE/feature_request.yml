@@ -1,0 +1,34 @@
+name: Feature request
+description: Propose a capability or change to Diffuse
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check [`docs/feature-parity.md`](https://github.com/intuitumxyz/diffuse/blob/main/docs/feature-parity.md)
+        and [`docs/roadmap.md`](https://github.com/intuitumxyz/diffuse/blob/main/docs/roadmap.md)
+        first — the capability may already be planned.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that Diffuse makes hard or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should Diffuse do instead? Alternatives you considered are welcome.
+    validations:
+      required: true
+
+  - type: input
+    id: adr
+    attributes:
+      label: Related ADR or doc
+      description: >-
+        If this contradicts an accepted decision in `docs/adr/`, name it.
+      placeholder: "docs/adr/0006-snapshot-pinned-hybrid-retrieval.md"

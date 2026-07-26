@@ -1,0 +1,72 @@
+name: Bug report
+description: Something in Diffuse behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security vulnerabilities here — see
+        [SECURITY.md](https://github.com/intuitumxyz/diffuse/blob/main/SECURITY.md).
+        Never paste tokens, webhook secrets, or private source code.
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      description: Which source-control provider is involved?
+      options:
+        - GitHub (github.com)
+        - GitHub Enterprise Server
+        - GitLab (gitlab.com)
+        - GitLab Self-Managed
+        - Not provider-specific
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Diffuse version or commit
+      description: Output of `git rev-parse HEAD`, or the image tag you deployed.
+      placeholder: "c4040d6 / diffuse:main"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: indexed
+    attributes:
+      label: Is the repository indexed?
+      description: >-
+        Check with `diffuse repository list` or `diffuse database status`.
+        An unindexed or stale snapshot explains most "no review appeared" reports.
+      options:
+        - "Yes — an active snapshot exists for the reviewed commit"
+        - "No — indexing has not completed"
+        - "Not sure"
+        - "Not applicable"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Actual behavior, expected behavior, and steps to reproduce.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: >-
+        e.g. `docker compose logs app worker`. Redact secrets.
+      render: text
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Deployment details
+      description: >-
+        Docker Compose or other, host OS, PostgreSQL version, review/embedding
+        model, and any non-default settings.
