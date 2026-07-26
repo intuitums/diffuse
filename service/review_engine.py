@@ -132,7 +132,7 @@ def minimum_review_confidence() -> float:
 
 def _model_api_key(model: str) -> str | None:
     record = resolve_provider(model)
-    if not record.credential_required:
+    if not record.credential_required or not record.credential_value_is_api_key:
         return None
     for name in record.credential_env_names:
         value = os.environ.get(name)

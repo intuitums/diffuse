@@ -1,3 +1,7 @@
+import argparse
+import json
+
+from service import model_cli
 from service.model_cli import model_status
 
 
@@ -44,3 +48,44 @@ def test_openrouter_cross_family_models_share_gateway_credential(monkeypatch) ->
     assert status["verifier_credential_configured"] is True
     assert status["cross_family_review"] is True
     assert "secret-value" not in repr(status)
+
+
+def test_vertex_live_check_uses_application_default_credentials(
+    monkeypatch,
+    capsys,
+) -> None:
+    model = "vertex_ai/gemini-2.5-pro"
+    monkeypatch.setenv("REVIEW_MODEL", model)
+    monkeypatch.setenv("REVIEW_VERIFIER_MODEL", model)
+    monkeypatch.setenv("VERTEXAI_PROJECT", "diffuse-project")
+    monkeypatch.setenv("VERTEXAI_LOCATION", "us-central1")
+    calls: list[str] = []
+    monkeypatch.setattr(model_cli, "verify_model_connection", calls.append)
+
+    model_cli._run(argparse.Namespace(live=True))
+
+    status = json.loads(capsys.readouterr().out)
+    assert calls == [model]
+    assert status["credential_configured"] is True
+    assert status["live_verified"] is True
+
+
+def test_vertex_live_check_attempts_ambient_adc_without_static_hints(
+    monkeypatch,
+    capsys,
+) -> None:
+    model = "vertex_ai/gemini-2.5-pro"
+    monkeypatch.setenv("REVIEW_MODEL", model)
+    monkeypatch.setenv("REVIEW_VERIFIER_MODEL", model)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.delenv("VERTEXAI_PROJECT", raising=False)
+    monkeypatch.delenv("VERTEXAI_LOCATION", raising=False)
+    calls: list[str] = []
+    monkeypatch.setattr(model_cli, "verify_model_connection", calls.append)
+
+    model_cli._run(argparse.Namespace(live=True))
+
+    status = json.loads(capsys.readouterr().out)
+    assert calls == [model]
+    assert status["credential_configured"] is False
+    assert status["live_verified"] is True

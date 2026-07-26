@@ -37,11 +37,14 @@ class ProviderRecord:
     credential_env_names: tuple[str, ...]
     credential_required: bool
     accepts_custom_api_base: bool
+    credential_value_is_api_key: bool = True
+    ambient_credentials_supported: bool = False
 
 
 _OPENAI_PREFIXES = ("openai/", "gpt-", "o1", "o3", "o4")
 _ANTHROPIC_PREFIXES = ("anthropic/", "claude")
-_GOOGLE_PREFIXES = ("gemini/", "google/", "gemini", "vertex_ai/")
+_GOOGLE_PREFIXES = ("gemini/", "google/", "gemini")
+_VERTEX_AI_PREFIXES = ("vertex_ai/",)
 _SELF_HOSTED_PREFIXES = ("ollama/", "hosted_vllm/")
 
 # Ordered: the first matching prefix wins. ``accepts_custom_api_base`` is False
@@ -64,6 +67,8 @@ _PROVIDER_TABLE: tuple[tuple[tuple[str, ...], ProviderRecord], ...] = (
             ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE"),
             True,
             False,
+            credential_value_is_api_key=False,
+            ambient_credentials_supported=True,
         ),
     ),
     (
@@ -73,6 +78,21 @@ _PROVIDER_TABLE: tuple[tuple[tuple[str, ...], ProviderRecord], ...] = (
     (
         _OPENAI_PREFIXES,
         ProviderRecord("openai", ("OPENAI_API_KEY", "OPENAI_KEY"), True, True),
+    ),
+    (
+        _VERTEX_AI_PREFIXES,
+        ProviderRecord(
+            "google",
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                "VERTEXAI_PROJECT",
+                "VERTEXAI_LOCATION",
+            ),
+            True,
+            False,
+            credential_value_is_api_key=False,
+            ambient_credentials_supported=True,
+        ),
     ),
     (
         _GOOGLE_PREFIXES,
@@ -120,6 +140,9 @@ def model_family(model: str) -> str | None:
         or "/openai/" in normalized
     ):
         return "openai"
-    if normalized.startswith(_GOOGLE_PREFIXES) or "/google/" in normalized:
+    if (
+        normalized.startswith((*_GOOGLE_PREFIXES, *_VERTEX_AI_PREFIXES))
+        or "/google/" in normalized
+    ):
         return "google"
     return None

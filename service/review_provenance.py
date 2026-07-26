@@ -330,6 +330,7 @@ def _commit_signals(commit: CommitMetadata) -> tuple[ProvenanceSignal, ...]:
             commit.author_login,
             commit.author_type,
             "commit_author",
+            False,
         ),
         (
             commit.committer_name,
@@ -337,9 +338,10 @@ def _commit_signals(commit: CommitMetadata) -> tuple[ProvenanceSignal, ...]:
             commit.committer_login,
             commit.committer_type,
             "commit_committer",
+            commit.verified,
         ),
     )
-    for name, email, login, actor_type, source in identities:
+    for name, email, login, actor_type, source, verified in identities:
         signal = _identity_signal(
             name=name,
             email=email,
@@ -347,7 +349,9 @@ def _commit_signals(commit: CommitMetadata) -> tuple[ProvenanceSignal, ...]:
             actor_type=actor_type,
             source=source,
             commit_sha=commit.sha,
-            verified=commit.verified,
+            # GitHub's commit verification authenticates the committer identity.
+            # A separately configured author remains freely chosen Git metadata.
+            verified=verified,
         )
         if signal is not None:
             signals.append(signal)
@@ -409,10 +413,27 @@ def classify_pull_request_provenance(
             ),
         )
 
-    families = {signal.model_family for signal in all_signals if signal.model_family}
-    tools = {signal.tool for signal in all_signals}
+    # Once the SCM asserts an identity, forgeable Git fields and trailers remain
+    # audit evidence but cannot make that trusted family ambiguous. Otherwise a
+    # pull-request author could add a conflicting Made-with/Co-authored-by trailer
+    # to keep their own model family in the candidate position. When no asserted
+    # identity exists, retain the existing conservative treatment of weak signals.
+    asserted_signals = [
+        signal
+        for signal in all_signals
+        if signal.strength > UNVERIFIED_IDENTITY_MAX_STRENGTH
+    ]
+    classification_signals = asserted_signals or all_signals
+    families = {
+        signal.model_family
+        for signal in classification_signals
+        if signal.model_family
+    }
+    tools = {signal.tool for signal in classification_signals}
     unknown_family_tools = {
-        signal.tool for signal in all_signals if signal.model_family is None
+        signal.tool
+        for signal in classification_signals
+        if signal.model_family is None
     }
     direct_agent_identity = any(
         signal.source in {
@@ -420,7 +441,7 @@ def classify_pull_request_provenance(
             "commit_committer",
             "pull_request_author",
         }
-        for signal in all_signals
+        for signal in classification_signals
     )
     ambiguous = len(families) > 1 or bool(families and unknown_family_tools)
     if ambiguous:
@@ -438,7 +459,7 @@ def classify_pull_request_provenance(
         family = None
         tool = next(iter(tools)) if len(tools) == 1 else None
 
-    confidence = max(signal.strength for signal in all_signals)
+    confidence = max(signal.strength for signal in classification_signals)
     if not commit_set.complete:
         confidence *= 0.75
     evidence = sorted(

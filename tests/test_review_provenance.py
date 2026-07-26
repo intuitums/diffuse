@@ -175,18 +175,24 @@ def test_provenance_routing_is_always_a_permutation_of_the_configured_pair():
     commit_variants = {
         "agent_authored_bot": {"author_login": "claude[bot]", "author_type": "Bot"},
         "agent_authored_verified": {
-            "author_email": "noreply@anthropic.com",
+            "committer_name": "Claude",
+            "committer_email": "noreply@anthropic.com",
             "verified": True,
         },
-        "codex_verified": {"author_email": "noreply@openai.com", "verified": True},
+        "codex_verified": {
+            "committer_name": "OpenAI Codex",
+            "committer_email": "noreply@openai.com",
+            "verified": True,
+        },
         "gemini_bot": {"author_login": "gemini-code-assist[bot]", "author_type": "Bot"},
         "ai_assisted_trailer": {
             "message": "Fix\n\nCo-authored-by: Claude <noreply@anthropic.com>"
         },
-        "mixed_ai": {
-            "author_login": "claude[bot]",
-            "author_type": "Bot",
-            "message": "Fix\n\nCo-authored-by: Cursor Agent <cursoragent@cursor.com>",
+        "mixed_weak_ai": {
+            "message": (
+                "Fix\n\nMade-with: Claude\n"
+                "Co-authored-by: Codex <noreply@openai.com>"
+            ),
         },
         "unknown_family_agent": {"author_email": "cursoragent@cursor.com"},
         "human": {},
@@ -228,7 +234,7 @@ def test_a_single_configured_model_cannot_produce_an_independent_verifier():
     assert plan.candidate_model == plan.verifier_model == "anthropic/claude-sonnet-4.6"
 
 
-def test_a_forged_git_author_email_cannot_select_the_reviewer(monkeypatch):
+def test_a_forged_git_author_email_cannot_select_the_reviewer():
     """`git commit --author=` must not let a PR author pick its own reviewer."""
 
     provenance = classify_pull_request_provenance(
@@ -257,6 +263,36 @@ def test_a_forged_git_author_email_cannot_select_the_reviewer(monkeypatch):
     assert plan.reason_code == "low_confidence_cross_review"
     assert plan.candidate_model == "anthropic/claude-sonnet-4.6"
     assert plan.verifier_model == "openai/gpt-4.1-mini"
+
+
+def test_a_verified_committer_does_not_verify_a_forged_author_email():
+    """A valid signer must not authenticate a separately chosen Git author."""
+
+    provenance = classify_pull_request_provenance(
+        PullRequestCommits(
+            commits=(
+                _commit(
+                    author_name="Claude",
+                    author_email="noreply@anthropic.com",
+                    committer_name="Attacker",
+                    committer_email="attacker@example.com",
+                    verified=True,
+                ),
+            ),
+            complete=True,
+        ),
+        pull_request_author="attacker-human",
+    )
+
+    plan = select_review_model_plan(
+        provenance,
+        candidate_model="anthropic/claude-sonnet-4.6",
+        verifier_model="openai/gpt-4.1-mini",
+    )
+
+    assert provenance.confidence == 0.7
+    assert plan.reason_code == "low_confidence_cross_review"
+    assert plan.candidate_model == "anthropic/claude-sonnet-4.6"
 
 
 def test_a_forged_co_authored_by_trailer_cannot_select_the_reviewer():
@@ -295,8 +331,8 @@ def test_a_verified_agent_signature_still_routes():
         PullRequestCommits(
             commits=(
                 _commit(
-                    author_name="Claude",
-                    author_email="noreply@anthropic.com",
+                    committer_name="Claude",
+                    committer_email="noreply@anthropic.com",
                     verified=True,
                 ),
             ),
@@ -314,6 +350,60 @@ def test_a_verified_agent_signature_still_routes():
     assert plan.reason_code == "opposing_anthropic_reviewer"
     assert plan.candidate_model == "openai/gpt-4.1-mini"
     assert plan.verifier_model == "anthropic/claude-sonnet-4.6"
+
+
+def test_a_forged_trailer_cannot_veto_a_provider_asserted_family():
+    provenance = classify_pull_request_provenance(
+        PullRequestCommits(
+            commits=(
+                _commit(
+                    author_login="openai-codex[bot]",
+                    author_type="Bot",
+                    message="Add review routing\n\nMade-with: Claude",
+                ),
+            ),
+            complete=True,
+        )
+    )
+
+    plan = select_review_model_plan(
+        provenance,
+        candidate_model="openai/gpt-4.1-mini",
+        verifier_model="anthropic/claude-sonnet-4.6",
+    )
+
+    assert provenance.classification == "agent_authored"
+    assert provenance.model_family == "openai"
+    assert provenance.signals == (
+        "commit_author:codex",
+        "commit_trailer_made_with:claude_code",
+    )
+    assert plan.reason_code == "opposing_openai_reviewer"
+    assert plan.candidate_model == "anthropic/claude-sonnet-4.6"
+
+
+def test_conflicting_provider_asserted_families_remain_ambiguous():
+    provenance = classify_pull_request_provenance(
+        PullRequestCommits(
+            commits=(
+                _commit(
+                    sha="a" * 40,
+                    author_login="openai-codex[bot]",
+                    author_type="Bot",
+                ),
+                _commit(
+                    sha="b" * 40,
+                    author_login="claude[bot]",
+                    author_type="Bot",
+                ),
+            ),
+            complete=True,
+        )
+    )
+
+    assert provenance.classification == "mixed_ai"
+    assert provenance.model_family is None
+    assert provenance.confidence == 0.98
 
 
 def test_a_human_whose_name_collides_with_a_tool_is_not_ai_attribution():

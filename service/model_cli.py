@@ -26,6 +26,14 @@ def _credential_status(model: str) -> tuple[str, tuple[str, ...], bool]:
             os.environ.get("AWS_ACCESS_KEY_ID")
             and os.environ.get("AWS_SECRET_ACCESS_KEY")
         )
+    elif model.strip().casefold().startswith("vertex_ai/"):
+        # Vertex uses Google application-default credentials rather than an API
+        # key. The credential file is optional when gcloud or workload identity
+        # supplies ADC, while project and location are the normal routing hints.
+        configured = bool(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")) or bool(
+            os.environ.get("VERTEXAI_PROJECT")
+            and os.environ.get("VERTEXAI_LOCATION")
+        )
     return record.provider_id, credential_names, configured
 
 
@@ -62,10 +70,12 @@ def _run(args: argparse.Namespace) -> None:
     status = model_status()
     if args.live:
         missing: set[str] = set()
-        if not status["credential_configured"]:
-            missing.update(status["credential_env_names"])
-        if not status["verifier_credential_configured"]:
-            missing.update(status["verifier_credential_env_names"])
+        for prefix in ("", "verifier_"):
+            model = str(status[f"{prefix}model"])
+            configured = bool(status[f"{prefix}credential_configured"])
+            record = resolve_provider(model)
+            if not configured and not record.ambient_credentials_supported:
+                missing.update(status[f"{prefix}credential_env_names"])
         if missing:
             names = ", ".join(sorted(missing))
             raise ValueError(f"model credential is not configured; set one of: {names}")

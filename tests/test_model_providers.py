@@ -17,6 +17,9 @@ CREDENTIAL_VARIABLES = (
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_PROFILE",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "VERTEXAI_PROJECT",
+    "VERTEXAI_LOCATION",
     "REVIEW_API_BASE",
 )
 
@@ -129,3 +132,22 @@ def test_bedrock_requires_a_profile_or_a_complete_key_pair(monkeypatch) -> None:
 
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "other-half")
     assert model_cli.model_status()["credential_configured"] is True
+    assert _model_api_key("bedrock/anthropic.claude-v2") is None
+
+
+def test_vertex_adc_hints_are_not_forwarded_as_an_api_key(monkeypatch) -> None:
+    model = "vertex_ai/gemini-2.5-pro"
+    monkeypatch.setenv("REVIEW_MODEL", model)
+    monkeypatch.setenv("REVIEW_VERIFIER_MODEL", model)
+    monkeypatch.setenv("VERTEXAI_PROJECT", "diffuse-project")
+    monkeypatch.setenv("VERTEXAI_LOCATION", "us-central1")
+
+    status = model_cli.model_status()
+
+    assert status["credential_configured"] is True
+    assert status["credential_env_names"] == (
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "VERTEXAI_PROJECT",
+        "VERTEXAI_LOCATION",
+    )
+    assert _model_api_key(model) is None
