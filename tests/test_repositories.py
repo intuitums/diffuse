@@ -16,6 +16,7 @@ from service.repository_indexing import (
 from service.repository_mirror import (
     RepositoryMirror,
     RepositoryMirrorError,
+    git_askpass_path,
     max_repository_bytes,
 )
 from service.scm import validate_repository_name
@@ -151,6 +152,23 @@ def test_git_environment_exposes_only_the_selected_token(monkeypatch, tmp_path):
     assert "DATABASE_URL" not in environment
     assert "OPENAI_KEY" not in environment
     assert environment["GIT_CONFIG_KEY_2"] == "core.hooksPath"
+
+
+def test_packaged_git_askpass_path_must_be_absolute(monkeypatch):
+    monkeypatch.setenv("DIFFUSE_GIT_ASKPASS", "relative/askpass.sh")
+
+    with pytest.raises(ValueError, match="must be an absolute path"):
+        git_askpass_path()
+
+
+def test_packaged_git_askpass_path_must_be_executable(monkeypatch, tmp_path):
+    helper = tmp_path / "askpass.sh"
+    helper.write_text("#!/bin/sh\nexit 0\n")
+    helper.chmod(0o600)
+    monkeypatch.setenv("DIFFUSE_GIT_ASKPASS", str(helper))
+
+    with pytest.raises(RepositoryMirrorError, match="missing or not executable"):
+        git_askpass_path()
 
 
 def test_repository_lock_refuses_symbolic_links(tmp_path):

@@ -3,6 +3,7 @@ import pytest
 
 from service.github import (
     fetch_manual_pull_request_event,
+    fetch_pull_request_commits,
     fetch_pull_request_diff,
     fetch_pull_request_update_diff,
     normalize_manual_review_request,
@@ -77,6 +78,24 @@ def _review_comment_payload(**comment_overrides) -> dict:
         },
         "comment": comment,
     }
+
+
+def _github_event() -> PullRequestEvent:
+    return PullRequestEvent.from_payload(
+        {
+            "provider": "github",
+            "scm_base_url": "https://github.com",
+            "api_base_url": "https://api.github.com",
+            "repo_full_name": "owner/repo",
+            "number": 42,
+            "web_url": "https://github.com/owner/repo/pull/42",
+            "action": "opened",
+            "head_sha": "a" * 40,
+            "base_sha": "b" * 40,
+            "updated_at": "2026-07-23T16:00:00Z",
+            "delivery_id": "delivery-commits",
+        }
+    )
 
 
 def test_review_conversation_normalizes_explicit_authorized_question():
@@ -268,6 +287,75 @@ async def test_update_diff_is_pinned_between_reviewed_heads(monkeypatch):
         + ("c" * 40)
     )
     assert requests[0].headers["Accept"] == "application/vnd.github.diff"
+
+
+@pytest.mark.anyio
+async def test_fetch_pull_request_commits_returns_bounded_provenance_fields(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "sha": "a" * 40,
+                    "commit": {
+                        "message": (
+                            "Implement tenant checks\n\n"
+                            "Co-Authored-By: Claude <noreply@anthropic.com>"
+                        ),
+                        "author": {
+                            "name": "Fischer",
+                            "email": "developer@example.com",
+                        },
+                        "committer": {
+                            "name": "GitHub",
+                            "email": "noreply@github.com",
+                        },
+                        "verification": {"verified": True},
+                    },
+                    "author": {"login": "fschrhunt", "type": "User"},
+                    "committer": {"login": "web-flow", "type": "User"},
+                }
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await fetch_pull_request_commits(_github_event(), client=client)
+
+    assert result.complete
+    assert len(result.commits) == 1
+    assert result.commits[0].message.endswith("<noreply@anthropic.com>")
+    assert result.commits[0].author_login == "fschrhunt"
+    assert result.commits[0].verified
+    assert requests[0].url.path == "/repos/owner/repo/pulls/42/commits"
+    assert requests[0].url.params["per_page"] == "100"
+    assert requests[0].headers["Authorization"] == "Bearer test-token"
+
+
+@pytest.mark.anyio
+async def test_fetch_pull_request_commits_marks_stale_metadata_incomplete():
+    value = {
+        "sha": "c" * 40,
+        "commit": {
+            "message": "Older commit",
+            "author": {"name": "User", "email": "user@example.com"},
+            "committer": {"name": "User", "email": "user@example.com"},
+            "verification": {"verified": False},
+        },
+        "author": {"login": "user", "type": "User"},
+        "committer": {"login": "user", "type": "User"},
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json=[value])
+        )
+    ) as client:
+        result = await fetch_pull_request_commits(_github_event(), client=client)
+
+    assert not result.complete
 
 
 @pytest.mark.anyio

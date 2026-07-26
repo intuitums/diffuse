@@ -91,7 +91,11 @@ from service.finding_store import (
     mark_thread_operation_published,
     record_finding_threads,
 )
-from service.github import fetch_pull_request_diff, fetch_pull_request_update_diff
+from service.github import (
+    fetch_pull_request_commits,
+    fetch_pull_request_diff,
+    fetch_pull_request_update_diff,
+)
 from service.github_approval import (
     publish_github_approval,
 )
@@ -112,6 +116,7 @@ from service.gitlab_check import (
 from service.gitlab_conversation import publish_gitlab_conversation_reply
 from service.gitlab_feedback import fetch_gitlab_review_reactions
 from service.gitlab_review import (
+    fetch_gitlab_merge_request_commits,
     fetch_gitlab_merge_request_diff,
     fetch_gitlab_pull_request_update_diff,
     publish_gitlab_review,
@@ -138,8 +143,17 @@ from service.review_engine import (
     minimum_review_confidence,
     review_model,
     review_passes,
+    review_provenance_minimum_confidence,
+    review_verifier_model,
 )
 from service.review_models import ReviewFinding, ReviewReport
+from service.review_provenance import (
+    PullRequestCommits,
+    PullRequestProvenance,
+    ReviewModelPlan,
+    classify_pull_request_provenance,
+    select_review_model_plan,
+)
 from service.review_store import (
     PublicationHandle,
     ReviewRunHandle,
@@ -189,6 +203,35 @@ async def _fetch_scm_pull_request_diff(event: PullRequestEvent) -> str:
     if event.provider == "gitlab":
         return await fetch_gitlab_merge_request_diff(event)
     raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
+
+
+async def _fetch_scm_pull_request_commits(
+    event: PullRequestEvent,
+) -> PullRequestCommits:
+    if event.provider == "github":
+        return await fetch_pull_request_commits(event)
+    if event.provider == "gitlab":
+        return await fetch_gitlab_merge_request_commits(event)
+    raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
+
+
+async def _resolve_review_provenance(
+    event: PullRequestEvent,
+) -> PullRequestProvenance:
+    try:
+        commits = await _fetch_scm_pull_request_commits(event)
+    except Exception:
+        # Provenance improves independence but is not a reason to suppress an
+        # otherwise valid review. A metadata outage falls back to cross-review.
+        LOGGER.warning(
+            "Could not load pull-request commit metadata for provenance routing",
+            exc_info=True,
+        )
+        return PullRequestProvenance.unavailable()
+    return classify_pull_request_provenance(
+        commits,
+        pull_request_author=event.author,
+    )
 
 
 async def _fetch_scm_pull_request_update_diff(
@@ -340,6 +383,8 @@ def _begin_native_review(
     event: PullRequestEvent,
     context_plan: CrossRepositoryContextPlan,
     policy: ResolvedReviewPolicy,
+    provenance: PullRequestProvenance,
+    model_plan: ReviewModelPlan,
 ) -> ReviewRunHandle:
     if job.pull_request_id is None:
         raise NonRetryableError("Review job does not reference a pull request")
@@ -352,12 +397,17 @@ def _begin_native_review(
             index_snapshot_id=context_plan.primary_snapshot_id,
             base_sha=event.base_sha,
             head_sha=event.head_sha,
-            model=review_model(),
+            model=model_plan.candidate_model,
+            verifier_model=model_plan.verifier_model,
+            provenance=provenance.to_dict(),
+            model_routing_reason=model_plan.reason_code,
             prompt_version=PROMPT_VERSION,
             context_fingerprint=_review_context_fingerprint(
                 context_plan,
                 policy,
                 event,
+                provenance,
+                model_plan,
             ),
             learned_rules=policy.approved_learned_rules,
             custom_contexts=policy.approved_custom_contexts,
@@ -369,12 +419,16 @@ def _review_context_fingerprint(
     context_plan: CrossRepositoryContextPlan,
     policy: ResolvedReviewPolicy,
     event: PullRequestEvent,
+    provenance: PullRequestProvenance,
+    model_plan: ReviewModelPlan,
 ) -> str:
     identity = "\0".join(
         (
             context_plan.fingerprint,
             policy.fingerprint,
             event.trigger_fingerprint,
+            provenance.fingerprint,
+            model_plan.fingerprint,
         )
     )
     return hashlib.sha256(identity.encode()).hexdigest()
@@ -525,6 +579,7 @@ def _generate_and_persist_review(
     policy: ResolvedReviewPolicy,
     touched_paths: frozenset[str],
     path_aliases: dict[str, str] | None = None,
+    model_plan: ReviewModelPlan | None = None,
 ) -> None:
     def report_progress() -> None:
         if not _heartbeat_and_check_current(job.id, worker_id):
@@ -538,6 +593,12 @@ def _generate_and_persist_review(
             contexts,
             progress_callback=report_progress,
             policy=policy,
+            candidate_model=(
+                model_plan.candidate_model if model_plan is not None else None
+            ),
+            verifier_model=(
+                model_plan.verifier_model if model_plan is not None else None
+            ),
         )
         report_progress()
         with closing(get_conn()) as conn, conn:
@@ -1203,6 +1264,27 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
         await anyio.to_thread.run_sync(partial(_supersede, job.id, worker_id))
         return
 
+    provenance = PullRequestProvenance.not_evaluated()
+    if decision.eligible:
+        provenance = await _resolve_review_provenance(event)
+        if not await anyio.to_thread.run_sync(
+            partial(_heartbeat_and_check_current, job.id, worker_id)
+        ):
+            await _complete_existing_job_check(
+                job,
+                event,
+                conclusion="cancelled",
+                message="A newer pull-request event superseded this review.",
+            )
+            await anyio.to_thread.run_sync(partial(_supersede, job.id, worker_id))
+            return
+    model_plan = select_review_model_plan(
+        provenance,
+        candidate_model=review_model(),
+        verifier_model=review_verifier_model(),
+        minimum_confidence=review_provenance_minimum_confidence(),
+    )
+
     review_run = await anyio.to_thread.run_sync(
         partial(
             _begin_native_review,
@@ -1210,6 +1292,8 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
             event,
             context_plan,
             policy,
+            provenance,
+            model_plan,
         )
     )
     if review_run.status == "superseded":
@@ -1299,6 +1383,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
                     policy,
                     touched_paths,
                     path_aliases,
+                    model_plan,
                 )
             )
         except ReviewSupersededError:

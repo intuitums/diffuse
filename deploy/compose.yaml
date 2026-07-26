@@ -1,6 +1,8 @@
+name: diffuse
+
 services:
   db:
-    image: pgvector/pgvector:pg17
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg17@sha256:d2ef61f42ef767baa5a1475393303cc235bcd92febd9d7014eddb48b41f3bad0}
     restart: unless-stopped
     environment:
       POSTGRES_USER: diffuse
@@ -23,10 +25,11 @@ services:
     stop_grace_period: 1m
 
   migrate:
-    build: .
-    image: ${DIFFUSE_IMAGE:-diffuse:local}
+    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
     restart: "no"
     init: true
+    read_only: true
+    cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
     command: ["database", "migrate"]
@@ -39,6 +42,8 @@ services:
       - ${DIFFUSE_ENV_FILE:-.env}
     environment:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     logging:
       driver: json-file
       options:
@@ -46,10 +51,11 @@ services:
         max-file: "5"
 
   app:
-    build: .
-    image: ${DIFFUSE_IMAGE:-diffuse:local}
+    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
     restart: unless-stopped
     init: true
+    read_only: true
+    cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
     depends_on:
@@ -65,10 +71,9 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - repository_data:/var/lib/diffuse/repositories
-      # Read-only host secrets for browser sign-in. The directory may be absent
-      # or empty; sign-in simply stays disabled until the client secret is in
-      # place, and the secret never reaches .env or an image layer.
       - ${DIFFUSE_SECRETS_DIR:-/srv/diffuse/secrets}:/srv/diffuse/secrets:ro
+    tmpfs:
+      - /tmp:size=256m,mode=1777
     logging:
       driver: json-file
       options:
@@ -77,10 +82,11 @@ services:
     stop_grace_period: 30s
 
   worker:
-    build: .
-    image: ${DIFFUSE_IMAGE:-diffuse:local}
+    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
     restart: unless-stopped
     init: true
+    read_only: true
+    cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
     command: ["worker"]
@@ -95,6 +101,8 @@ services:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
     volumes:
       - repository_data:/var/lib/diffuse/repositories
+    tmpfs:
+      - /tmp:size=512m,mode=1777
     logging:
       driver: json-file
       options:

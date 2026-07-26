@@ -27,6 +27,8 @@ jobs:
             requirements.txt
             requirements-dev.txt
             requirements.lock
+            requirements-build.txt
+            requirements-build.lock
       - name: Install development dependencies
         run: |
           python -m pip install -r requirements-dev.txt
@@ -80,7 +82,7 @@ jobs:
 
   container:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
       DIFFUSE_API_TOKEN: 0123456789abcdef0123456789abcdef
@@ -91,5 +93,33 @@ jobs:
         run: |
           cp .env.example .env
           docker compose config --quiet
+          DIFFUSE_ENV_FILE=env.example DIFFUSE_IMAGE=diffuse:test \
+            docker compose --env-file deploy/env.example \
+              --file deploy/compose.yaml config --quiet
       - name: Build production image
         run: docker build --tag diffuse:test .
+      - name: Validate packaged runtime
+        run: |
+          docker run --rm --entrypoint diffuse diffuse:test database --help
+          docker run --rm --entrypoint diffuse diffuse:test worker --help
+          docker run --rm --entrypoint /bin/sh diffuse:test -c '
+            test "$(id -u)" -ne 0
+            test ! -e /usr/local/bin/python
+            test -x /opt/diffuse/diffuse
+            test -x /opt/diffuse/_internal/service/git_askpass.sh
+            test -f /opt/diffuse/_internal/sql/schema.sql
+            ! find /opt/diffuse -type f \
+              \( -name "*.py" -o -name "*.pyc" -o -name "*.pyo" \) \
+              -print -quit | grep -q .
+          '
+          # Parser distribution metadata must ship, or INDEX_FORMAT_VERSION
+          # stops tracking grammar upgrades and stale indexes survive an
+          # upgrade. See indexer/index_version.py.
+          docker run --rm --entrypoint /bin/sh diffuse:test -c '
+            for dist in tree_sitter tree_sitter_c tree_sitter_cpp tree_sitter_go \
+                tree_sitter_java tree_sitter_javascript tree_sitter_php \
+                tree_sitter_ruby tree_sitter_rust tree_sitter_typescript; do
+              ls -d /opt/diffuse/_internal/"${dist}"-*.dist-info >/dev/null 2>&1 \
+                || { echo "missing parser metadata: ${dist}" >&2; exit 1; }
+            done
+          '
