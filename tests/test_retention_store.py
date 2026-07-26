@@ -126,7 +126,7 @@ def test_rejections_order_by_last_seen_at_because_the_key_is_reused():
     assert parameters == (webhook_retention_days(), MAX_ROWS_PER_PURGE)
 
 
-def test_workflow_job_purge_never_cascades_into_review_history():
+def test_workflow_job_purge_never_cascades_into_durable_product_history():
     connection = _Connection()
 
     purge_workflow_jobs(connection)
@@ -134,6 +134,14 @@ def test_workflow_job_purge_never_cascades_into_review_history():
     query, _parameters = _delete_statements(connection)[0]
     assert "NOT EXISTS" in query
     assert "review_runs.workflow_job_id = workflow_jobs.id" in query
+    assert (
+        "review_conversation_messages.workflow_job_id = workflow_jobs.id"
+        in query
+    )
+    assert (
+        "suggested_rule_generation_runs.workflow_job_id = workflow_jobs.id"
+        in query
+    )
     assert "status IN ('succeeded', 'failed', 'dead', 'cancelled', 'superseded')" in (
         query
     )

@@ -26,12 +26,13 @@ not a tuning knob:
   The anchor is safe here precisely because the row it names is itself
   deletable: draining the front of the table moves `min(id)` forward.
 * Tables that permanently retain some rows — workflow jobs behind a published
-  review, review runs, index snapshots kept for provenance — must NOT use that
-  anchor. An undeletable row at `min(id)` pins the window forever, and once the
-  window drains the purge selects the same rows and deletes nothing on every
-  later pass. Those purges select purely by age instead, and where the deleted
-  rows hang off a parent that is never deleted, the parent must still own a
-  child to be a candidate. Both properties make the window advance on its own.
+  review, conversation, or rule-learning run; review runs; index snapshots kept
+  for provenance — must NOT use that anchor. An undeletable row at `min(id)`
+  pins the window forever, and once the window drains the purge selects the
+  same rows and deletes nothing on every later pass. Those purges select purely
+  by age instead, and where the deleted rows hang off a parent that is never
+  deleted, the parent must still own a child to be a candidate. Both properties
+  make the window advance on its own.
 
 The age-based purges give up the constant-cost-when-idle property: a pass that
 finds nothing walks that table's primary key once. That is the price of a drain
@@ -77,9 +78,10 @@ DEFAULT_WORKFLOW_RETENTION_DAYS = 90
 DEFAULT_REVIEW_CONTEXT_RETENTION_DAYS = 90
 DEFAULT_CODE_CHUNK_RETENTION_DAYS = 30
 
-# A workflow job cascades to its review run, findings, and threads, so only
-# jobs that never produced a review are collected here. Dropping published
-# review history is a product decision an operator has to make explicitly, not
+# A workflow job cascades to its review run, published conversation, or
+# rule-learning generation run. Only jobs that produced none of those durable
+# records are collected here. Dropping published history or learning
+# provenance is a product decision an operator has to make explicitly, not
 # something a default-on background drain should do.
 TERMINAL_JOB_STATUSES = ("succeeded", "failed", "dead", "cancelled", "superseded")
 
@@ -365,11 +367,12 @@ def purge_workflow_attempts(conn, *, limit: int = MAX_ROWS_PER_PURGE) -> int:
 
 
 def purge_workflow_jobs(conn, *, limit: int = MAX_ROWS_PER_PURGE) -> int:
-    """Drop settled queue rows that never produced a review run.
+    """Drop settled queue rows that never produced durable product history.
 
-    Selected by age, not by an id window: a job behind a published review is
-    kept forever, so the first such job to reach the front of the primary key
-    would otherwise pin the window and freeze this drain permanently.
+    Selected by age, not by an id window: a job behind a published review,
+    conversation, or rule-learning run is kept forever, so the first such job
+    to reach the front of the primary key would otherwise pin the window and
+    freeze this drain permanently.
     """
     statuses = ", ".join(f"'{status}'" for status in TERMINAL_JOB_STATUSES)
     with conn.cursor() as cursor:
@@ -385,6 +388,16 @@ def purge_workflow_jobs(conn, *, limit: int = MAX_ROWS_PER_PURGE) -> int:
                   SELECT 1
                   FROM review_runs
                   WHERE review_runs.workflow_job_id = workflow_jobs.id
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM review_conversation_messages
+                  WHERE review_conversation_messages.workflow_job_id = workflow_jobs.id
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM suggested_rule_generation_runs
+                  WHERE suggested_rule_generation_runs.workflow_job_id = workflow_jobs.id
               )
             """,
         )

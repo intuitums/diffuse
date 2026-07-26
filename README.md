@@ -126,20 +126,22 @@ to choose the database; raise the limits together when moving to a larger host.
 
 The worker drains rows past their retention window on a bounded schedule:
 audit events, webhook deliveries and their refusals, pull request lifecycle
-events, review feedback, settled queue rows that produced no review, review
-context provenance, and the embeddings owned by index snapshots retrieval can
-no longer select. Each pass deletes at most a fixed batch per table, in its own
-transaction, so a backlog drains across passes instead of in one long
-transaction and a table that fails cannot disable the other eight. Tables that
-keep some rows forever — jobs behind a review, review runs, index snapshots
-kept for provenance — are drained by age rather than by an id window, and a
-parent only stays a candidate while it still owns rows to delete, so an
-undeletable row can never pin the drain. Windows are configured per table in
-`.env` (see `DIFFUSE_*_RETENTION_DAYS`) and the whole drain can be frozen with
+events, review feedback, settled queue rows that produced no durable product
+history, review context provenance, and the embeddings owned by index snapshots
+retrieval can no longer select. Each pass deletes at most a fixed batch per
+table, in its own transaction, so a backlog drains across passes instead of in
+one long transaction and a table that fails cannot disable the other eight.
+Tables that keep some rows forever — jobs behind a review, conversation, or
+rule-learning run; review runs; index snapshots kept for provenance — are
+drained by age rather than by an id window, and a parent only stays a candidate
+while it still owns rows to delete, so an undeletable row can never pin the
+drain. Windows are configured per table in `.env` (see
+`DIFFUSE_*_RETENTION_DAYS`) and the whole drain can be frozen with
 `DIFFUSE_RETENTION_ENABLED=false`; an unrecognised value for that flag is
-rejected rather than treated as consent to delete. Published review history is
-never collected: a workflow job cascades to its review run, findings, and
-threads, so jobs behind a review are deliberately retained.
+rejected rather than treated as consent to delete. Published review and
+conversation history plus rule-learning provenance are never collected: their
+workflow jobs are deliberately retained so cascading foreign keys cannot erase
+those records.
 
 Back up PostgreSQL before upgrading. Inspect or verify schema state with:
 

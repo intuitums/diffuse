@@ -1162,7 +1162,10 @@ def _index_repository_job(job: WorkflowJob, event: PushEvent, worker_id: str) ->
 
     _set_mirror_state(repository.id, state="syncing")
     try:
-        mirror = RepositoryMirror(repository)
+        mirror = RepositoryMirror(
+            repository,
+            progress_callback=report_progress,
+        )
         with mirror.checkout(event.after_sha) as worktree:
             report_progress()
             index_repo(

@@ -145,6 +145,20 @@ def connection():
     )
     database.run(
         """
+        CREATE TABLE review_conversation_messages (
+            workflow_job_id INTEGER NOT NULL
+        )
+        """
+    )
+    database.run(
+        """
+        CREATE TABLE suggested_rule_generation_runs (
+            workflow_job_id INTEGER NOT NULL
+        )
+        """
+    )
+    database.run(
+        """
         CREATE TABLE workflow_jobs (
             id INTEGER PRIMARY KEY,
             status TEXT NOT NULL,
@@ -253,22 +267,29 @@ def test_context_snapshots_of_unsettled_review_runs_are_kept(connection):
     assert connection.count("SELECT count(*) FROM review_run_context_snapshots") == 1
 
 
-def test_workflow_jobs_drain_behind_a_job_that_is_never_deletable(connection):
-    # Job 1 produced a review run, so retention must never collect it — and it
-    # is `min(id)`. Anchoring the drain window there freezes it permanently, and
-    # job 6000 becomes unreachable even though it is settled, old, and owns no
-    # review history at all.
-    connection.run(
-        """
-        INSERT INTO workflow_jobs (id, status, completed_at)
-        VALUES (1, 'succeeded', datetime('now', '-180 days'))
-        """
-    )
+def test_workflow_jobs_drain_past_every_kind_of_retained_product_history(connection):
+    # Jobs 1-3 own durable review, conversation, and rule-learning records, so
+    # retention must never collect them. Anchoring the drain window at one of
+    # those permanent rows would freeze it and leave the orphaned job behind.
+    for job_id in (1, 2, 3):
+        connection.run(
+            """
+            INSERT INTO workflow_jobs (id, status, completed_at)
+            VALUES (?, 'succeeded', datetime('now', '-180 days'))
+            """,
+            (job_id,),
+        )
     connection.run(
         """
         INSERT INTO review_runs (id, workflow_job_id, status, updated_at)
         VALUES (1, 1, 'published', datetime('now', '-180 days'))
         """
+    )
+    connection.run(
+        "INSERT INTO review_conversation_messages (workflow_job_id) VALUES (2)"
+    )
+    connection.run(
+        "INSERT INTO suggested_rule_generation_runs (workflow_job_id) VALUES (3)"
     )
     unreachable_id = MAX_SCANNED_ROWS_PER_PURGE + 1000
     connection.run(
@@ -282,9 +303,10 @@ def test_workflow_jobs_drain_behind_a_job_that_is_never_deletable(connection):
     removed = _drain(purge_workflow_jobs, connection, limit=5)
 
     assert sum(removed) == 1
-    assert connection.count("SELECT count(*) FROM workflow_jobs") == 1
-    # The job behind published review history is the one that survived.
-    assert connection.count("SELECT count(*) FROM workflow_jobs WHERE id = 1") == 1
+    assert connection.count("SELECT count(*) FROM workflow_jobs") == 3
+    assert connection.count(
+        "SELECT count(*) FROM workflow_jobs WHERE id IN (1, 2, 3)"
+    ) == 3
 
 
 def test_workflow_jobs_inside_their_window_or_still_running_are_kept(connection):
