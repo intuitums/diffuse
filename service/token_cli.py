@@ -108,7 +108,10 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "add",
         help="Mint a service token, print it once, and store only its digest",
     )
-    add.add_argument("name")
+    add.add_argument(
+        "name",
+        help="Human-readable token name, for example ide-agent",
+    )
     add.add_argument(
         "--token-env",
         help=(
@@ -121,16 +124,31 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         action="append",
         choices=sorted(ALLOWED_API_TOKEN_SCOPES),
         required=True,
+        help="Repeat for each scope to grant; grant the fewest scopes the client needs",
     )
     repositories = add.add_mutually_exclusive_group(required=True)
-    repositories.add_argument("--all-repositories", action="store_true")
+    repositories.add_argument(
+        "--all-repositories",
+        action="store_true",
+        help="Grant deployment-wide access; prefer --repository-id whenever possible",
+    )
     repositories.add_argument(
         "--repository-id",
         action="append",
         type=int,
+        help="Repeat for each repository the token may access",
     )
-    add.add_argument("--actor", required=True)
-    add.add_argument("--expires-in-days", type=int)
+    add.add_argument(
+        "--actor",
+        required=True,
+        help="Operator identity recorded in the immutable audit trail",
+    )
+    add.add_argument(
+        "--expires-in-days",
+        type=int,
+        metavar="DAYS",
+        help="Expire the token after this many days (default: no expiry)",
+    )
     add.set_defaults(handler=_add_token)
 
     list_parser = subparsers.add_parser(
@@ -143,7 +161,19 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "revoke",
         help="Irreversibly revoke an active service token",
     )
-    revoke.add_argument("token_id", type=int)
-    revoke.add_argument("--actor", required=True)
-    revoke.add_argument("--reason", required=True)
+    revoke.add_argument(
+        "token_id",
+        type=int,
+        help="Numeric token id from `diffuse token list`",
+    )
+    revoke.add_argument(
+        "--actor",
+        required=True,
+        help="Operator identity recorded in the immutable audit trail",
+    )
+    revoke.add_argument(
+        "--reason",
+        required=True,
+        help="Required justification stored with the revocation event",
+    )
     revoke.set_defaults(handler=_revoke_token)

@@ -1,9 +1,15 @@
+import argparse
+import io
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import litellm
+import psycopg2
+import psycopg2.errors
 import pytest
 
 from service import cluster_cli, learning_cli, repository_cli, review_cli
@@ -424,3 +430,375 @@ def test_a_changed_verifier_model_refuses_to_resume(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="Review inputs changed"):
         review_cli.run_local_review(start=root, resume=True)
+
+
+
+def _review_args(**overrides) -> SimpleNamespace:
+    args = SimpleNamespace(
+        base=None,
+        repo=None,
+        scm_base_url=None,
+        include_untracked=False,
+        resume=False,
+        diff=False,
+        json=False,
+        agent=False,
+        fail_on_findings=False,
+        handler=review_cli._run_review_command,
+    )
+    for name, value in overrides.items():
+        setattr(args, name, value)
+    return args
+
+
+class _Stream(io.StringIO):
+    def __init__(self, *, tty: bool) -> None:
+        super().__init__()
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+def _run_review_capturing(monkeypatch, *, tty: bool, **flags) -> tuple[str, str]:
+    def fake_review(*, progress=None, **_kwargs):
+        if progress is not None:
+            progress.stage("retrieving repository context")
+            progress.model_step()
+            progress.model_step()
+        return _result()
+
+    monkeypatch.setattr(review_cli, "run_local_review", fake_review)
+    stdout = _Stream(tty=tty)
+    stderr = _Stream(tty=tty)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    review_cli._run_review_command(_review_args(**flags))
+    return stdout.getvalue(), stderr.getvalue()
+
+
+def test_every_cli_argument_documents_itself_in_help():
+    undocumented: list[str] = []
+
+    def walk(parser: argparse.ArgumentParser, path: str) -> None:
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for name, sub in action.choices.items():
+                    walk(sub, f"{path} {name}")
+                continue
+            if isinstance(action, argparse._HelpAction):
+                continue
+            if not action.help:
+                undocumented.append(f"{path}: {action.option_strings or action.dest}")
+
+    walk(review_cli._parser(), "diffuse")
+
+    assert undocumented == []
+
+
+def test_review_help_shows_examples_and_the_exit_code_table(capsys):
+    parser = review_cli._parser()
+
+    with pytest.raises(SystemExit) as raised:
+        parser.parse_args(["review", "--help"])
+
+    assert raised.value.code == review_cli.EXIT_OK
+    help_text = capsys.readouterr().out
+    assert "diffuse review -b origin/main --diff" in help_text
+    assert "diffuse review --json" in help_text
+    assert "exit codes:" in help_text
+    assert "2  usage error" in help_text
+    assert "3  configuration or environment error" in help_text
+    assert "--base" in help_text and "Base revision to diff against" in help_text
+
+
+def test_top_level_help_documents_examples_and_exit_codes(capsys):
+    with pytest.raises(SystemExit):
+        review_cli._parser().parse_args(["--help"])
+
+    help_text = capsys.readouterr().out
+    assert "examples:" in help_text
+    assert "exit codes:" in help_text
+
+
+@pytest.mark.parametrize("flag", ["json", "agent"])
+def test_machine_stdout_contract_is_byte_identical_with_and_without_progress(
+    monkeypatch,
+    flag,
+):
+    quiet_stdout, quiet_stderr = _run_review_capturing(
+        monkeypatch,
+        tty=False,
+        **{flag: True},
+    )
+    tty_stdout, tty_stderr = _run_review_capturing(
+        monkeypatch,
+        tty=True,
+        **{flag: True},
+    )
+    expected = render_json(_result()) if flag == "json" else render_agent(_result())
+
+    assert quiet_stdout.encode() == expected.encode()
+    assert tty_stdout.encode() == quiet_stdout.encode()
+    assert quiet_stderr == ""
+    assert "Diffuse:" in tty_stderr
+
+
+def test_progress_is_written_only_to_stderr_of_an_interactive_terminal(monkeypatch):
+    _, quiet_stderr = _run_review_capturing(monkeypatch, tty=False)
+    tty_stdout, tty_stderr = _run_review_capturing(monkeypatch, tty=True)
+
+    assert quiet_stderr == ""
+    assert "retrieving repository context" in tty_stderr
+    assert "step 2" in tty_stderr
+    assert "Diffuse:" not in tty_stdout
+    # The line is erased before stdout is written, so nothing is left behind.
+    assert tty_stderr.endswith("\r")
+
+
+def test_review_passes_a_progress_callback_into_the_review_engine(tmp_path, monkeypatch):
+    root = _local_git_repository(tmp_path)
+    captured: dict[str, object] = {}
+
+    def generate(*_args, **kwargs):
+        captured.update(kwargs)
+        callback = kwargs["progress_callback"]
+        assert callback is not None
+        callback()
+        callback()
+        return _result().report
+
+    monkeypatch.setattr(review_cli, "get_conn", MagicMock)
+    monkeypatch.setattr(review_cli, "list_repositories", lambda _conn: [_repository()])
+    monkeypatch.setattr(review_cli, "embedding_model", lambda: "embed/test")
+    monkeypatch.setattr(review_cli, "embedding_dimensions", lambda: 1536)
+    monkeypatch.setattr(review_cli, "active_snapshot_id_for_repository", lambda *_a: 17)
+    monkeypatch.setattr(review_cli, "load_active_learned_rules", lambda *_a, **_k: ())
+    monkeypatch.setattr(
+        review_cli,
+        "resolve_cross_repository_context_plan",
+        lambda *_a, **_k: object(),
+    )
+    monkeypatch.setattr(
+        review_cli,
+        "retrieve_context_from_plan",
+        lambda *_a, **_k: SimpleNamespace(contexts=()),
+    )
+    monkeypatch.setattr(review_cli, "review_model", lambda: "openai/test")
+    monkeypatch.setattr(review_cli, "generate_review", generate)
+    stderr = _Stream(tty=True)
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    result = review_cli.run_local_review(
+        start=root,
+        progress=review_cli._stderr_progress_reporter(),
+    )
+
+    assert result is not None
+    assert captured["progress_callback"] is not None
+    assert "running review model (step 2)" in stderr.getvalue()
+
+
+def test_base_flag_errors_name_the_flag_the_user_typed():
+    with pytest.raises(review_cli.CliUsageError, match=r"--base is not a safe Git branch name"):
+        review_cli._valid_base_ref("bad..name")
+
+    # The shared SCM validator keeps its own wording for webhook payloads.
+    with pytest.raises(ValueError, match="default_branch"):
+        review_cli.validate_branch_name("bad..name")
+
+
+def test_missing_base_revision_is_a_usage_error_naming_the_flag(tmp_path):
+    root = _local_git_repository(tmp_path)
+
+    with pytest.raises(review_cli.CliUsageError, match=r"--base revision does not exist"):
+        review_cli.resolve_base_ref(root, _repository(), "no-such-branch")
+
+
+def test_git_failures_keep_multi_line_output_readable(tmp_path):
+    with pytest.raises(ValueError) as raised:
+        review_cli._git_bytes(tmp_path, ["rev-parse", "--show-toplevel"])
+
+    rendered = review_cli.format_cli_error(str(raised.value))
+    lines = rendered.splitlines()
+
+    assert lines[0].startswith("diffuse: error: git rev-parse --show-toplevel failed")
+    assert len(lines) > 1
+    assert all(line.startswith("    ") for line in lines[1:])
+    assert "usage:" not in rendered
+
+
+def test_format_cli_error_indents_and_truncates_long_tool_output():
+    rendered = review_cli.format_cli_error("head\n" + "\n".join(f"line {n}" for n in range(60)))
+    lines = rendered.splitlines()
+
+    assert lines[0] == "diffuse: error: head"
+    assert lines[1] == "    line 0"
+    assert len(lines) == review_cli.MAX_ERROR_LINES + 1
+    assert lines[-1].endswith("more line(s) suppressed")
+
+
+def test_database_errors_name_the_env_var_and_never_print_the_password(monkeypatch):
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://diffuse:sup3r-s3cret@127.0.0.1:59999/diffuse",
+    )
+
+    message = review_cli.database_error_message(
+        psycopg2.OperationalError("connection to server at 127.0.0.1 failed")
+    )
+    rendered = review_cli.format_cli_error(message)
+
+    assert "sup3r-s3cret" not in rendered
+    assert "postgresql://diffuse:***@127.0.0.1:59999/diffuse" in rendered
+    assert "DATABASE_URL" in rendered
+    assert "docker compose up -d db" in rendered
+
+
+def test_database_url_default_is_reported_without_claiming_the_env_var_is_set(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    message = review_cli.database_error_message(psycopg2.OperationalError("refused"))
+
+    assert "the built-in default" in message
+    assert review_cli.redacted_database_url().count("***") == 1
+
+
+def test_schema_errors_point_at_the_migration_command(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    message = review_cli.database_error_message(
+        psycopg2.errors.UndefinedTable("relation diffuse_repositories does not exist")
+    )
+
+    assert "diffuse database migrate" in message
+
+
+def test_model_errors_name_the_credential_env_var_and_the_model(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-test")
+
+    message = review_cli.model_error_message(
+        litellm.exceptions.AuthenticationError(
+            message="Incorrect API key provided",
+            llm_provider="openai",
+            model="openai/gpt-test",
+        )
+    )
+
+    assert "OPENAI_API_KEY" in message
+    assert "openai/gpt-test" in message
+
+
+def test_model_connection_errors_are_actionable(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-test")
+
+    message = review_cli.model_error_message(
+        litellm.exceptions.APIConnectionError(
+            message="Connection refused",
+            llm_provider="openai",
+            model="openai/gpt-test",
+        )
+    )
+
+    assert "REVIEW_API_BASE" in message
+    assert "--resume" in message
+
+
+def test_secret_values_are_redacted_from_any_diagnostic(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-a-real-key-000")
+
+    rendered = review_cli.format_cli_error("provider rejected sk-not-a-real-key-000")
+
+    assert "sk-not-a-real-key-000" not in rendered
+    assert "***" in rendered
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (review_cli.CliUsageError("--base is bogus"), review_cli.EXIT_USAGE),
+        (psycopg2.OperationalError("refused"), review_cli.EXIT_CONFIG),
+        (
+            litellm.exceptions.AuthenticationError(
+                message="bad key",
+                llm_provider="openai",
+                model="openai/gpt-test",
+            ),
+            review_cli.EXIT_CONFIG,
+        ),
+        (ValueError("not enabled in Diffuse"), review_cli.EXIT_CONFIG),
+        (RuntimeError("no compatible active index"), review_cli.EXIT_CONFIG),
+        (OSError("disk gone"), review_cli.EXIT_CONFIG),
+        (KeyError("unexpected"), review_cli.EXIT_INTERNAL),
+    ],
+)
+def test_run_handler_maps_every_failure_to_a_documented_exit_code(
+    monkeypatch,
+    capsys,
+    error,
+    expected_code,
+):
+    monkeypatch.delenv("DIFFUSE_CLI_TRACEBACK", raising=False)
+
+    def handler(_args):
+        raise error
+
+    with pytest.raises(SystemExit) as raised:
+        review_cli.run_handler(SimpleNamespace(handler=handler))
+
+    captured = capsys.readouterr()
+    assert raised.value.code == expected_code
+    assert captured.out == ""
+    assert captured.err.startswith("diffuse: error: ")
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_findings_exit_code_is_distinct_from_failure_exit_codes(monkeypatch):
+    monkeypatch.setattr(review_cli, "run_local_review", lambda **_kwargs: _result())
+    monkeypatch.setattr(sys, "stdout", _Stream(tty=False))
+    monkeypatch.setattr(sys, "stderr", _Stream(tty=False))
+
+    with pytest.raises(SystemExit) as raised:
+        review_cli.run_handler(_review_args(fail_on_findings=True))
+
+    assert raised.value.code == review_cli.EXIT_FINDINGS
+    assert review_cli.EXIT_FINDINGS not in {
+        review_cli.EXIT_USAGE,
+        review_cli.EXIT_CONFIG,
+        review_cli.EXIT_INTERNAL,
+    }
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_prog"),
+    [
+        (["diffuse", "review", "--not-a-flag"], "diffuse review"),
+        (["diffuse", "repository", "list", "--bogus"], "diffuse repository"),
+    ],
+)
+def test_unknown_flags_exit_2_and_show_the_subcommand_usage(
+    monkeypatch,
+    capsys,
+    argv,
+    expected_prog,
+):
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as raised:
+        review_cli.main()
+
+    stderr = capsys.readouterr().err
+    assert raised.value.code == review_cli.EXIT_USAGE
+    assert stderr.startswith(f"usage: {expected_prog} ")
+    assert f"{expected_prog}: error: unrecognized arguments:" in stderr
+
+
+def test_traceback_escape_hatch_reraises_for_debugging(monkeypatch):
+    monkeypatch.setenv("DIFFUSE_CLI_TRACEBACK", "1")
+
+    def handler(_args):
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        review_cli.run_handler(SimpleNamespace(handler=handler))
