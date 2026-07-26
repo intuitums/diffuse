@@ -9,6 +9,17 @@ from importlib.metadata import PackageNotFoundError, version
 from repository_policy.models import POLICY_SCHEMA_VERSION
 
 LANGUAGE_ADAPTER_SCHEMA_VERSION = "language-adapters-v1"
+# Grammar upgrades change the symbols and relationships extracted from the same
+# source, so their versions are part of the index compatibility fingerprint.
+#
+# `_distribution_version` reads these at runtime through `importlib.metadata`,
+# which needs the distribution metadata to be present. PyInstaller only bundles
+# metadata it can see statically, and it cannot see a `version(name)` call whose
+# argument is a loop variable — so every entry here needs a matching
+# `--copy-metadata` flag in the Dockerfile, which asserts their presence at
+# build time. Without that, each lookup returns "missing", the fingerprint
+# freezes, and an upgraded image silently reuses indexes built by a different
+# grammar.
 PARSER_DISTRIBUTIONS = (
     "tree-sitter",
     "tree-sitter-c",

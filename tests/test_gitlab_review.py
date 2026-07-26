@@ -6,12 +6,18 @@ import pytest
 
 from service.github_review import format_review_body
 from service.gitlab_review import (
+    fetch_gitlab_merge_request_commits,
     fetch_gitlab_merge_request_diff,
     fetch_gitlab_pull_request_update_diff,
     publish_gitlab_review,
 )
 from service.review_description import merge_review_description
 from service.review_models import Category, ReviewFinding, ReviewReport, Severity
+from service.review_provenance import (
+    PROVENANCE_CONFIDENCE_DEFAULT,
+    classify_pull_request_provenance,
+    select_review_model_plan,
+)
 from service.scm import PullRequestEvent
 
 DIFF = (
@@ -115,6 +121,187 @@ async def test_fetch_merge_request_raw_diff_is_nested_project_safe(monkeypatch):
         b"merge_requests/17/raw_diffs"
     )
     assert requests[0].headers["PRIVATE-TOKEN"] == "test-token"
+
+
+@pytest.mark.anyio
+async def test_fetch_merge_request_commits_preserves_trailers_for_provenance(
+    monkeypatch,
+):
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/signature"):
+            # Unsigned commit.
+            return httpx.Response(404, json={"message": "404 GPG Signature Not Found"})
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "a" * 40,
+                    "message": (
+                        "Fix review retries\n\n"
+                        "Co-authored-by: Cursor Agent <cursoragent@cursor.com>"
+                    ),
+                    "author_name": "Cursor Agent",
+                    "author_email": "cursoragent@cursor.com",
+                    "committer_name": "Cursor Agent",
+                    "committer_email": "cursoragent@cursor.com",
+                }
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await fetch_gitlab_merge_request_commits(
+            _event(),
+            client=client,
+        )
+
+    assert result.complete
+    assert result.commits[0].author_email == "cursoragent@cursor.com"
+    assert result.commits[0].verified is False
+    assert requests[0].url.raw_path.startswith(
+        b"/api/v4/projects/group%2Fsubgroup%2Frepo/"
+        b"merge_requests/17/commits"
+    )
+    assert requests[0].url.params["per_page"] == "100"
+    assert requests[0].headers["PRIVATE-TOKEN"] == "test-token"
+
+
+def _agent_commit(sha: str) -> dict[str, str]:
+    return {
+        "id": sha,
+        "message": "Harden tenant reads",
+        "author_name": "Claude",
+        "author_email": "noreply@anthropic.com",
+        "committer_name": "Claude",
+        "committer_email": "noreply@anthropic.com",
+    }
+
+
+@pytest.mark.anyio
+async def test_a_verified_gitlab_signature_can_reach_the_routing_threshold(
+    monkeypatch,
+):
+    """GitLab must assert something, or provenance can never route an MR.
+
+    Regression: the adapter populated only forgeable Git names and emails, which
+    the classifier caps below the default 0.8 threshold, so GitLab commit
+    provenance was detectable but could never select an opposing model family.
+    """
+
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+    signature_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/signature"):
+            signature_requests.append(request)
+            return httpx.Response(
+                200,
+                json={"signature_type": "SSH", "verification_status": "verified"},
+            )
+        return httpx.Response(200, json=[_agent_commit("a" * 40)])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await fetch_gitlab_merge_request_commits(_event(), client=client)
+
+    assert result.commits[0].verified is True
+    assert signature_requests[0].url.raw_path == (
+        b"/api/v4/projects/group%2Fsubgroup%2Frepo/repository/commits/"
+        + b"a" * 40
+        + b"/signature"
+    )
+    assert signature_requests[0].headers["PRIVATE-TOKEN"] == "test-token"
+
+    provenance = classify_pull_request_provenance(result)
+
+    assert provenance.model_family == "anthropic"
+    assert provenance.confidence >= PROVENANCE_CONFIDENCE_DEFAULT
+    plan = select_review_model_plan(
+        provenance,
+        candidate_model="anthropic/claude-sonnet-5",
+        verifier_model="openai/gpt-5.2",
+    )
+    assert plan.candidate_model == "openai/gpt-5.2"
+    assert plan.verifier_model == "anthropic/claude-sonnet-5"
+
+
+@pytest.mark.anyio
+async def test_an_unverified_signature_leaves_git_metadata_below_the_threshold(
+    monkeypatch,
+):
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/signature"):
+            return httpx.Response(
+                200,
+                json={"signature_type": "PGP", "verification_status": "unverified_key"},
+            )
+        return httpx.Response(200, json=[_agent_commit("a" * 40)])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await fetch_gitlab_merge_request_commits(_event(), client=client)
+
+    assert result.commits[0].verified is False
+    assert (
+        classify_pull_request_provenance(result).confidence
+        < PROVENANCE_CONFIDENCE_DEFAULT
+    )
+
+
+@pytest.mark.anyio
+async def test_signature_lookups_skip_commits_with_no_agent_identity(monkeypatch):
+    """A human-authored MR must not pay one extra request per commit."""
+
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+    signature_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/signature"):
+            signature_paths.append(request.url.path)
+            return httpx.Response(
+                200,
+                json={"signature_type": "SSH", "verification_status": "verified"},
+            )
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "a" * 40,
+                    "message": "Rename the tenant column",
+                    "author_name": "Dana Contributor",
+                    "author_email": "dana@example.com",
+                    "committer_name": "Dana Contributor",
+                    "committer_email": "dana@example.com",
+                }
+            ],
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await fetch_gitlab_merge_request_commits(_event(), client=client)
+
+    assert signature_paths == []
+    assert result.commits[0].verified is False
+
+
+@pytest.mark.anyio
+async def test_a_failed_signature_lookup_does_not_fail_provenance(monkeypatch):
+    """Enrichment must degrade to unverified rather than lose the review."""
+
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/signature"):
+            return httpx.Response(500, text="upstream error")
+        return httpx.Response(200, json=[_agent_commit("a" * 40)])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await fetch_gitlab_merge_request_commits(_event(), client=client)
+
+    assert result.complete
+    assert result.commits[0].verified is False
 
 
 @pytest.mark.anyio

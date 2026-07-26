@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import replace
 from urllib.parse import quote
 
 import httpx
@@ -20,10 +21,20 @@ from service.github_review import (
 )
 from service.review_description import merge_review_description
 from service.review_models import ReviewFinding, ReviewReport
+from service.review_provenance import (
+    CommitMetadata,
+    PullRequestCommits,
+    commit_names_agent_identity,
+)
 from service.scm import PullRequestEvent
 
 MAX_DIFF_BYTES = 2_000_000
 MAX_RESPONSE_BYTES = 2_000_000
+MAX_COMMIT_METADATA_BYTES = 2_000_000
+MAX_PULL_REQUEST_COMMITS = 250
+MAX_COMMIT_METADATA_PAGES = 3
+MAX_COMMIT_SIGNATURE_LOOKUPS = 25
+MAX_COMMIT_SIGNATURE_BYTES = 64_000
 MAX_MERGE_REQUEST_DESCRIPTION_CHARS = 1_048_576
 MAX_DISCUSSION_PAGES = 20
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
@@ -99,6 +110,191 @@ async def fetch_gitlab_merge_request_diff(
             limit=MAX_DIFF_BYTES,
         )
         return content.decode("utf-8", errors="replace")
+
+    if client is not None:
+        return await fetch(client)
+    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
+    if timeout <= 0:
+        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    async with httpx.AsyncClient(timeout=timeout) as owned_client:
+        return await fetch(owned_client)
+
+
+def _gitlab_commit_metadata(value: object) -> CommitMetadata | None:
+    if not isinstance(value, dict):
+        return None
+    fields = (
+        value.get("id"),
+        value.get("message"),
+        value.get("author_name"),
+        value.get("author_email"),
+        value.get("committer_name"),
+        value.get("committer_email"),
+    )
+    if not all(isinstance(field, str) for field in fields):
+        return None
+    try:
+        return CommitMetadata(
+            sha=fields[0],
+            message=fields[1],
+            author_name=fields[2],
+            author_email=fields[3],
+            committer_name=fields[4],
+            committer_email=fields[5],
+        )
+    except ValueError:
+        return None
+
+
+async def _commit_signature_is_verified(
+    client: httpx.AsyncClient,
+    event: PullRequestEvent,
+    sha: str,
+) -> bool:
+    """Ask GitLab whether it verified this commit's signature.
+
+    GitLab's merge-request commits endpoint returns only Git-supplied names and
+    emails, all of which the author of the change can set. This is the one
+    identity assertion GitLab makes about a commit, and provenance routing needs
+    it: without it an agent email on a GitLab MR stays capped below the routing
+    threshold, so GitLab changes could be classified but never routed to an
+    opposing model family.
+    """
+
+    url = (
+        f"{event.api_base_url}/projects/{_project_path(event)}/"
+        f"repository/commits/{quote(sha, safe='')}/signature"
+    )
+    response = await client.get(
+        url,
+        headers={
+            **_headers(),
+            "User-Agent": "diffuse-review-provenance",
+        },
+    )
+    if response.status_code in {403, 404}:
+        # Unsigned commits answer 404, and a token without repository scope
+        # answers 403. Neither is an assertion, so neither raises the strength
+        # of a Git-supplied identity.
+        return False
+    response.raise_for_status()
+    if len(response.content) > MAX_COMMIT_SIGNATURE_BYTES:
+        raise RuntimeError("GitLab commit signature exceeds Diffuse's size limit")
+    value = response.json()
+    if not isinstance(value, dict):
+        raise RuntimeError("GitLab returned an invalid commit signature")
+    return value.get("verification_status") == "verified"
+
+
+async def _with_verified_signatures(
+    client: httpx.AsyncClient,
+    event: PullRequestEvent,
+    commits: list[CommitMetadata],
+) -> list[CommitMetadata]:
+    """Attach GitLab's signature verdict to commits that name an agent identity.
+
+    Only those commits are looked up: verification cannot turn an unrecognised
+    identity into a signal, so a request per commit would buy nothing on a
+    human-authored MR. The lookup budget bounds a large MR; commits beyond it
+    keep the unverified default, which is conservative rather than wrong.
+    """
+
+    verified: list[CommitMetadata] = []
+    lookups = 0
+    for commit in commits:
+        if (
+            commit.verified
+            or lookups >= MAX_COMMIT_SIGNATURE_LOOKUPS
+            or not commit_names_agent_identity(commit)
+        ):
+            verified.append(commit)
+            continue
+        lookups += 1
+        try:
+            is_verified = await _commit_signature_is_verified(
+                client,
+                event,
+                commit.sha,
+            )
+        except (httpx.HTTPError, RuntimeError, ValueError):
+            # A signature lookup is an enrichment. Losing one leaves the commit
+            # at its unverified strength rather than failing the whole review.
+            verified.append(commit)
+            continue
+        verified.append(
+            replace(commit, verified=True) if is_verified else commit
+        )
+    return verified
+
+
+async def fetch_gitlab_merge_request_commits(
+    event: PullRequestEvent,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> PullRequestCommits:
+    """Fetch bounded GitLab commit identities and trailers without source blobs."""
+
+    if event.provider != "gitlab":
+        raise ValueError("GitLab commit reader received a non-GitLab event")
+    url = f"{_merge_request_path(event)}/commits"
+
+    async def fetch(active_client: httpx.AsyncClient) -> PullRequestCommits:
+        commits: list[CommitMetadata] = []
+        complete = True
+        page = 1
+        pages_fetched = 0
+        while (
+            len(commits) < MAX_PULL_REQUEST_COMMITS
+            and pages_fetched < MAX_COMMIT_METADATA_PAGES
+        ):
+            pages_fetched += 1
+            response = await active_client.get(
+                url,
+                headers={
+                    **_headers(),
+                    "User-Agent": "diffuse-review-provenance",
+                },
+                params={"per_page": 100, "page": page},
+            )
+            response.raise_for_status()
+            if len(response.content) > MAX_COMMIT_METADATA_BYTES:
+                raise RuntimeError("GitLab commit metadata exceeds Diffuse's size limit")
+            value = response.json()
+            if not isinstance(value, list):
+                raise RuntimeError("GitLab returned invalid merge-request commits")
+            for item in value:
+                commit = _gitlab_commit_metadata(item)
+                if commit is None:
+                    complete = False
+                    continue
+                if len(commits) == MAX_PULL_REQUEST_COMMITS:
+                    complete = False
+                    break
+                commits.append(commit)
+            next_page = response.headers.get("X-Next-Page", "").strip()
+            if not next_page:
+                break
+            if not next_page.isdigit():
+                complete = False
+                break
+            if len(commits) >= MAX_PULL_REQUEST_COMMITS:
+                complete = False
+                break
+            if pages_fetched >= MAX_COMMIT_METADATA_PAGES:
+                complete = False
+                break
+            page = int(next_page)
+        if not commits or all(
+            commit.sha.casefold() != event.head_sha.casefold()
+            for commit in commits
+        ):
+            complete = False
+        bounded = await _with_verified_signatures(
+            active_client,
+            event,
+            commits[:MAX_PULL_REQUEST_COMMITS],
+        )
+        return PullRequestCommits(commits=tuple(bounded), complete=complete)
 
     if client is not None:
         return await fetch(client)

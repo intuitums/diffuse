@@ -24,6 +24,7 @@ def test_frozen_baseline_catalog_is_packaged_and_contract_is_parseable():
         (5, "hot_path_indexes"),
         (6, "oauth_login"),
         (7, "webhook_rejections"),
+        (8, "review_provenance"),
     ]
     assert catalog[0].checksum == BASELINE_SCHEMA_SHA256
     contract = _baseline_contract(catalog[0].sql)

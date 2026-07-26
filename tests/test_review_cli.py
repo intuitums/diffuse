@@ -191,6 +191,7 @@ def _result() -> LocalReviewResult:
         ),
         snapshot_id=17,
         review_model_name="test/model",
+        review_verifier_model_name="test/verifier",
         prompt_version="native-review-test",
         report=ReviewReport(
             summary="One issue.",
@@ -288,6 +289,7 @@ def test_cli_review_state_is_atomic_validated_and_resume_ready(tmp_path):
         index_snapshot_id=17,
         policy_fingerprint="e" * 64,
         review_model="openai/test",
+        review_verifier_model="anthropic/test",
         prompt_version="native-review-test",
         attempt_count=2,
         error_code="review_failed",
@@ -302,29 +304,8 @@ def test_cli_review_state_is_atomic_validated_and_resume_ready(tmp_path):
     assert not list(state_path.parent.glob("*.tmp"))
 
 
-def test_failed_local_review_resumes_only_the_same_immutable_inputs(
-    tmp_path,
-    monkeypatch,
-):
-    root = _local_git_repository(tmp_path)
-    repository = _repository()
-    generated = 0
-
-    def generate(*_args, **_kwargs):
-        nonlocal generated
-        generated += 1
-        if generated == 1:
-            raise RuntimeError("transient model failure")
-        return ReviewReport(
-            summary="No issues.",
-            risk_score=0,
-            findings=[],
-            diff_file_count=1,
-            reviewed_file_count=1,
-            context_chunk_count=0,
-            prompt_tokens=4,
-            completion_tokens=1,
-        )
+def _configure_local_review(monkeypatch, *, repository) -> None:
+    """Stub the database, retrieval, and model configuration a local review uses."""
 
     monkeypatch.setattr(review_cli, "get_conn", MagicMock)
     monkeypatch.setattr(
@@ -355,6 +336,39 @@ def test_failed_local_review_resumes_only_the_same_immutable_inputs(
         lambda *_args, **_kwargs: SimpleNamespace(contexts=()),
     )
     monkeypatch.setattr(review_cli, "review_model", lambda: "openai/test")
+    monkeypatch.setattr(
+        review_cli,
+        "review_verifier_model",
+        lambda: "anthropic/test",
+    )
+
+
+def test_failed_local_review_resumes_only_the_same_immutable_inputs(
+    tmp_path,
+    monkeypatch,
+):
+    root = _local_git_repository(tmp_path)
+    generated = 0
+    generate_calls: list[dict[str, object]] = []
+
+    def generate(*_args, **kwargs):
+        nonlocal generated
+        generated += 1
+        generate_calls.append(kwargs)
+        if generated == 1:
+            raise RuntimeError("transient model failure")
+        return ReviewReport(
+            summary="No issues.",
+            risk_score=0,
+            findings=[],
+            diff_file_count=1,
+            reviewed_file_count=1,
+            context_chunk_count=0,
+            prompt_tokens=4,
+            completion_tokens=1,
+        )
+
+    _configure_local_review(monkeypatch, repository=_repository())
     monkeypatch.setattr(review_cli, "generate_review", generate)
 
     with pytest.raises(RuntimeError, match="transient"):
@@ -362,6 +376,7 @@ def test_failed_local_review_resumes_only_the_same_immutable_inputs(
     failed = _load_state(root)
     assert failed.status == "failed"
     assert failed.attempt_count == 1
+    assert failed.review_verifier_model == "anthropic/test"
 
     result = review_cli.run_local_review(start=root, resume=True)
     completed = _load_state(root)
@@ -369,7 +384,43 @@ def test_failed_local_review_resumes_only_the_same_immutable_inputs(
     assert result is not None
     assert result.snapshot_id == 17
     assert result.review_model_name == "openai/test"
+    assert result.review_verifier_model_name == "anthropic/test"
     assert result.prompt_version == review_cli.PROMPT_VERSION
     assert completed.status == "completed"
     assert completed.attempt_count == 2
     assert generated == 2
+    # Generation must use the pinned pair, not whatever the environment says at
+    # the moment the resumed attempt runs.
+    assert generate_calls[-1]["candidate_model"] == "openai/test"
+    assert generate_calls[-1]["verifier_model"] == "anthropic/test"
+
+
+def test_a_changed_verifier_model_refuses_to_resume(tmp_path, monkeypatch):
+    """The verifier is part of the run's identity, like the candidate model.
+
+    Regression: only `REVIEW_MODEL` was persisted, so an operator who changed
+    `REVIEW_VERIFIER_MODEL` after a failed attempt got a silent retry with a
+    different verifier and stored state that no longer described the run.
+    """
+
+    root = _local_git_repository(tmp_path)
+    _configure_local_review(monkeypatch, repository=_repository())
+    monkeypatch.setattr(
+        review_cli,
+        "generate_review",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("transient model failure")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="transient"):
+        review_cli.run_local_review(start=root)
+
+    monkeypatch.setattr(
+        review_cli,
+        "review_verifier_model",
+        lambda: "google/other",
+    )
+
+    with pytest.raises(ValueError, match="Review inputs changed"):
+        review_cli.run_local_review(start=root, resume=True)

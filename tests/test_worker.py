@@ -38,6 +38,7 @@ from service.review_models import (
     ReviewReport,
     Severity,
 )
+from service.review_provenance import PullRequestProvenance
 from service.review_store import PublicationHandle, ReviewRunHandle
 from service.scm import (
     FeedbackSyncEvent,
@@ -46,6 +47,15 @@ from service.scm import (
     ReviewConversationEvent,
 )
 from service.workflow import NonRetryableError, WorkflowJob
+
+
+@pytest.fixture(autouse=True)
+def _stub_review_provenance(monkeypatch):
+    monkeypatch.setattr(
+        worker,
+        "_resolve_review_provenance",
+        AsyncMock(return_value=PullRequestProvenance.unavailable()),
+    )
 
 
 def _event(**overrides) -> PullRequestEvent:
@@ -290,7 +300,7 @@ def _feedback_job(event: FeedbackSyncEvent) -> WorkflowJob:
 async def test_worker_checks_revision_before_review_and_completes(monkeypatch):
     event = _event(action="synchronize")
     job = _job(event)
-    current_checks = iter([True, True, True, True, True])
+    current_checks = iter([True, True, True, True, True, True])
     generated: list[tuple] = []
     publication_results: list[tuple] = []
     report = ReviewReport(
@@ -420,18 +430,18 @@ async def test_worker_checks_revision_before_review_and_completes(monkeypatch):
 
     await worker.process_review_job(job, "worker-1")
 
-    assert generated == [
-        (
-            job,
-            41,
-            "diff --git a/app.py b/app.py",
-            [],
-            "worker-1",
-            policy,
-            frozenset({"app.py"}),
-            {},
-        )
-    ]
+    assert len(generated) == 1
+    assert generated[0][:-1] == (
+        job,
+        41,
+        "diff --git a/app.py b/app.py",
+        [],
+        "worker-1",
+        policy,
+        frozenset({"app.py"}),
+        {},
+    )
+    assert generated[0][-1].reason_code == "default_cross_review"
     worker.publish_github_review.assert_awaited_once_with(
         event,
         review_run_id=41,
@@ -623,7 +633,7 @@ async def test_worker_supersedes_before_review_when_head_changed(monkeypatch):
 async def test_worker_publishes_exact_review_status_check(monkeypatch):
     event = _event()
     job = _job(event)
-    current_checks = iter([True, True, True, True, True, True])
+    current_checks = iter([True, True, True, True, True, True, True])
     policy = _status_check_policy()
     report = ReviewReport(
         summary="No blocking issues.",
@@ -733,6 +743,11 @@ async def test_worker_persists_trigger_skip_without_retrieval_or_publication(mon
         prompt_tokens=0,
         completion_tokens=0,
     )
+    provenance = AsyncMock(
+        side_effect=AssertionError(
+            "ineligible reviews must not fetch provenance metadata"
+        )
+    )
 
     monkeypatch.setattr(
         worker,
@@ -741,6 +756,7 @@ async def test_worker_persists_trigger_skip_without_retrieval_or_publication(mon
     )
     monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_args: 7)
     monkeypatch.setattr(worker, "_load_review_policy", lambda *_args: policy)
+    monkeypatch.setattr(worker, "_resolve_review_provenance", provenance)
     monkeypatch.setattr(
         worker,
         "_load_cross_repository_context_plan",
@@ -784,6 +800,7 @@ async def test_worker_persists_trigger_skip_without_retrieval_or_publication(mon
     assert len(skipped) == 1
     assert skipped[0][0] == 42
     assert skipped[0][3].reason_code == "draft_pull_request"
+    provenance.assert_not_awaited()
 
 
 @pytest.mark.anyio

@@ -57,6 +57,16 @@ def _tree_entry_bytes(record: bytes) -> int:
     return int(header[3])
 
 
+def git_askpass_path() -> Path:
+    configured = os.environ.get("DIFFUSE_GIT_ASKPASS")
+    path = Path(configured) if configured else Path(__file__).with_name("git_askpass.sh")
+    if configured and not path.is_absolute():
+        raise ValueError("DIFFUSE_GIT_ASKPASS must be an absolute path")
+    if not path.is_file() or path.is_symlink() or not os.access(path, os.X_OK):
+        raise RepositoryMirrorError("Git askpass helper is missing or not executable")
+    return path
+
+
 class RepositoryMirror:
     def __init__(
         self,
@@ -109,7 +119,7 @@ class RepositoryMirror:
             {
                 "DIFFUSE_GIT_TOKEN": token,
                 "DIFFUSE_GIT_USERNAME": username,
-                "GIT_ASKPASS": str(Path(__file__).with_name("git_askpass.sh")),
+                "GIT_ASKPASS": str(git_askpass_path()),
                 "GIT_ASKPASS_REQUIRE": "force",
                 "GIT_TERMINAL_PROMPT": "0",
                 "GIT_CONFIG_COUNT": "3",
