@@ -886,6 +886,7 @@ def mark_publication_published(
     *,
     external_id: str,
     external_url: str | None,
+    unanchored_fingerprints: frozenset[str] = frozenset(),
 ) -> None:
     with conn.cursor() as cursor:
         cursor.execute(
@@ -905,7 +906,11 @@ def mark_publication_published(
         row = cursor.fetchone()
         if not row:
             raise RuntimeError("Review publication does not exist")
-        activate_finding_lineage_events(conn, int(row[0]))
+        activate_finding_lineage_events(
+            conn,
+            int(row[0]),
+            unanchored_fingerprints=unanchored_fingerprints,
+        )
         record_review_outcomes(conn, int(row[0]))
         cursor.execute(
             """

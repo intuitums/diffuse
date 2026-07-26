@@ -135,6 +135,11 @@ def persist_finding_lineage(
         if transition.finding is not None:
             finding = transition.finding
             if lineage_id is None:
+                # A lineage whose publication could not anchor a root thread
+                # stays `pending` across reviews, and history only offers
+                # active or addressed lineages for matching. Reuse that row so
+                # the retry keeps one durable identity per logical finding
+                # instead of colliding on (pull_request_id, initial_fingerprint).
                 cursor.execute(
                     """
                     INSERT INTO finding_lineages (
@@ -145,6 +150,9 @@ def persist_finding_lineage(
                         last_seen_review_run_id
                     )
                     VALUES (%s, %s, 'pending', %s, NULL)
+                    ON CONFLICT (pull_request_id, initial_fingerprint) DO UPDATE
+                    SET updated_at = now()
+                    WHERE finding_lineages.status = 'pending'
                     RETURNING id
                     """,
                     (
@@ -153,7 +161,12 @@ def persist_finding_lineage(
                         review_run_id,
                     ),
                 )
-                lineage_id = int(cursor.fetchone()["id"])
+                row = cursor.fetchone()
+                if row is None:
+                    raise RuntimeError(
+                        "Finding fingerprint collides with a published lineage"
+                    )
+                lineage_id = int(row["id"])
             cursor.execute(
                 """
                 INSERT INTO review_findings (
@@ -215,8 +228,22 @@ def persist_finding_lineage(
         )
 
 
-def activate_finding_lineage_events(conn, review_run_id: int) -> None:
-    """Apply one published review's pending lineage transitions atomically."""
+def activate_finding_lineage_events(
+    conn,
+    review_run_id: int,
+    *,
+    unanchored_fingerprints: frozenset[str] = frozenset(),
+) -> None:
+    """Apply one published review's pending lineage transitions atomically.
+
+    ``unanchored_fingerprints`` holds the `new` findings the publication tried
+    and failed to attach to an inline root thread. Activating those lineages
+    would strand them: an `active` lineage without a ``finding_threads`` row can
+    never be resolved, reopened, targeted by an `@diffuse` reply, or scheduled
+    for feedback sync, and later reviews classify it as `persistent` so the
+    inline attach is never retried. Their transitions stay provisional instead,
+    so the next review re-derives them as `new` and re-attempts attachment.
+    """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
         cursor.execute(
             """
@@ -224,9 +251,16 @@ def activate_finding_lineage_events(conn, review_run_id: int) -> None:
                 event.id,
                 event.lineage_id,
                 event.transition,
-                lineage.status
+                lineage.status,
+                finding.fingerprint,
+                EXISTS (
+                    SELECT 1
+                    FROM finding_threads AS thread
+                    WHERE thread.lineage_id = event.lineage_id
+                ) AS has_thread
             FROM finding_lineage_events AS event
             JOIN finding_lineages AS lineage ON lineage.id = event.lineage_id
+            LEFT JOIN review_findings AS finding ON finding.id = event.finding_id
             WHERE event.review_run_id = %s
               AND event.applied_at IS NULL
             ORDER BY event.id
@@ -237,6 +271,12 @@ def activate_finding_lineage_events(conn, review_run_id: int) -> None:
         events = cursor.fetchall()
         for event in events:
             transition = event["transition"]
+            if (
+                transition == "new"
+                and not event["has_thread"]
+                and event["fingerprint"] in unanchored_fingerprints
+            ):
+                continue
             expected_status = {
                 "new": "pending",
                 "persistent": "active",

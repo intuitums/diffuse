@@ -1800,6 +1800,367 @@ def test_finding_lineage_addresses_and_reopens_one_durable_thread():
     assert pending_count == 0
 
 
+def _unanchored_lineage_fixture_finding(
+    fingerprint: str,
+    *,
+    title: str,
+    path: str,
+    line: int,
+) -> ReviewFinding:
+    return ReviewFinding(
+        fingerprint=fingerprint,
+        title=title,
+        body=f"The changed handler in {path} accepts an unscoped tenant ID.",
+        severity=Severity.HIGH,
+        category=Category.SECURITY,
+        confidence=0.91,
+        file_path=path,
+        line=line,
+        side="RIGHT",
+        evidence=f"Line {line} forwards the request value without a check.",
+        suggested_fix="Check tenant ownership before forwarding the value.",
+    )
+
+
+def _unanchored_lineage_fixture_report(findings: list[ReviewFinding]) -> ReviewReport:
+    return ReviewReport(
+        summary="Inline attach regression fixture.",
+        risk_score=7 if findings else 0,
+        findings=findings,
+        diff_file_count=2,
+        reviewed_file_count=2,
+        context_chunk_count=0,
+        prompt_tokens=10,
+        completion_tokens=2,
+    )
+
+
+def _threadless_active_lineage_count(cursor, pull_request_id: int) -> int:
+    cursor.execute(
+        """
+        SELECT count(*)
+        FROM finding_lineages AS lineage
+        WHERE lineage.pull_request_id = %s
+          AND lineage.status = 'active'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM finding_threads AS thread
+              WHERE thread.lineage_id = lineage.id
+          )
+        """,
+        (pull_request_id,),
+    )
+    return int(cursor.fetchone()[0])
+
+
+def _assert_failed_inline_attach_never_activates_threadless_lineage(
+    *,
+    provider: str,
+    repo: str,
+    scm_base_url: str,
+    api_base_url: str,
+    web_url: str,
+    number: int,
+    attached_root_comment_id: str,
+    retried_root_comment_id: str,
+) -> None:
+    """One partially attached publication must not strand a `new` lineage open."""
+    database_url = os.environ["POSTGRES_TEST_DATABASE_URL"]
+
+    def event(*, head: str, delivery: str, updated_at: str) -> PullRequestEvent:
+        return PullRequestEvent.from_payload(
+            {
+                "provider": provider,
+                "scm_base_url": scm_base_url,
+                "api_base_url": api_base_url,
+                "repo_full_name": repo,
+                "number": number,
+                "web_url": web_url,
+                "action": "synchronize",
+                "head_sha": head,
+                "base_sha": "0" * 40,
+                "updated_at": updated_at,
+                "delivery_id": delivery,
+            }
+        )
+
+    attached = _unanchored_lineage_fixture_finding(
+        "a" * 64,
+        title="Validate the tenant boundary",
+        path="service/attached.py",
+        line=12,
+    )
+    unattached = _unanchored_lineage_fixture_finding(
+        "b" * 64,
+        title="Reject the unscoped identifier",
+        path="service/unattached.py",
+        line=44,
+    )
+
+    first_event = event(
+        head="1" * 40,
+        delivery=f"unanchored-{provider}-1",
+        updated_at="2026-07-24T09:00:00Z",
+    )
+    second_event = event(
+        head="2" * 40,
+        delivery=f"unanchored-{provider}-2",
+        updated_at="2026-07-24T09:01:00Z",
+    )
+
+    with closing(psycopg2.connect(database_url)) as connection:
+        repository = register_repository(
+            connection,
+            scm_provider=provider,
+            scm_base_url=scm_base_url,
+            full_name=repo,
+            default_branch="main",
+        )
+        first_queued = enqueue_review_event(
+            connection,
+            first_event,
+            payload_sha256="1" * 64,
+        )
+        first_job = claim_workflow_job(
+            connection,
+            f"unanchored-{provider}-worker-1",
+            lease_seconds=60,
+        )
+        assert first_job is not None
+        assert first_job.id == first_queued.job_id
+        first_run = begin_review_run(
+            connection,
+            workflow_job_id=first_job.id,
+            repository_id=repository.id,
+            pull_request_id=first_job.pull_request_id,
+            index_snapshot_id=None,
+            base_sha=first_event.base_sha,
+            head_sha=first_event.head_sha,
+            model="openai/test-review-model",
+            prompt_version="lineage-v1",
+            context_fingerprint="1" * 64,
+        )
+        persist_review_report(
+            connection,
+            first_run.id,
+            _unanchored_lineage_fixture_report([attached, unattached]),
+        )
+        first_continuity = load_review_continuity(connection, first_run.id)
+        assert sorted(first_continuity.new_fingerprints) == sorted(
+            (attached.fingerprint, unattached.fingerprint)
+        )
+
+        # The provider attached one inline root comment and rejected the other,
+        # so the publication falls back to summary text for the rejected finding.
+        attached_comment = PublishedFindingComment(
+            fingerprint=attached.fingerprint,
+            external_id=attached_root_comment_id,
+            external_node_id=None,
+            external_url=f"{web_url}#note_{attached_root_comment_id}",
+            thread_id=None,
+        )
+        record_finding_threads(
+            connection,
+            review_run_id=first_run.id,
+            scm_provider=provider,
+            comments=(attached_comment,),
+        )
+        first_publication = begin_publication(
+            connection,
+            first_run.id,
+            scm_provider=provider,
+        )
+        mark_publication_published(
+            connection,
+            first_publication.id,
+            external_id="published-review-1",
+            external_url=f"{web_url}#review-1",
+            unanchored_fingerprints=frozenset({unattached.fingerprint}),
+        )
+
+        with connection.cursor() as cursor:
+            assert _threadless_active_lineage_count(
+                cursor,
+                first_job.pull_request_id,
+            ) == 0
+            cursor.execute(
+                """
+                SELECT
+                    finding.fingerprint,
+                    lineage.status,
+                    event.applied_at IS NOT NULL AS applied
+                FROM finding_lineage_events AS event
+                JOIN finding_lineages AS lineage ON lineage.id = event.lineage_id
+                JOIN review_findings AS finding ON finding.id = event.finding_id
+                WHERE event.review_run_id = %s
+                ORDER BY finding.fingerprint
+                """,
+                (first_run.id,),
+            )
+            assert cursor.fetchall() == [
+                (attached.fingerprint, "active", True),
+                (unattached.fingerprint, "pending", False),
+            ]
+
+        # Re-entrancy: replaying the same publication must not duplicate the
+        # anchor, activate the withheld lineage, or change any durable state.
+        record_finding_threads(
+            connection,
+            review_run_id=first_run.id,
+            scm_provider=provider,
+            comments=(attached_comment,),
+        )
+        mark_publication_published(
+            connection,
+            first_publication.id,
+            external_id="published-review-1",
+            external_url=f"{web_url}#review-1",
+            unanchored_fingerprints=frozenset({unattached.fingerprint}),
+        )
+        with connection.cursor() as cursor:
+            assert _threadless_active_lineage_count(
+                cursor,
+                first_job.pull_request_id,
+            ) == 0
+            cursor.execute(
+                """
+                SELECT count(*), count(DISTINCT root_comment_id)
+                FROM finding_threads AS thread
+                JOIN finding_lineages AS lineage ON lineage.id = thread.lineage_id
+                WHERE lineage.pull_request_id = %s
+                """,
+                (first_job.pull_request_id,),
+            )
+            assert cursor.fetchone() == (1, 1)
+        assert complete_workflow_job(
+            connection,
+            first_job.id,
+            f"unanchored-{provider}-worker-1",
+        )
+
+        # The next review re-derives the withheld finding as `new`, so the
+        # inline attach is retried instead of being lost forever.
+        second_queued = enqueue_review_event(
+            connection,
+            second_event,
+            payload_sha256="2" * 64,
+        )
+        second_job = claim_workflow_job(
+            connection,
+            f"unanchored-{provider}-worker-2",
+            lease_seconds=60,
+        )
+        assert second_job is not None
+        assert second_job.id == second_queued.job_id
+        second_run = begin_review_run(
+            connection,
+            workflow_job_id=second_job.id,
+            repository_id=repository.id,
+            pull_request_id=second_job.pull_request_id,
+            index_snapshot_id=None,
+            base_sha=second_event.base_sha,
+            head_sha=second_event.head_sha,
+            model="openai/test-review-model",
+            prompt_version="lineage-v1",
+            context_fingerprint="2" * 64,
+        )
+        persist_review_report(
+            connection,
+            second_run.id,
+            _unanchored_lineage_fixture_report([attached, unattached]),
+            touched_paths=frozenset({attached.file_path, unattached.file_path}),
+        )
+        second_continuity = load_review_continuity(connection, second_run.id)
+        assert second_continuity.new_fingerprints == (unattached.fingerprint,)
+        assert second_continuity.persistent_fingerprints == (attached.fingerprint,)
+        assert unattached.fingerprint in second_continuity.inline_fingerprints
+
+        record_finding_threads(
+            connection,
+            review_run_id=second_run.id,
+            scm_provider=provider,
+            comments=(
+                PublishedFindingComment(
+                    fingerprint=unattached.fingerprint,
+                    external_id=retried_root_comment_id,
+                    external_node_id=None,
+                    external_url=f"{web_url}#note_{retried_root_comment_id}",
+                    thread_id=None,
+                ),
+            ),
+        )
+        second_publication = begin_publication(
+            connection,
+            second_run.id,
+            scm_provider=provider,
+        )
+        mark_publication_published(
+            connection,
+            second_publication.id,
+            external_id="published-review-2",
+            external_url=f"{web_url}#review-2",
+        )
+
+        with connection.cursor() as cursor:
+            assert _threadless_active_lineage_count(
+                cursor,
+                second_job.pull_request_id,
+            ) == 0
+            cursor.execute(
+                """
+                SELECT lineage.status, thread.root_comment_id
+                FROM finding_lineages AS lineage
+                JOIN finding_threads AS thread ON thread.lineage_id = lineage.id
+                WHERE lineage.pull_request_id = %s
+                ORDER BY thread.root_comment_id
+                """,
+                (second_job.pull_request_id,),
+            )
+            anchored = cursor.fetchall()
+            cursor.execute(
+                "SELECT count(*) FROM finding_lineages WHERE pull_request_id = %s",
+                (second_job.pull_request_id,),
+            )
+            lineage_count = int(cursor.fetchone()[0])
+        connection.rollback()
+
+    # The withheld lineage was reused rather than duplicated by the retry.
+    assert lineage_count == 2
+    assert anchored == [
+        ("active", attached_root_comment_id),
+        ("active", retried_root_comment_id),
+    ]
+
+
+def test_github_failed_inline_attach_never_activates_a_threadless_lineage():
+    _assert_failed_inline_attach_never_activates_threadless_lineage(
+        provider="github",
+        repo="workflow/unanchored-github",
+        scm_base_url="https://github.com",
+        api_base_url="https://api.github.com",
+        web_url="https://github.com/workflow/unanchored-github/pull/71",
+        number=71,
+        attached_root_comment_id="710",
+        retried_root_comment_id="711",
+    )
+
+
+def test_gitlab_failed_inline_attach_never_activates_a_threadless_lineage():
+    _assert_failed_inline_attach_never_activates_threadless_lineage(
+        provider="gitlab",
+        repo="workflow/unanchored-gitlab",
+        scm_base_url="https://gitlab.example.com",
+        api_base_url="https://gitlab.example.com/api/v4",
+        web_url=(
+            "https://gitlab.example.com/workflow/unanchored-gitlab/"
+            "-/merge_requests/72"
+        ),
+        number=72,
+        attached_root_comment_id="720",
+        retried_root_comment_id="721",
+    )
+
+
 def test_review_conversations_are_durable_ordered_and_retryable():
     database_url = os.environ["POSTGRES_TEST_DATABASE_URL"]
     repo = "workflow/review-conversation"

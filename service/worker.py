@@ -666,6 +666,7 @@ def _mark_native_publication_published(
             publication_id,
             external_id=published.external_id,
             external_url=published.external_url,
+            unanchored_fingerprints=frozenset(published.unattached_fingerprints),
         )
 
 
