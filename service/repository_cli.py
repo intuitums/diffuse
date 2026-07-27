@@ -86,6 +86,15 @@ def _add_repository(args: argparse.Namespace) -> None:
 
 
 def _sync_repository(args: argparse.Namespace) -> None:
+    if args.all:
+        if args.repository_id is not None:
+            raise ValueError("Pass either a repository_id or --all, not both")
+        _sync_every_repository()
+        return
+    if args.repository_id is None:
+        raise ValueError(
+            "Pass a repository_id, or --all to reindex every enabled repository"
+        )
     with closing(get_conn()) as conn:
         repository = get_repository(conn, args.repository_id)
     if repository is None:
@@ -94,6 +103,46 @@ def _sync_repository(args: argparse.Namespace) -> None:
         raise ValueError("Repository is disabled")
     job_id, commit_sha = enqueue_initial_index(repository)
     print(f"Queued index job {job_id} for {commit_sha[:12]}.")
+
+
+def _sync_every_repository() -> None:
+    """Queue a fresh index for every enabled repository.
+
+    A release that changes ``INDEX_FORMAT_VERSION`` -- a language-adapter schema
+    change, a Tree-sitter grammar upgrade, or a policy schema change -- makes
+    every existing snapshot incompatible. Retrieval refuses an incompatible
+    snapshot, so until each repository is re-indexed its reviews fail closed
+    with ``MissingRepositoryIndexError`` rather than quietly losing context.
+
+    This is the operator's post-upgrade step. It is safe to re-run: indexing is
+    keyed on the exact resolved commit and queued work is deduplicated.
+    """
+    with closing(get_conn()) as conn:
+        repositories = [
+            repository for repository in list_repositories(conn) if repository.enabled
+        ]
+    if not repositories:
+        print("No enabled repositories to reindex.")
+        return
+    failures = 0
+    for repository in repositories:
+        try:
+            job_id, commit_sha = enqueue_initial_index(repository)
+        except Exception as error:  # noqa: BLE001
+            # One unreachable mirror must not abandon the rest of the sweep.
+            failures += 1
+            print(f"{repository.id} {repository.full_name}: could not queue: {error}")
+            continue
+        print(
+            f"{repository.id} {repository.full_name}: "
+            f"queued index job {job_id} for {commit_sha[:12]}."
+        )
+    queued = len(repositories) - failures
+    print(f"Queued {queued} of {len(repositories)} enabled repositories.")
+    if failures:
+        raise RuntimeError(
+            f"{failures} of {len(repositories)} repositories could not be queued"
+        )
 
 
 def _list_registered_repositories(_args: argparse.Namespace) -> None:
@@ -146,7 +195,21 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "sync",
         help="Fetch and queue the current default-branch commit",
     )
-    sync_parser.add_argument("repository_id", type=int)
+    sync_parser.add_argument(
+        "repository_id",
+        type=int,
+        nargs="?",
+        help="Repository to reindex; omit when using --all",
+    )
+    sync_parser.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Reindex every enabled repository. Required after an upgrade that "
+            "changes the index format, which makes existing snapshots "
+            "incompatible"
+        ),
+    )
     sync_parser.set_defaults(handler=_sync_repository)
 
     list_parser = subparsers.add_parser(

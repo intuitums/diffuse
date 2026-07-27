@@ -198,10 +198,32 @@ For every upgrade:
 4. require `docker compose run --rm migrate database verify` and a
    successful `/ready` response; and
 5. inspect `docker compose logs migrate app worker` for restarts or failed
-   jobs.
+   jobs; and
+6. if the release notes say the index format changed, reindex every repository
+   (see below).
 
 Applied migration files are immutable. If verification reports checksum drift
 or an unversioned schema, stop and investigate rather than bypassing the gate.
+
+### Upgrades that change the index format
+
+Some releases change `INDEX_FORMAT_VERSION` — a language-adapter schema change,
+a Tree-sitter grammar upgrade, or a repository-policy schema change. Index
+snapshots are immutable and are matched on that format, so **every existing
+snapshot becomes incompatible and no repository re-extracts on its own.**
+
+Diffuse fails closed rather than reviewing without context: an affected
+repository's reviews raise `MissingRepositoryIndexError`, retry, and then
+dead-letter. Queue the sweep as the last step of such an upgrade:
+
+```bash
+docker compose run --rm worker repository sync --all
+```
+
+It prints one line per repository, is safe to re-run, and exits non-zero if any
+repository could not be queued. Reviews for a repository resume once its new
+snapshot is active, so expect a gap on large repositories and schedule the
+upgrade window accordingly. Watch `docker compose logs worker` for progress.
 
 ## Initial operational checklist
 

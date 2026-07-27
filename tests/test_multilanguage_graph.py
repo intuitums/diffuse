@@ -270,6 +270,70 @@ def test_language_adapters_extract_symbols_and_relationships(
     assert expected_edges <= actual_edges
 
 
+TYPESCRIPT_HERITAGE_SOURCE = """\
+import { Base } from "./lib";
+class Animal {}
+class Dog extends Animal { bark(): void {} }
+export class Puppy extends Dog {}
+class Boxed extends Base<string> {}
+class Scoped extends ns.Remote {}
+abstract class Shelter extends Animal implements Store {}
+interface Store extends Named {}
+interface Boxes extends Base<string> {}
+class Mixed extends mixin(Animal) {}
+class Outer { make(): void { class Inner extends Animal {} } }
+"""
+
+
+@pytest.mark.parametrize("extension", [".ts", ".tsx"])
+def test_typescript_class_extends_resolves_like_javascript(tmp_path: Path, extension: str):
+    """``class X extends Y`` must resolve to Y, not to the raw ``extends Y`` clause text.
+
+    The TypeScript grammar nests class base types inside ``class_heritage > extends_clause``
+    while interfaces use a flat ``extends_type_clause``. Reading the clause node directly
+    produced targets such as ``extendsAnimal`` that silently vanished downstream, so this
+    asserts the exact edge set rather than a subset.
+    """
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "lib.ts").write_text("export class Base<T> { value: T; }\n")
+    path = source_dir / f"pets{extension}"
+    path.write_text(TYPESCRIPT_HERITAGE_SOURCE)
+
+    graph = extract_file_graph(path, tmp_path)
+    names = {symbol.stable_key: symbol.qualified_name for symbol in graph.symbols}
+    heritage = sorted(
+        (
+            names[relationship.source_symbol_key],
+            relationship.kind,
+            relationship.target_qualified_name,
+        )
+        for relationship in graph.relationships
+        if relationship.kind in {"inherits", "implements"}
+    )
+
+    assert not graph.diagnostics
+    assert heritage == [
+        # ``class A extends B<T>`` resolves through the import alias, without ``<string>``.
+        ("src.pets.Boxed", "inherits", "src.lib.Base"),
+        # ``interface A extends B<T>`` keeps working and drops the type arguments.
+        ("src.pets.Boxes", "inherits", "src.lib.Base"),
+        ("src.pets.Dog", "inherits", "src.pets.Animal"),
+        # A class nested in a method body owns its own edge and does not leak onto the
+        # enclosing ``Outer``; ``class Mixed extends mixin(Animal)`` names no single base
+        # type and is deliberately absent rather than emitting an unresolvable target.
+        ("src.pets.Outer.make.Inner", "inherits", "src.pets.Animal"),
+        # ``export class A extends B`` unwraps the export statement.
+        ("src.pets.Puppy", "inherits", "src.pets.Dog"),
+        # ``class A extends ns.B`` keeps the qualifier.
+        ("src.pets.Scoped", "inherits", "ns.Remote"),
+        # ``extends`` and ``implements`` on one class stay in their own buckets.
+        ("src.pets.Shelter", "implements", "src.pets.Store"),
+        ("src.pets.Shelter", "inherits", "src.pets.Animal"),
+        ("src.pets.Store", "inherits", "Named"),
+    ]
+
+
 def test_javascript_cross_file_import_and_call_link_to_exact_symbol(tmp_path: Path):
     source_dir = tmp_path / "src"
     source_dir.mkdir()

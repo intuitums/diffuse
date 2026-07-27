@@ -92,6 +92,20 @@ FUNCTION_VALUE_TYPES = frozenset(
         "generator_function",
     }
 )
+TYPESCRIPT_BASE_TYPE_NODES = frozenset(
+    {
+        "identifier",
+        "member_expression",
+        "nested_identifier",
+        "nested_type_identifier",
+        "type_identifier",
+    }
+)
+# Generic base types wrap the base name one level down; unwrap to drop the type arguments.
+TYPESCRIPT_GENERIC_BASE_FIELDS = {
+    "generic_type": "name",
+    "instantiation_expression": "function",
+}
 
 DIRECT_DEFINITIONS: dict[str, dict[str, tuple[str, tuple[str, ...]]]] = {
     "javascript": {
@@ -220,6 +234,48 @@ def _first_descendant(node: Node, types: frozenset[str]) -> Node | None:
 def _descendants(node: Node, *types: str) -> list[Node]:
     accepted = frozenset(types)
     return [candidate for candidate in _walk(node) if candidate.type in accepted]
+
+
+def _typescript_heritage(node: Node) -> list[tuple[str, Node]]:
+    """Yield ``(kind, base_type_node)`` pairs for a TypeScript type declaration.
+
+    The TypeScript grammar spells the two heritage forms differently:
+
+    * ``interface A extends B, C`` hangs an ``extends_type_clause`` directly off the
+      declaration, and its named children are already the base types.
+    * ``class A extends B implements C`` hangs a ``class_heritage`` off the declaration,
+      which in turn wraps an ``extends_clause`` and/or an ``implements_clause``. The base
+      types live one level further down, so the clause node itself must never be handed to
+      the resolver -- its text still contains the ``extends``/``implements`` keyword.
+
+    Only direct children are inspected so that a class nested inside a method body does
+    not leak its own heritage onto the enclosing declaration.
+
+    Base types are restricted to name-shaped nodes and stripped of type arguments, so
+    ``class A extends B<T>`` and ``interface A extends B<T>`` both resolve to ``B`` while
+    ``class A extends ns.B`` resolves to ``ns.B``. Mixin call expressions such as ``class A
+    extends mixin(Base)`` name no single base type and are deliberately left unresolved
+    rather than emitting a target that can never match a symbol.
+    """
+    results: list[tuple[str, Node]] = []
+
+    def collect(kind: str, clause: Node) -> None:
+        for child in clause.named_children:
+            if child.type in TYPESCRIPT_GENERIC_BASE_FIELDS:
+                child = child.child_by_field_name(TYPESCRIPT_GENERIC_BASE_FIELDS[child.type])
+            if child is not None and child.type in TYPESCRIPT_BASE_TYPE_NODES:
+                results.append((kind, child))
+
+    for clause in node.named_children:
+        if clause.type == "extends_type_clause":
+            collect("inherits", clause)
+        elif clause.type == "class_heritage":
+            for inner in clause.named_children:
+                if inner.type == "extends_clause":
+                    collect("inherits", inner)
+                elif inner.type == "implements_clause":
+                    collect("implements", inner)
+    return results
 
 
 def _declarator_name(source: bytes, node: Node) -> str:
@@ -742,17 +798,8 @@ class _TreeSitterExtractor:
             "class_declaration",
             "interface_declaration",
         }:
-            for clause in _descendants(node, "extends_type_clause", "class_heritage"):
-                for child in clause.named_children:
-                    if child.type not in {"implements_clause"}:
-                        results.append(
-                            ("inherits", self._resolve_reference(_text(self.source, child)))
-                        )
-            for clause in _descendants(node, "implements_clause"):
-                for child in clause.named_children:
-                    results.append(
-                        ("implements", self._resolve_reference(_text(self.source, child)))
-                    )
+            for kind, base in _typescript_heritage(node):
+                results.append((kind, self._resolve_reference(_text(self.source, base))))
         elif language == "java" and node.type in {
             "annotation_type_declaration",
             "class_declaration",

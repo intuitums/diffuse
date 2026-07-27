@@ -8,7 +8,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from repository_policy.models import POLICY_SCHEMA_VERSION
 
-LANGUAGE_ADAPTER_SCHEMA_VERSION = "language-adapters-v1"
+LANGUAGE_ADAPTER_SCHEMA_VERSION = "language-adapters-v2-typescript-extends"
 # Grammar upgrades change the symbols and relationships extracted from the same
 # source, so their versions are part of the index compatibility fingerprint.
 #
