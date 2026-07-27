@@ -1,4 +1,5 @@
 import json
+import re
 
 import httpx
 import pytest
@@ -126,6 +127,78 @@ def test_review_output_can_hide_agent_fix_guidance():
     assert "Suggested fix" not in inline
     assert "The changed line returns untrusted input." in inline
     assert inline.endswith(f"<!-- diffuse-finding:{'f' * 64} -->")
+
+
+def test_agent_handoffs_are_collapsed_below_the_actionable_content():
+    report = _report()
+
+    body = format_review_body(42, "a" * 40, report)
+    inline = _finding_comment(report.findings[0], review_run_id=42)
+
+    assert "<summary><strong>Fix all with your agent</strong></summary>" in body
+    assert "<details open>\n<summary><strong>Fix all with your agent" not in body
+    assert body.index("| Severity | Finding |") < body.index("`get_fix_all_handoff`")
+    assert "<summary><strong>Fix with your agent</strong></summary>" in inline
+    assert "<details open>\n<summary><strong>Fix with your agent" not in inline
+    assert inline.index("**Evidence:**") < inline.index("`get_fix_handoff`")
+    assert inline.index("**Suggested fix:**") < inline.index("`get_fix_handoff`")
+    assert inline.endswith(f"<!-- diffuse-finding:{'f' * 64} -->")
+
+
+def _table_cell_count(row: str) -> int:
+    return len(re.split(r"(?<!\\)\|", row)) - 2
+
+
+def test_issues_table_rows_match_the_header_cell_count():
+    report = _report()
+
+    body = format_review_body(42, "a" * 40, report)
+    header, delimiter, *rows = [
+        line for line in body.splitlines() if line.startswith("|")
+    ]
+
+    assert _table_cell_count(header) == 4
+    assert _table_cell_count(delimiter) == 4
+    assert len(rows) == 1
+    assert _table_cell_count(rows[0]) == 4
+    assert "`app.py:12` |" in rows[0]
+    assert rows[0].endswith(" 91% |")
+
+
+def test_issues_table_rows_match_the_header_without_the_confidence_column():
+    report = _report().model_copy(
+        update={"confidence_score_section_included": False}
+    )
+
+    body = format_review_body(42, "a" * 40, report)
+    header, delimiter, *rows = [
+        line for line in body.splitlines() if line.startswith("|")
+    ]
+
+    assert _table_cell_count(header) == 3
+    assert _table_cell_count(delimiter) == 3
+    assert len(rows) == 1
+    assert _table_cell_count(rows[0]) == 3
+    assert rows[0].endswith("`app.py:12` |")
+    assert "91%" not in rows[0]
+
+
+def test_clean_review_body_states_only_the_verdict():
+    report = _report().model_copy(
+        update={
+            "summary": "No issues found in the changed files.",
+            "risk_score": 0,
+            "findings": [],
+        }
+    )
+
+    body = format_review_body(42, "a" * 40, report, inline_comments_attached=False)
+
+    assert "No issues found in the changed files." in body
+    assert "**Findings:** 0" in body
+    assert "No inline findings were published" not in body
+    assert "| Severity | Finding |" not in body
+    assert "get_fix_all_handoff" not in body
 
 
 def test_review_body_can_be_reduced_to_recovery_markers():

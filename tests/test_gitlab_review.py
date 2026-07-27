@@ -513,6 +513,13 @@ async def test_publish_creates_revision_pinned_summary_with_findings(monkeypatch
     assert "The changed code does not constrain the query by tenant." not in body
     assert "/-/commit/" + ("a" * 40) in body
     assert "Reply `@diffuse review`" not in body
+    rows = [line for line in body.splitlines() if line.startswith("|")]
+    assert [row.count("|") for row in rows] == [5, 5, 5]
+    assert rows[2].endswith(" 94% |")
+    assert "`service/read.py:12` |" in rows[2]
+    note = discussion_payloads[0]["body"][0]
+    assert "<summary><strong>Fix with your agent</strong></summary>" in note
+    assert note.index("**Suggested fix:**") < note.index("`get_fix_handoff`")
 
 
 @pytest.mark.anyio
