@@ -758,10 +758,18 @@ async def test_worker_refuses_to_review_without_a_compatible_index(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_terminal_failure_before_policy_resolution_completes_the_check(
+async def test_missing_index_completes_an_already_open_check_run(
     monkeypatch,
 ):
-    """A pre-flight failure must still turn an existing check run red."""
+    """A missing index must complete a check run that is already open.
+
+    Note this test supplies its own in_progress CheckRunHandle. On the real
+    pre-policy path `_get_native_check_for_job` returns None and
+    `_complete_native_check` no-ops, so nothing is published to the pull
+    request at all — that gap is the review-failure comment channel, not this
+    function. What is covered here is only that when a handle does exist, a
+    MissingRepositoryIndexError still drives it to a terminal conclusion.
+    """
     event = _event()
     job = _job(event)
     check_run = CheckRunHandle(

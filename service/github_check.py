@@ -237,17 +237,38 @@ def _annotations(
     The conclusion is derived from ``active_findings``, so a check can go red for
     an older open lineage. Annotating only ``report.findings`` would leave that
     check red with nothing shown in the Files tab.
+
+    ``MAX_CHECK_ANNOTATIONS`` is a hard GitHub-side cap, and truncating in source
+    order let a full cap of non-blocking findings from this run crowd out the one
+    blocking lineage that turned the check red — the same empty-Files-tab symptom
+    at a different layer. Blocking findings therefore win a slot first.
+
+    Selection is reordered; presentation is not. Once the surviving set is
+    chosen, it is emitted in the original this-run-then-still-open order, so the
+    common under-cap case looks exactly as before.
     """
-    annotations: list[dict[str, object]] = []
+    candidates: list[ReviewFinding] = []
     seen: set[str] = set()
     for finding in (*report.findings, *active_findings):
         if finding.side != "RIGHT" or finding.fingerprint in seen:
             continue
         seen.add(finding.fingerprint)
-        annotations.append(_annotation(finding, blocking_severities))
-        if len(annotations) == MAX_CHECK_ANNOTATIONS:
-            break
-    return annotations
+        candidates.append(finding)
+
+    if len(candidates) > MAX_CHECK_ANNOTATIONS:
+        ranked = sorted(
+            enumerate(candidates),
+            key=lambda item: (
+                item[1].severity.value not in blocking_severities,
+                item[0],
+            ),
+        )
+        kept = sorted(index for index, _ in ranked[:MAX_CHECK_ANNOTATIONS])
+        candidates = [candidates[index] for index in kept]
+
+    return [
+        _annotation(finding, blocking_severities) for finding in candidates
+    ]
 
 
 def _completion_output(

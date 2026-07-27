@@ -259,3 +259,65 @@ async def test_check_annotations_stay_within_the_github_request_cap(monkeypatch)
         )
 
     assert len(payloads[0]["output"]["annotations"]) == MAX_CHECK_ANNOTATIONS
+
+
+@pytest.mark.anyio
+async def test_blocking_lineage_survives_the_annotation_cap(monkeypatch):
+    """The finding that turned the check red must be annotated, not crowded out.
+
+    MAX_CHECK_ANNOTATIONS is a hard GitHub-side cap. A run that emits a full cap
+    of non-blocking findings would, in source order, consume every slot and leave
+    the single blocking lineage that produced the `failure` conclusion with no
+    annotation — the same empty-Files-tab symptom `_annotations` exists to fix.
+    """
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": 93})
+
+    blocking_fingerprint = "b" * 64
+    # A full cap of LOW findings in this run, plus one HIGH open lineage.
+    noisy = _report(severity=Severity.LOW).model_copy(
+        update={
+            "findings": tuple(
+                _open_lineage_finding(
+                    fingerprint=f"{index:064x}",
+                    line=index + 1,
+                    severity=Severity.LOW,
+                )
+                for index in range(MAX_CHECK_ANNOTATIONS)
+            )
+        }
+    )
+    unresolved = (
+        _open_lineage_finding(
+            fingerprint=blocking_fingerprint,
+            line=900,
+            severity=Severity.HIGH,
+        ),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await complete_github_check_run(
+            _event(),
+            external_id="93",
+            conclusion="failure",
+            blocking_severities=("critical", "high"),
+            report=noisy,
+            unresolved_findings=unresolved,
+            client=client,
+        )
+
+    annotations = payloads[0]["output"]["annotations"]
+    assert len(annotations) == MAX_CHECK_ANNOTATIONS
+    # It wins a slot despite arriving last, with the cap already full.
+    assert 900 in [annotation["start_line"] for annotation in annotations], (
+        "the blocking lineage that turned the check red was dropped by the cap"
+    )
+    levels = [annotation["annotation_level"] for annotation in annotations]
+    assert levels.count("failure") == 1
+    # Presentation order is unchanged: this run's findings still come first.
+    assert annotations[0]["start_line"] == 1
+    assert annotations[-1]["start_line"] == 900
