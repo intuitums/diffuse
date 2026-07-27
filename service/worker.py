@@ -197,6 +197,18 @@ class IndexSupersededError(RuntimeError):
     pass
 
 
+class MissingRepositoryIndexError(RuntimeError):
+    """The repository has no index snapshot compatible with the current embedder.
+
+    Deliberately a ``RuntimeError`` rather than a ``NonRetryableError``: the
+    condition is transient. A pull request opened while the initial index job is
+    still running resolves itself once that job commits a snapshot, so the review
+    must be retried instead of failing permanently. Reviewing without an index
+    would publish a commit-pinned review with no retrieval context and no
+    ``.diffuse`` policy.
+    """
+
+
 async def _fetch_scm_pull_request_diff(event: PullRequestEvent) -> str:
     if event.provider == "github":
         return await fetch_pull_request_diff(event)
@@ -1242,6 +1254,10 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
     snapshot_id = await anyio.to_thread.run_sync(
         partial(compatible_snapshot_id, event.repo_full_name, job.repository_id)
     )
+    if snapshot_id is None:
+        raise MissingRepositoryIndexError(
+            "Repository has no compatible active index; run repository sync first"
+        )
     policy = await anyio.to_thread.run_sync(
         partial(_load_review_policy, snapshot_id, diff_text, job.repository_id)
     )
