@@ -92,7 +92,10 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "create",
         help="Create a same-host cross-repository context cluster",
     )
-    create_parser.add_argument("name")
+    create_parser.add_argument(
+        "name",
+        help="Human-readable cluster name, unique per installation",
+    )
     create_parser.add_argument(
         "--repository-id",
         type=int,
@@ -100,8 +103,15 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         required=True,
         help="Repeat for each onboarded repository (2 to 8 total).",
     )
-    create_parser.add_argument("--actor", required=True)
-    create_parser.add_argument("--description")
+    create_parser.add_argument(
+        "--actor",
+        required=True,
+        help="Operator identity recorded in the immutable audit trail",
+    )
+    create_parser.add_argument(
+        "--description",
+        help="Optional description stored with the cluster",
+    )
     create_parser.set_defaults(handler=_create)
 
     list_parser = subparsers.add_parser(
@@ -114,24 +124,48 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "add",
         help="Add a repository to a cluster",
     )
-    add_parser.add_argument("cluster_id", type=int)
-    add_parser.add_argument("repository_id", type=int)
-    add_parser.add_argument("--actor", required=True)
+    add_parser.add_argument(
+        "cluster_id",
+        type=int,
+        help="Numeric cluster id from `diffuse cluster list`",
+    )
+    add_parser.add_argument(
+        "repository_id",
+        type=int,
+        help="Numeric repository id from `diffuse repository list`",
+    )
+    add_parser.add_argument(
+        "--actor",
+        required=True,
+        help="Operator identity recorded in the immutable audit trail",
+    )
     add_parser.set_defaults(handler=_add)
 
     remove_parser = subparsers.add_parser(
         "remove",
         help="Remove a repository from a cluster",
     )
-    remove_parser.add_argument("cluster_id", type=int)
-    remove_parser.add_argument("repository_id", type=int)
+    remove_parser.add_argument(
+        "cluster_id",
+        type=int,
+        help="Numeric cluster id from `diffuse cluster list`",
+    )
+    remove_parser.add_argument(
+        "repository_id",
+        type=int,
+        help="Numeric repository id to detach from the cluster",
+    )
     remove_parser.set_defaults(handler=_remove)
 
     delete_parser = subparsers.add_parser(
         "delete",
         help="Delete a repository context cluster",
     )
-    delete_parser.add_argument("cluster_id", type=int)
+    delete_parser.add_argument(
+        "cluster_id",
+        type=int,
+        help="Numeric cluster id from `diffuse cluster list`",
+    )
     delete_parser.set_defaults(handler=_delete)
 
 

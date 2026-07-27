@@ -95,7 +95,11 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
             "baseline table/column contract is verified"
         ),
     )
-    migrate.add_argument("--actor", default="diffuse-migrator")
+    migrate.add_argument(
+        "--actor",
+        default="diffuse-migrator",
+        help="Operator identity recorded in the migration ledger (default: %(default)s)",
+    )
     migrate.set_defaults(handler=_migrate)
 
     status_parser = subparsers.add_parser(
