@@ -9,6 +9,7 @@ from retriever.context_models import (
 from retriever.retrieve import (
     DEFAULT_MAX_CONTEXT_CHARS,
     DEFAULT_MAX_CONTEXT_CHUNKS,
+    MAX_RETRIEVAL_TOP_K,
     RetrievedContext,
     build_retrieval_query,
     extract_lexical_terms,
@@ -456,3 +457,36 @@ def test_context_chunk_override_is_honored_end_to_end(monkeypatch):
 
     monkeypatch.setenv("MAX_CONTEXT_CHUNKS", "16")
     assert len(retrieve()) == 16
+
+
+def test_worker_startup_rejects_a_malformed_context_budget(monkeypatch, capsys):
+    """A bad budget must stop the worker, not dead-letter every review.
+
+    `max_context_chunks` is resolved lazily inside `_resolve_top_k`, and
+    `run_once` classifies `ValueError` as a permanent failure. Without a startup
+    check, `MAX_CONTEXT_CHUNKS=0` would not fail the process — it would claim
+    each review job in turn and send it straight to the dead-letter state.
+    """
+    from service import worker
+
+    monkeypatch.setenv("MAX_CONTEXT_CHUNKS", "0")
+    monkeypatch.setattr("sys.argv", ["worker", "--once"])
+
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+
+    # argparse exits 2 for a usage error, before any database connection.
+    assert raised.value.code == 2
+    assert "MAX_CONTEXT_CHUNKS must be positive" in capsys.readouterr().err
+
+
+def test_worker_startup_rejects_a_budget_above_the_ceiling(monkeypatch, capsys):
+    from service import worker
+
+    monkeypatch.setenv("MAX_CONTEXT_CHUNKS", str(MAX_RETRIEVAL_TOP_K + 1))
+    monkeypatch.setattr("sys.argv", ["worker", "--once"])
+
+    with pytest.raises(SystemExit):
+        worker.main()
+
+    assert "MAX_CONTEXT_CHUNKS must be at most" in capsys.readouterr().err
