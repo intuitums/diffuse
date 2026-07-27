@@ -6,10 +6,10 @@ Status: Accepted
 
 ## Context
 
-Greptile documents continuous learning from team review comments, replies to
-its findings, 👍/👎 reactions, and whether suggestions are addressed. It treats
-other emoji as neutral and states that security and logic issues remain
-protected from adaptive noise filtering.
+Diffuse needs to learn continuously from team review comments, replies to its
+findings, 👍/👎 reactions, and whether suggestions are addressed. Other emoji
+must stay neutral, and security and logic issues must remain protected from
+adaptive noise filtering.
 
 GitHub supports listing reactions on pull-request review comments, but its
 documented webhook catalog has no dedicated review-reaction event. Treating a
@@ -19,9 +19,6 @@ also make preference memory vulnerable to poisoning.
 
 Public references:
 
-- <https://www.greptile.com/docs/how-greptile-works/memory-and-learning>
-- <https://www.greptile.com/docs/code-review/training-the-learning-system>
-- <https://www.greptile.com/docs/code-review/developer-essentials>
 - <https://docs.github.com/en/rest/reactions/reactions#list-reactions-for-a-pull-request-review-comment>
 - <https://docs.github.com/en/rest/collaborators/collaborators#check-if-a-user-is-a-repository-collaborator>
 - <https://docs.github.com/en/webhooks/webhook-events-and-payloads>
@@ -62,5 +59,5 @@ ADR 0031 subsequently extends reply and reaction collection to authorized
 GitLab finding discussions. The scheduler currently continues polling while
 the repository remains enabled. Closed-PR retirement, top-level human review
 comments, merged-but-unaddressed outcomes, preference ranking,
-organization/team moderation, and a management UI/API remain required for full
-team-memory parity.
+organization/team moderation, and a management UI/API remain required for
+complete team memory.

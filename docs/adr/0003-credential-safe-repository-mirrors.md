@@ -46,4 +46,4 @@ verified Git commit.
 The initial credential source is an environment/secret-manager-projected token.
 GitHub App and GitLab OAuth installation flows, encrypted per-installation
 credential records, repository deletion, and multi-node mirror coordination
-remain required for full production parity.
+remain required for full production readiness.

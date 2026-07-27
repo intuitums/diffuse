@@ -20,7 +20,7 @@ this working foundation from the remaining product surface.
 
 See:
 
-- [Capability ledger](docs/feature-parity.md)
+- [Capability ledger](docs/capabilities.md)
 - [Target architecture](docs/architecture.md)
 - [Delivery roadmap](docs/roadmap.md)
 - [Single-server deployment](docs/deployment.md)
@@ -58,7 +58,8 @@ revision deduplication, and queued-job supersession.
 
 ## Deployment models
 
-Diffuse is proprietary software with two planned operating models:
+Diffuse is proprietary software with two operating models. Self-hosted ships
+today; managed cloud is planned.
 
 - **Self-hosted:** customers run the API, workers, PostgreSQL/pgvector,
   repository storage, and model connections in infrastructure they control.
@@ -1058,5 +1059,12 @@ operator visibility, tenant authorization, and operational metrics.
 
 ## Licensing
 
-Diffuse does not yet include its own license file; choose one before
-distributing this repository.
+Diffuse is proprietary software. Copyright 2026 intuitumxyz. All rights
+reserved. See [`LICENSE`](LICENSE).
+
+Self-hostable does not mean open source. The right to operate Diffuse inside
+infrastructure you control is a deployment right conveyed under a commercial
+agreement; it is not a license to this source repository. Self-hosted customers
+receive authenticated, signed executable artifacts and installation
+documentation, not source access. See
+[ADR 0040](docs/adr/0040-proprietary-self-hosted-and-managed-cloud-distribution.md).

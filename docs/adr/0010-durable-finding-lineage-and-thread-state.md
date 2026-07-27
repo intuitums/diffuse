@@ -11,9 +11,9 @@ it returned. Posting every review as unrelated inline comments creates noise
 and loses the history needed for status checks, analytics, agents, and future
 team learning.
 
-Greptile's public behavior marks corresponding comments addressed after a
-commit touches their flagged files, and its developer surfaces distinguish
-addressed from unaddressed comments. GitHub exposes REST review-comment replies
+Comments must be marked addressed after a commit touches their flagged files,
+and developer surfaces must distinguish addressed from unaddressed comments.
+GitHub exposes REST review-comment replies
 and GraphQL mutations that resolve or unresolve a review thread. Remote comment
 state alone is not sufficient because worker retries and partial writes must be
 recoverable.

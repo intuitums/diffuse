@@ -11,7 +11,7 @@ metadata fetch and target guard supported only GitHub. ADR 0032 added GitLab
 manual review behavior through top-level MR comments, leaving an MCP client
 unable to request the same review for an authorized GitLab repository.
 
-The public MCP repository descriptor includes a provider and host. Accepting
+The MCP repository descriptor includes a provider and host. Accepting
 either as an unchecked fetch target would create an authorization and
 server-side request boundary. GitLab also identifies API resources by numeric
 project ID while Diffuse and MCP use a slash-separated namespace, including
@@ -19,13 +19,12 @@ nested groups.
 
 Relevant public contracts:
 
-- <https://www.greptile.com/docs/mcp-v2/tools>
 - <https://docs.gitlab.com/api/projects/>
 - <https://docs.gitlab.com/api/merge_requests/>
 
 ## Decision
 
-- Keep the public `trigger_code_review` input and response shape provider
+- Keep the `trigger_code_review` input and response shape provider
   neutral. Support registered GitHub and GitLab repositories without adding a
   second provider-specific tool.
 - Resolve `name`, `remote`, `defaultBranch`, optional `remoteUrl`, and PR/MR
@@ -58,4 +57,4 @@ identity, and commit-pinned review behavior.
 
 Each GitLab invocation adds a project lookup before the MR metadata read. UI
 re-trigger controls, organization/team RBAC, generation budgets, and scheduled
-report export remain separate parity work.
+report export remain separate future work.

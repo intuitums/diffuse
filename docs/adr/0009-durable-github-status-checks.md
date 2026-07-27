@@ -13,9 +13,9 @@ ambiguous in-progress result.
 
 GitHub's Checks API creates a check run for an explicit `head_sha`, supports an
 operator-owned `external_id`, and accepts completed conclusions plus bounded
-line annotations. Greptile's public repository configuration exposes an
-optional status-check outcome. Diffuse needs the same operator result without
-making a remote SCM object the source of truth for workflow state.
+line annotations. Repository configuration needs to expose an optional
+status-check outcome without making a remote SCM object the source of truth for
+workflow state.
 
 ## Decision
 
