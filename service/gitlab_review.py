@@ -20,6 +20,10 @@ from service.github_review import (
     format_review_body,
 )
 from service.review_description import merge_review_description
+from service.review_failure_notice import (
+    TerminalReviewFailure,
+    format_failure_notice,
+)
 from service.review_models import ReviewFinding, ReviewReport
 from service.review_provenance import (
     CommitMetadata,
@@ -695,6 +699,59 @@ async def _update_merge_request_description(
         raise RuntimeError(
             "GitLab did not persist the managed Diffuse description region"
         )
+
+
+async def _post_gitlab_failure_notice(
+    client: httpx.AsyncClient,
+    event: PullRequestEvent,
+    failure: TerminalReviewFailure,
+) -> str:
+    body = format_failure_notice(failure)
+    existing = await _find_existing_note(client, event, failure.marker)
+    if existing is not None:
+        # Edit the single notice rather than appending another. The marker is
+        # per-merge-request, so this covers a later failing job as well as a
+        # retry, and the body carries the current job id.
+        updated = await client.put(
+            f"{_merge_request_path(event)}/notes/"
+            f"{quote(existing.external_id, safe='')}",
+            headers=_headers(),
+            json={"body": body},
+        )
+        updated.raise_for_status()
+        return existing.external_id
+    response = await client.post(
+        f"{_merge_request_path(event)}/notes",
+        headers=_headers(),
+        json={"body": body},
+    )
+    response.raise_for_status()
+    value = response.json()
+    if not isinstance(value, dict) or value.get("id") is None:
+        raise RuntimeError("GitLab returned an invalid created note")
+    return str(value["id"])
+
+
+async def post_gitlab_review_failure_notice(
+    event: PullRequestEvent,
+    *,
+    failure: TerminalReviewFailure,
+    client: httpx.AsyncClient | None = None,
+) -> str:
+    """Post one terminal-failure notice, reusing any notice already present.
+
+    The Diffuse-owned marker on the note body is the idempotency key: a
+    replayed terminal path finds its own earlier notice and posts nothing.
+    """
+    if event.provider != "gitlab":
+        raise ValueError("GitLab failure notice received a non-GitLab event")
+    if client is not None:
+        return await _post_gitlab_failure_notice(client, event, failure)
+    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
+    if timeout <= 0:
+        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    async with httpx.AsyncClient(timeout=timeout) as owned_client:
+        return await _post_gitlab_failure_notice(owned_client, event, failure)
 
 
 async def publish_gitlab_review(
