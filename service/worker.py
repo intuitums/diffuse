@@ -30,6 +30,8 @@ from repository_policy.store import load_repository_policy
 from retriever.context_models import CrossRepositoryContextPlan
 from retriever.retrieve import (
     compatible_snapshot_id,
+    max_context_chars,
+    max_context_chunks,
     retrieve_context_from_plan,
     retrieve_context_from_snapshot,
 )
@@ -1995,6 +1997,16 @@ def main() -> None:
     if args.poll_seconds <= 0:
         parser.error("--poll-seconds must be positive")
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+    # Resolve the retrieval budgets once, here, so a malformed MAX_CONTEXT_CHUNKS
+    # or MAX_CONTEXT_CHARS stops the worker at startup. They are otherwise read
+    # lazily per review, where run_once classifies ValueError as non-retryable --
+    # so one typo would dead-letter every review job in turn instead of failing
+    # once, loudly, before any work is claimed.
+    try:
+        max_context_chunks()
+        max_context_chars()
+    except ValueError as error:
+        parser.error(str(error))
     with closing(get_conn()) as conn:
         verify_database_current(conn)
     if args.once:
