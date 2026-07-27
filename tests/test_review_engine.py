@@ -229,7 +229,7 @@ def test_repository_minimum_severity_filters_verified_findings(monkeypatch):
             layers=(
                 PolicyLayer(
                     directory_path="",
-                    source_path="greptile.json",
+                    source_path=".diffuse/config.json",
                     config=RepositoryConfig.model_validate(
                         {
                             "version": 1,

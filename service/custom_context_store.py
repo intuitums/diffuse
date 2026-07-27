@@ -140,7 +140,6 @@ def custom_context_json(row: dict) -> dict[str, object]:
             ]
         },
         "metadata": dict(row["metadata"]),
-        "greptileGenerated": False,
         "diffuseGenerated": False,
         "evidenceCount": 0,
         "repository": {
