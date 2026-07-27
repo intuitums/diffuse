@@ -938,6 +938,10 @@ files are disabled.
 
 ## Development
 
+See [`DEVELOPMENT.md`](DEVELOPMENT.md) for the full environment setup, the
+verified integration-test recipe, the migration rules, and the dependency
+workflow. To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
+
 ```bash
 pip install -r requirements-dev.txt
 pip install --no-deps -e .
@@ -946,11 +950,20 @@ ruff check .
 pip-audit -r requirements.lock --disable-pip
 ```
 
-With a disposable pgvector database available:
+Integration tests need a disposable pgvector database — disposable because
+`tests/integration/test_database_migrations_postgres.py` creates and drops whole
+databases, so never point this at a database you care about:
 
 ```bash
-POSTGRES_TEST_DATABASE_URL=postgresql://... pytest -m integration
+docker compose up -d db
+docker compose exec db createdb -U diffuse diffuse_test
+export POSTGRES_TEST_DATABASE_URL="postgresql://diffuse:$POSTGRES_PASSWORD@localhost:5432/diffuse_test"
+DATABASE_URL="$POSTGRES_TEST_DATABASE_URL" diffuse database migrate
+pytest -m integration
 ```
+
+If `POSTGRES_TEST_DATABASE_URL` is unset the suite reports **skipped**, not
+failures — check for that before believing a green run.
 
 `tests/integration/conftest.py` also routes application database connections to
 that disposable URL. Production images install the hash-locked
