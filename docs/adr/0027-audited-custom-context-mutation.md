@@ -6,11 +6,10 @@ Status: Accepted
 
 ## Context
 
-Greptile publicly documents custom context that can be active, inactive, or
-suggested. Its MCP surface lists, gets, searches, and creates entries, while its
-dashboard permissions allow owners/admins to create, edit, and delete dashboard
-rules. Diffuse could create operator context but could not correct, deactivate,
-or remove it without direct database access.
+Custom context can be active, inactive, or suggested. The MCP surface already
+listed, retrieved, searched, and created entries, but operators also need to
+edit and delete rules. Diffuse could create operator context but could not
+correct, deactivate, or remove it without direct database access.
 
 Blind updates would let two MCP clients silently overwrite one another. Hard
 deletion must not erase which context a historical review used, and audit
@@ -18,16 +17,11 @@ records should not duplicate potentially sensitive free-form bodies.
 Feedback-derived learned rules also have evidence-backed approval and version
 semantics that must not be bypassed by a generic context editor.
 
-Public references:
-
-- <https://www.greptile.com/docs/mcp/custom-context>
-- <https://www.greptile.com/docs/code-review/custom-standards>
-
 ## Decision
 
-- Add Diffuse-native `update_custom_context` and `delete_custom_context` MCP
-  tools behind the existing MCP write scope. Keep the documented Greptile
-  four-tool custom-context contract intact; these are self-hosted extensions.
+- Add `update_custom_context` and `delete_custom_context` MCP tools behind the
+  existing MCP write scope. Leave the four existing list/get/search/create
+  custom-context tools unchanged; these are additions.
 - Accept only `custom_context_<id>` operator-managed resources. Reject
   `learned_rule_<id>` so learned rules continue through suggestion, evidence,
   edit, approval/rejection, activation, and version history.
@@ -51,7 +45,7 @@ Public references:
 
 ## Consequences
 
-Self-hosted operators can complete the dashboard context lifecycle through MCP
+Self-hosted operators can complete the full context lifecycle through MCP
 without direct SQL, lost updates, or mutable review history. Setting status to
 `inactive` is the reversible default; permanent deletion is explicit and
 audited.

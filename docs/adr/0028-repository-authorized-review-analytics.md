@@ -9,11 +9,11 @@ The unavailable lifecycle metrics in this decision are superseded by
 
 ## Context
 
-Greptile documents analytics reports assembled from its MCP review, pull
-request, comment, repository, and custom-context tools. The documented report
-recipes include review completion, response time, addressed findings,
-category/severity distribution, critical and security findings, reactions,
-custom-context adoption, per-repository activity, weekly trends, and usage.
+Teams need analytics reports assembled from the MCP review, pull request,
+comment, repository, and custom-context tools. Those reports cover review
+completion, response time, addressed findings, category/severity distribution,
+critical and security findings, reactions, custom-context adoption,
+per-repository activity, weekly trends, and usage.
 Diffuse persisted most of those source facts but had no bounded analytics
 projection. Asking each client to reconstruct denominators independently would
 produce inconsistent rates and could bypass repository-scoped service-token
@@ -24,21 +24,15 @@ exact merge timestamp, or versioned model-provider prices. Reporting review
 coverage, merge time, or historical monetary cost from the available columns
 would invent precision.
 
-Public references:
-
-- <https://www.greptile.com/docs/mcp/reports>
-- <https://www.greptile.com/docs/mcp/use-cases>
-- <https://www.greptile.com/docs/mcp/overview>
-
 ## Decision
 
-- Add the Diffuse-native read-scoped `get_review_analytics` MCP tool. Keep the
-  documented raw Greptile-compatible projections available so general MCP
-  clients can still compose their own reports.
+- Add the read-scoped `get_review_analytics` MCP tool. Keep the raw underlying
+  projections available so general MCP clients can still compose their own
+  reports.
 - Require timezone-aware `startAt` and `endAt`. Treat the interval as half-open,
   normalize it to UTC, and reject non-positive intervals or windows longer than
   366 days.
-- Accept an optional public repository descriptor. When omitted, aggregate only
+- Accept an optional repository descriptor. When omitted, aggregate only
   repositories assigned to the service token. Resolve descriptors and apply
   repository claims in PostgreSQL exactly as other MCP reads do; unauthorized
   inputs remain indistinguishable from nonexistent repositories.

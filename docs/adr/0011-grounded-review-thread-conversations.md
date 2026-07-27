@@ -6,10 +6,10 @@ Status: Accepted
 
 ## Context
 
-Greptile's public product contract lets developers reply to a review comment
-with an explicit mention to ask for clarification, alternatives, tests, or
-related codebase patterns. It also documents a silent path for ordinary human
-discussion. GitHub delivers new inline discussion comments through the
+Developers need to reply to a review comment with an explicit mention to ask for
+clarification, alternatives, tests, or related codebase patterns, alongside a
+silent path for ordinary human discussion that never invokes a model. GitHub
+delivers new inline discussion comments through the
 `pull_request_review_comment` webhook and exposes a dedicated REST endpoint for
 replying to the top-level review comment.
 
@@ -21,9 +21,6 @@ unverified code citations.
 
 Public references:
 
-- <https://www.greptile.com/docs/code-review/key-features>
-- <https://www.greptile.com/docs/code-review/developer-essentials>
-- <https://www.greptile.com/docs/code-review/tips-recipes>
 - <https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request_review_comment>
 - <https://docs.github.com/en/rest/pulls/comments#create-a-reply-for-a-review-comment>
 
@@ -70,4 +67,4 @@ ADR 0031 subsequently extends this workflow to Diffuse-owned GitLab diff
 discussions with inherited Developer-or-higher membership checks and
 same-discussion publication. The foundation still does not answer top-level or
 arbitrary-line questions or provide organization/team authorization and
-dashboard controls. Those remain part of the parity roadmap.
+dashboard controls. Those remain outstanding.

@@ -158,10 +158,9 @@ schema, Python runtime, Tree-sitter runtime, and every installed grammar
 version. Retrieval refuses a snapshot built by an incompatible format, while
 unchanged chunk embeddings may still be copied when their exact boundaries and
 content hashes match. The format also identifies the repository-policy schema.
-Strict `.diffuse` layers—or a root `greptile.json` compatibility import when no
-native root policy exists—referenced context, and common instruction files are
+Strict `.diffuse` layers, referenced context, and common instruction files are
 written in the same activation transaction; snapshot readiness includes their
-expected row counts and content fingerprint. Imported strictness becomes a
+expected row counts and content fingerprint. Configured strictness becomes a
 code-enforced post-verification severity floor. Description, summary-comment,
 and fix-guidance preferences map losslessly; unsupported ignore semantics and
 unknown fields fail indexing explicitly.
@@ -620,6 +619,20 @@ contract remains portable.
 
 ## Core data model
 
+> **Target, not current state.** This is the intended full data model. Most of
+> the tables named in this section do not exist yet — of them, only `users`,
+> `repositories`, and `index_snapshots` are real. `sql/schema.sql` plus the
+> applied files in `sql/migrations/` are the only authoritative description of
+> the current schema, and `diffuse database status` prints what is actually
+> applied.
+>
+> Absent today: `organizations`, `teams`, `memberships`, `roles`,
+> `scm_connections`, `repository_access`, `commits`, `index_jobs`, the separate
+> `files`/`symbols`/`symbol_relationships`/`embeddings` tables (graph and vector
+> data currently live in snapshot-scoped tables), `rules`, `context_files`,
+> `memory_signals`, `finding_resolutions`, `runtime_runs`, `runtime_artifacts`,
+> and `usage_events`.
+
 - `organizations`, `teams`, `users`, `memberships`, `roles`
 - `scm_connections`, `repositories`, `repository_access`
 - `commits`, `index_snapshots`, `index_jobs`
@@ -649,6 +662,14 @@ string. Deletion is explicit and cascades through code, embeddings, review
 history, and artifacts according to configured retention policy.
 
 ## Deployment profiles
+
+> **Target, not current state.** Only the Developer profile and a single-node
+> Compose profile exist. The shipped Compose topology is four services — `db`,
+> `migrate`, `app`, `worker` — as defined in `docker-compose.yml` (development)
+> and `deploy/compose.yaml` (customer, digest-pinned). Split index/review
+> workers, a Redis-compatible cache, S3-compatible object storage, and the
+> Kubernetes profile are not implemented; there is no Helm chart or Kubernetes
+> manifest in the repository.
 
 ### Developer
 

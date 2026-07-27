@@ -6,10 +6,10 @@ Status: Accepted
 
 ## Context
 
-Greptile publicly describes a whole-codebase graph that retrieves related code
-and supports explanations and follow-up questions. Diffuse already used its
-graph, lexical index, and vectors for reviews, but its retrieval entry point
-expected a pull-request diff. Re-encoding general questions as fake diffs would
+Developers need a whole-codebase graph that retrieves related code and supports
+explanations and follow-up questions. Diffuse already used its graph, lexical
+index, and vectors for reviews, but its retrieval entry point expected a
+pull-request diff. Re-encoding general questions as fake diffs would
 mix two contracts, bias path/line logic, and make source provenance harder to
 verify.
 
@@ -17,12 +17,6 @@ Repository questions also cross two trust boundaries. Code and questions can
 contain prompt injection, and a repository-scoped token must not gain access to
 every repository in an operator-managed cluster. Free-form model prose with
 decorative links is not adequate grounding.
-
-Public references:
-
-- <https://www.greptile.com/docs/developer-quick-reference>
-- <https://www.greptile.com/docs/code-review/developer-essentials>
-- <https://www.greptile.com/docs/how-greptile-works/graph-based-codebase-context>
 
 ## Decision
 

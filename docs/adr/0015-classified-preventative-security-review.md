@@ -6,17 +6,12 @@ Status: Accepted
 
 ## Context
 
-Greptile's public April 13, 2026 changelog describes improved vulnerability
-detection, security badges, and an optional preventative review mode for risky
-patterns that are not yet exploitable. A self-hosted implementation must not
-present a hypothetical future exploit as a current vulnerability, let an
-ordinary style concern acquire a security badge, or allow preventative noise
-to bypass repository confidence policy.
-
-Public references:
-
-- <https://www.greptile.com/changelog>
-- <https://www.greptile.com/docs/code-review-bot/getting-started>
+Security review needs sharper vulnerability detection, security badges, and an
+optional preventative review mode for risky patterns that are not yet
+exploitable. A self-hosted implementation must not present a hypothetical
+future exploit as a current vulnerability, let an ordinary style concern acquire
+a security badge, or allow preventative noise to bypass repository confidence
+policy.
 
 ## Decision
 
@@ -51,4 +46,4 @@ tracking cannot merge unlike security classes.
 
 This is a security-review foundation, not a quality claim. Versioned
 vulnerability/preventative eval corpora, measured recall and false-positive
-gates, dependency-aware analysis, and dashboard controls remain parity work.
+gates, dependency-aware analysis, and dashboard controls remain outstanding.
