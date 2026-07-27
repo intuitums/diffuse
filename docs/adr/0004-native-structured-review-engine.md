@@ -1,7 +1,8 @@
 # ADR 0004: Native structured review generation and publication
 
-- Status: accepted
-- Date: 2026-07-23
+Date: 2026-07-23
+
+Status: Accepted
 
 ## Context
 

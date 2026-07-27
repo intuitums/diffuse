@@ -1,7 +1,8 @@
 # ADR 0007: Immutable cascading repository policy
 
-- Status: accepted
-- Date: 2026-07-23
+Date: 2026-07-23
+
+Status: Accepted
 
 ## Context
 

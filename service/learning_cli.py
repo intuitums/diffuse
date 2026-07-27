@@ -232,22 +232,3 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     _moderation_parser(subparsers, "reject", requires_reason=True)
     _moderation_parser(subparsers, "deactivate", requires_reason=True)
     _moderation_parser(subparsers, "reactivate")
-
-
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="diffuse-learning")
-    configure_parser(parser)
-    return parser
-
-
-def main() -> None:
-    parser = _parser()
-    args = parser.parse_args()
-    try:
-        args.handler(args)
-    except (OSError, RuntimeError, ValueError) as error:
-        parser.error(str(error))
-
-
-if __name__ == "__main__":
-    main()

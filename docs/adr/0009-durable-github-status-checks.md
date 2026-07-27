@@ -1,7 +1,8 @@
 # ADR 0009: Durable GitHub status checks
 
-- Status: accepted
-- Date: 2026-07-23
+Date: 2026-07-23
+
+Status: Accepted
 
 ## Context
 
