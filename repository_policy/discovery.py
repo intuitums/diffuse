@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import subprocess
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
@@ -21,9 +22,12 @@ from .models import (
     PolicyLayer,
     RepositoryConfig,
     RepositoryPolicySnapshot,
+    is_sensitive_repo_path,
     validate_repo_glob,
     validate_repo_path,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 MAX_POLICY_SOURCE_BYTES = 128 * 1024
 MAX_CONTEXT_FILE_BYTES = 128 * 1024
@@ -295,6 +299,14 @@ def discover_repository_policy(root: Path) -> RepositoryPolicySnapshot:
                     "greptile.json references an untracked or missing file: "
                     f"{context_path}"
                 )
+            # A repository must not be able to exfiltrate its own secrets to the model
+            # provider by naming a secret-shaped file as review context.
+            if is_sensitive_repo_path(context_path):
+                LOGGER.warning(
+                    "Dropped secret-shaped context file %s referenced by greptile.json",
+                    context_path,
+                )
+                continue
             identity = ("", context_path, entry.scope)
             if identity in referenced_contexts:
                 raise ValueError(
@@ -338,6 +350,15 @@ def discover_repository_policy(root: Path) -> RepositoryPolicySnapshot:
                 raise ValueError(
                     f"{source_path} references an untracked or missing file: {context_path}"
                 )
+            # A repository must not be able to exfiltrate its own secrets to the model
+            # provider by naming a secret-shaped file as review context.
+            if is_sensitive_repo_path(context_path):
+                LOGGER.warning(
+                    "Dropped secret-shaped context file %s referenced by %s",
+                    context_path,
+                    source_path,
+                )
+                continue
             identity = (directory, context_path, entry.applies_to)
             if identity in referenced_contexts:
                 raise ValueError(f"Duplicate context-file reference in {source_path}: {entry.path}")
