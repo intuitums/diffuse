@@ -227,6 +227,50 @@ def _annotation(
     }
 
 
+def _annotations(
+    report: ReviewReport,
+    active_findings: tuple[ReviewFinding, ...],
+    blocking_severities: tuple[str, ...],
+) -> list[dict[str, object]]:
+    """Annotate this run's findings plus still-open lineages it did not re-emit.
+
+    The conclusion is derived from ``active_findings``, so a check can go red for
+    an older open lineage. Annotating only ``report.findings`` would leave that
+    check red with nothing shown in the Files tab.
+
+    ``MAX_CHECK_ANNOTATIONS`` is a hard GitHub-side cap, and truncating in source
+    order let a full cap of non-blocking findings from this run crowd out the one
+    blocking lineage that turned the check red — the same empty-Files-tab symptom
+    at a different layer. Blocking findings therefore win a slot first.
+
+    Selection is reordered; presentation is not. Once the surviving set is
+    chosen, it is emitted in the original this-run-then-still-open order, so the
+    common under-cap case looks exactly as before.
+    """
+    candidates: list[ReviewFinding] = []
+    seen: set[str] = set()
+    for finding in (*report.findings, *active_findings):
+        if finding.side != "RIGHT" or finding.fingerprint in seen:
+            continue
+        seen.add(finding.fingerprint)
+        candidates.append(finding)
+
+    if len(candidates) > MAX_CHECK_ANNOTATIONS:
+        ranked = sorted(
+            enumerate(candidates),
+            key=lambda item: (
+                item[1].severity.value not in blocking_severities,
+                item[0],
+            ),
+        )
+        kept = sorted(index for index, _ in ranked[:MAX_CHECK_ANNOTATIONS])
+        candidates = [candidates[index] for index in kept]
+
+    return [
+        _annotation(finding, blocking_severities) for finding in candidates
+    ]
+
+
 def _completion_output(
     report: ReviewReport | None,
     conclusion: CheckConclusion,
@@ -264,11 +308,7 @@ def _completion_output(
         f"Blocking: **{blocking_count}** · "
         f"Reviewed files: **{report.reviewed_file_count}/{report.diff_file_count}**"
     )
-    annotations = [
-        _annotation(finding, blocking_severities)
-        for finding in report.findings
-        if finding.side == "RIGHT"
-    ][:MAX_CHECK_ANNOTATIONS]
+    annotations = _annotations(report, active_findings, blocking_severities)
     output: dict[str, object] = {
         "title": (
             f"Diffuse found {blocking_count} blocking "
