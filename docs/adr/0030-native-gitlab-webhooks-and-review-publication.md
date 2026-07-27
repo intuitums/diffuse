@@ -1,8 +1,9 @@
 # ADR 0030: Native GitLab webhooks and review publication
 
-## Status
+Date: 2026-07-24
 
-Accepted
+Status: Accepted
+
 
 ## Context
 

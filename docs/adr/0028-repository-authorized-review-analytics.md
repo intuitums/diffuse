@@ -4,9 +4,6 @@ Date: 2026-07-23
 
 Status: Accepted
 
-The unavailable lifecycle metrics in this decision are superseded by
-[ADR 0029](0029-authoritative-pull-request-lifecycle-analytics.md).
-
 ## Context
 
 Teams need analytics reports assembled from the MCP review, pull request,

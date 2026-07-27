@@ -1,7 +1,8 @@
 # ADR 0008: Metadata-aware review triggers
 
-- Status: accepted
-- Date: 2026-07-23
+Date: 2026-07-23
+
+Status: Accepted
 
 ## Context
 

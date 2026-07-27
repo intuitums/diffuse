@@ -1,7 +1,8 @@
 # ADR 0003: Credential-safe repository mirrors
 
-- Status: accepted
-- Date: 2026-07-23
+Date: 2026-07-23
+
+Status: Accepted
 
 ## Context
 

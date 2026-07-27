@@ -1,7 +1,8 @@
 # ADR 0001: Immutable commit-pinned index snapshots
 
-- Status: accepted
-- Date: 2026-07-23
+Date: 2026-07-23
+
+Status: Accepted
 
 ## Context
 

@@ -1,7 +1,8 @@
 # ADR 0005: Versioned multi-language code graph adapters
 
-- Status: accepted
-- Date: 2026-07-23
+Date: 2026-07-23
+
+Status: Accepted
 
 ## Context
 
