@@ -84,9 +84,41 @@ def main(arguments: Sequence[str] | None = None) -> None:
         elif command == "healthcheck":
             _run_healthcheck(selected)
         else:
+            # The CLI owns its own exit codes and error formatting.
             _run_cli([command, *selected])
-    except (OSError, RuntimeError, ValueError) as error:
-        raise SystemExit(str(error)) from error
+    except BaseException as error:
+        # serve/worker/healthcheck share the CLI's exit-code contract, so a
+        # configuration or environment failure must not exit 1 -- that code means
+        # "findings were reported". Secrets are stripped too, because this text
+        # lands in container logs and an unreachable DATABASE_URL otherwise
+        # surfaces the whole connection string, password included.
+        #
+        # psycopg2.Error is handled explicitly: it descends from Exception, not
+        # OSError, so an unreachable database on the serve/worker path used to
+        # escape as an unformatted traceback with the credential in it.
+        import psycopg2
+
+        from service.review_cli import (
+            EXIT_CONFIG,
+            EXIT_INTERNAL,
+            database_error_message,
+            format_cli_error,
+        )
+
+        if isinstance(error, (SystemExit, KeyboardInterrupt)):
+            raise
+        if isinstance(error, psycopg2.Error):
+            sys.stderr.write(format_cli_error(database_error_message(error)))
+            raise SystemExit(EXIT_CONFIG) from error
+        if isinstance(error, (OSError, RuntimeError, ValueError)):
+            sys.stderr.write(format_cli_error(str(error)))
+            raise SystemExit(EXIT_CONFIG) from error
+        sys.stderr.write(
+            format_cli_error(
+                f"Internal error: {error.__class__.__name__}: {error}"
+            )
+        )
+        raise SystemExit(EXIT_INTERNAL) from error
 
 
 if __name__ == "__main__":
