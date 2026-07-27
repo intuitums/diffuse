@@ -91,6 +91,12 @@ def test_event_payload_schema_is_closed():
         PullRequestEvent.from_payload(payload)
 
 
+@pytest.mark.parametrize("provider", ["gitlab", "bitbucket", "GitHub", ""])
+def test_events_accept_only_the_github_provider(provider):
+    with pytest.raises(ValueError, match="Invalid pull-request event"):
+        PullRequestEvent.from_payload({**_payload(), "provider": provider})
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -154,9 +160,9 @@ def test_timestamp_requires_timezone():
 def test_push_event_supports_nested_namespaces_and_exact_commit_identity():
     event = PushEvent.from_payload(
         {
-            "provider": "gitlab",
-            "scm_base_url": "https://gitlab.example.com/",
-            "api_base_url": "https://gitlab.example.com/api/v4",
+            "provider": "github",
+            "scm_base_url": "https://github.example.com/",
+            "api_base_url": "https://github.example.com/api/v3",
             "repo_full_name": "group/platform/repo",
             "ref_name": "refs/heads/main",
             "default_branch": "main",

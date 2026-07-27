@@ -46,16 +46,11 @@ def validate_repository_origin_allowed(
     scm_base_url: str,
 ) -> str:
     """Require onboarding origins to be explicit before provider tokens can reach them."""
-    if scm_provider == "github":
-        primary_variable = "GITHUB_WEB_URL"
-        allowed_variable = "GITHUB_ALLOWED_INSTANCES"
-        default_origin = "https://github.com"
-    elif scm_provider == "gitlab":
-        primary_variable = "GITLAB_WEB_URL"
-        allowed_variable = "GITLAB_ALLOWED_INSTANCES"
-        default_origin = "https://gitlab.com"
-    else:
-        raise ValueError("scm_provider must be github or gitlab")
+    if scm_provider != "github":
+        raise ValueError("scm_provider must be github")
+    primary_variable = "GITHUB_WEB_URL"
+    allowed_variable = "GITHUB_ALLOWED_INSTANCES"
+    default_origin = "https://github.com"
 
     requested = normalize_base_url(scm_base_url, field_name="scm_base_url")
     allowed = {
@@ -106,8 +101,8 @@ def register_repository(
     full_name: str,
     default_branch: str,
 ) -> RegisteredRepository:
-    if scm_provider not in {"github", "gitlab"}:
-        raise ValueError("scm_provider must be github or gitlab")
+    if scm_provider != "github":
+        raise ValueError("scm_provider must be github")
     base_url = normalize_base_url(scm_base_url, field_name="scm_base_url")
     name = validate_repository_name(full_name)
     branch = validate_default_branch(default_branch)

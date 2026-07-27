@@ -186,7 +186,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     )
     add_parser.add_argument(
         "--provider",
-        choices=("github", "gitlab"),
+        choices=("github",),
         required=True,
         help="Source-control provider hosting the repository",
     )
@@ -194,7 +194,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "--base-url",
         required=True,
         metavar="URL",
-        help="SCM base URL, for example https://github.com or https://gitlab.example.com",
+        help="SCM base URL, for example https://github.com or https://github.example.com",
     )
     add_parser.add_argument(
         "--repo",

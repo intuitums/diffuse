@@ -742,126 +742,12 @@ async def test_mcp_review_trigger_fetches_authoritative_pr_and_queues_write(
 
     assert result == {"success": True, "jobId": 19}
     assert fetched[0][0].repo_full_name == "owner/repo"
+    assert fetched[0][0].requested_by == "ide-agent"
     assert fetched[0][1]["api_base_url"] == "https://api.github.com"
     assert writes == [
         (
             mcp_server.enqueue_mcp_review_trigger,
             {"event": event, "repository_id": 7},
-        )
-    ]
-
-
-@pytest.mark.anyio
-async def test_mcp_review_trigger_dispatches_gitlab_with_instance_api(monkeypatch):
-    authorization = mcp_server.McpWriteAuthorization(
-        authorized_repository_ids=frozenset({9}),
-        actor_kind="service_token",
-        actor_label="ide-agent",
-        actor_token_id=3,
-    )
-    target = {
-        "repositoryId": 9,
-        "name": "group/subgroup/repo",
-        "remote": "gitlab",
-        "remoteUrl": "https://gitlab.example.com",
-        "defaultBranch": "main",
-        "pullRequestNumber": 17,
-        "headBranch": "feature/tenant-check",
-    }
-    event = PullRequestEvent.from_payload(
-        {
-            "provider": "gitlab",
-            "scm_base_url": "https://gitlab.example.com",
-            "api_base_url": "https://gitlab.example.com/api/v4",
-            "repo_full_name": "group/subgroup/repo",
-            "number": 17,
-            "web_url": (
-                "https://gitlab.example.com/group/subgroup/repo/"
-                "-/merge_requests/17"
-            ),
-            "action": "manual",
-            "head_sha": "a" * 40,
-            "base_sha": "b" * 40,
-            "updated_at": "2026-07-23T19:00:00Z",
-            "delivery_id": "mcp-gitlab-test",
-            "author": "developer",
-            "base_branch": "main",
-            "head_branch": "feature/tenant-check",
-            "is_draft": False,
-            "labels": [],
-            "title": "Protect tenant boundaries",
-            "description": "Adds authorization checks.",
-            "trigger_kind": "manual",
-            "trigger_id": "mcp:test",
-            "metadata_complete": True,
-            "changed_file_count": 2,
-            "state": "open",
-            "source_created_at": "2026-07-23T14:00:00Z",
-            "source_closed_at": "",
-            "source_merged_at": "",
-            "additions": 0,
-            "deletions": 0,
-            "source_project_id": 22,
-            "start_sha": "c" * 40,
-        }
-    )
-    fetched = []
-    writes = []
-
-    async def fetch(request, **kwargs):
-        fetched.append((request, kwargs))
-        return event
-
-    def unexpected_github_fetch(*args, **kwargs):
-        raise AssertionError("GitHub fetch must not handle a GitLab target")
-
-    monkeypatch.setattr(
-        mcp_server,
-        "_mcp_write_authorization",
-        lambda: authorization,
-    )
-    monkeypatch.setattr(
-        mcp_server,
-        "_database_query",
-        lambda callback, **kwargs: target,
-    )
-    monkeypatch.setattr(
-        mcp_server,
-        "fetch_manual_gitlab_merge_request_event",
-        fetch,
-    )
-    monkeypatch.setattr(
-        mcp_server,
-        "fetch_manual_pull_request_event",
-        unexpected_github_fetch,
-    )
-    monkeypatch.setattr(
-        mcp_server,
-        "_database_write",
-        lambda callback, **kwargs: (
-            writes.append((callback, kwargs))
-            or {"success": True, "jobId": 23}
-        ),
-    )
-
-    result = await mcp_server.trigger_code_review(
-        name="group/subgroup/repo",
-        remote="gitlab",
-        defaultBranch="main",
-        prNumber=17,
-        branch="feature/tenant-check",
-    )
-
-    assert result == {"success": True, "jobId": 23}
-    assert fetched[0][0].repo_full_name == "group/subgroup/repo"
-    assert fetched[0][0].requested_by == "ide-agent"
-    assert fetched[0][1]["api_base_url"] == (
-        "https://gitlab.example.com/api/v4"
-    )
-    assert writes == [
-        (
-            mcp_server.enqueue_mcp_review_trigger,
-            {"event": event, "repository_id": 9},
         )
     ]
 
@@ -894,21 +780,6 @@ def test_github_api_base_url_maps_public_github_to_public_api(monkeypatch):
     assert review_trigger.github_api_base_url("https://github.com") == (
         "https://api.github.com"
     )
-
-
-def test_gitlab_api_base_url_uses_configured_primary_api(monkeypatch):
-    monkeypatch.setenv("GITLAB_WEB_URL", "https://gitlab.internal")
-    monkeypatch.setenv(
-        "GITLAB_API_URL",
-        "https://api.gitlab.internal/v4/",
-    )
-
-    assert review_trigger.gitlab_api_base_url("https://gitlab.internal") == (
-        "https://api.gitlab.internal/v4"
-    )
-    assert review_trigger.gitlab_api_base_url(
-        "https://secondary.gitlab.internal"
-    ) == "https://secondary.gitlab.internal/api/v4"
 
 
 @pytest.mark.anyio

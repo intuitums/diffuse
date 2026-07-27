@@ -34,7 +34,7 @@ def begin_check_run(
     scm_provider: str,
     head_sha: str,
 ) -> CheckRunHandle:
-    if scm_provider not in {"github", "gitlab"}:
+    if scm_provider != "github":
         raise ValueError("Status checks require a supported SCM provider")
     if not re.fullmatch(r"[0-9a-f]{40,64}", head_sha):
         raise ValueError("Check-run head SHA must be a lowercase commit digest")

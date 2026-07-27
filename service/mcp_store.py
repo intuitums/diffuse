@@ -26,7 +26,7 @@ ReviewStatus = Literal[
 LearnedRuleStatus = Literal["suggested", "active", "inactive", "rejected"]
 McpCustomContextStatus = Literal["suggested", "active", "inactive", "rejected"]
 McpCustomContextType = Literal["CUSTOM_INSTRUCTION", "PATTERN"]
-McpRemote = Literal["github", "gitlab"]
+McpRemote = Literal["github"]
 PullRequestState = Literal["open", "closed", "merged"]
 AgentTarget = Literal[
     "codex",
@@ -78,7 +78,6 @@ AGENT_TARGETS = frozenset(
 )
 DEFAULT_SCM_BASE_URLS = {
     "github": "https://github.com",
-    "gitlab": "https://gitlab.com",
 }
 
 
@@ -198,7 +197,7 @@ def _repository_filter_id(
             "name, remote, and defaultBranch must be provided together"
         )
     if remote not in DEFAULT_SCM_BASE_URLS:
-        raise ValueError("remote must be github or gitlab")
+        raise ValueError("remote must be github")
     name = validate_repository_name(repository_name)
     branch = validate_branch_name(default_branch)
     base_url = normalize_base_url(

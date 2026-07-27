@@ -2,7 +2,10 @@
 
 Date: 2026-07-23
 
-Status: Accepted
+Status: Accepted, amended - ADR 0041 removed GitLab, so the provider
+neutrality this record argued for now has a single provider. The binding
+part survives: an MCP trigger re-fetches authoritative provider state
+rather than trusting client-supplied metadata.
 
 ## Context
 

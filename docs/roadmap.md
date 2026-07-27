@@ -59,12 +59,7 @@ target.
   summaries, deterministic 0–5 confidence plus 0–10 risk, severity/category,
   inline findings, suggested fixes, issue tables, durable review counters,
   exact-commit/re-trigger footers, and idempotent GitHub publication are
-  implemented as the Phase 2 foundation. GitLab Cloud/Self-Managed now has
-  authenticated push/MR ingress, API-authoritative diff identity and lifecycle,
-  raw/compare diff access (including fork source-project identity),
-  version-pinned exact-line discussions with complete-report fallback,
-  idempotent MR notes, commit statuses, Developer-authorized manual reruns, and
-  exact-head automatic approval.
+  implemented as the Phase 2 foundation.
 - The diagram foundation auto-selects sequence, entity-relation, class, or flow
   output for non-trivial changes, rejects active/embedded Mermaid content,
   persists validated source, and honors cascading include/collapse/default-open
@@ -74,28 +69,27 @@ target.
   footer visibility, while mandatory finding fallback prevents a display
   preference from losing review feedback on enabled summary surfaces.
   Revision-safe MCP fix-one/fix-all actions are now present in published review
-  output. GitHub and GitLab can also replace one human-preserving managed
-  PR/MR-description region, suppress top-level summary comments, hide
-  agent-fix guidance, recover retries idempotently, and ignore the resulting
+  output. GitHub publication can also replace one human-preserving managed
+  PR-description region, suppress top-level summary comments, hide agent-fix
+  guidance, recover retries idempotently, and ignore the resulting
   self-description webhook. Add manual diagram requests, commit-message
   previews, custom-URL bridge buttons, and richer history views.
 - The trigger-policy foundation now supports default draft/update behavior,
   include/exclude label/author/target-branch/keyword filters, file-change
   limits, same-SHA metadata supersession, durable skip reasons, and authorized
-  GitHub/GitLab `@diffuse` manual reruns.
+  GitHub `@diffuse` manual reruns.
 - The status-check foundation now supports repository-scoped enablement,
   configurable blocking severities, exact-commit GitHub checks and annotations,
-  GitLab source-project commit statuses, durable retry recovery, supersession
-  cancellation, and terminal failure.
+  durable retry recovery, supersession cancellation, and terminal failure.
 - The finding-continuity foundation now matches finding lineages across commit
   updates, detects addressed and reopened findings from exact compare diffs,
   preserves active history, avoids duplicate inline comments, and
-  idempotently resolves/reopens GitHub and GitLab threads.
+  idempotently resolves/reopens GitHub threads.
 - The review-conversation foundation now accepts authorized explicit
-  `@diffuse` questions on Diffuse-owned GitHub and GitLab finding threads,
-  verifies provider-native repository authority, keeps turns ordered and
-  durable, retrieves graph/lexical/vector context, validates cited ranges,
-  respects path-scoped disablement, and recovers reply crash windows without
+  `@diffuse` questions on Diffuse-owned GitHub finding threads, verifies
+  provider-native repository authority, keeps turns ordered and durable,
+  retrieves graph/lexical/vector context, validates cited ranges, respects
+  path-scoped disablement, and recovers reply crash windows without
   duplication.
 - The classified-security foundation now separates presently exploitable
   vulnerabilities from opt-in preventative risks, applies path-scoped
@@ -107,10 +101,8 @@ target.
   no unresolved finding lineage, strictest-wins policy across both rename
   sides, independent low/medium/high/critical change-risk classification, hard
   critical-surface exclusions, exact-head revalidation, and durable idempotent
-  GitHub/GitLab approval. GitLab publication waits for approval/diff
-  synchronization and pins the API request to the reviewed SHA. Add
-  dashboard/org policy, audited actor credentials, risk evaluation fixtures,
-  and operational approval analytics.
+  GitHub approval. Add dashboard/org policy, audited actor credentials, risk
+  evaluation fixtures, and operational approval analytics.
 - Add dashboard-level trigger settings, focused manual review instructions,
   and provider-specific ready-for-review evaluation.
 - Extend conversation to top-level/arbitrary-line questions.
@@ -131,8 +123,7 @@ and complete idempotent high-signal reviews.
   audit history, and reset-to-inherited behavior.
 - The inspectable-feedback foundation now stores authorized finding-thread
   replies, durably reconciles collaborator GitHub 👍/👎 reactions and
-  withdrawals plus authorized GitLab 👍/👎 reactions, projects
-  addressed/reopened commit outcomes, exposes
+  withdrawals, projects addressed/reopened commit outcomes, exposes
   per-finding summaries, and marks security/correctness/critical signals as
   protected from suppression.
 - The suggested-rule foundation now schedules evidence-fingerprinted generation
@@ -168,7 +159,7 @@ that changes review output.
   Streamable HTTP. Durable non-recoverable tokens add expiration/revocation,
   audited operator lifecycle, and fail-closed repository scopes while the
   environment credential remains a recovery path. Explicit write scope now
-  gates authoritative GitHub/GitLab re-runs and custom-context creation; active
+  gates authoritative GitHub re-runs and custom-context creation; active
   context is path-scoped, fingerprinted, and snapshotted on reviews. Public
   repository descriptors, camelCase inputs, both PR-list names,
   PR-comment projection, and the documented comment-search name now form a

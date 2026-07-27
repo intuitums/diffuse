@@ -68,8 +68,8 @@ def register_repository_for_api(
         actor_label=actor_label,
         actor_token_id=actor_token_id,
     )
-    if scm_provider not in {"github", "gitlab"}:
-        raise ValueError("scm_provider must be github or gitlab")
+    if scm_provider != "github":
+        raise ValueError("scm_provider must be github")
     base_url = validate_repository_origin_allowed(scm_provider, scm_base_url)
     name = validate_repository_name(full_name)
     branch = validate_default_branch(default_branch)

@@ -53,7 +53,6 @@ from service.custom_context_store import (
     update_custom_context as update_custom_context_record,
 )
 from service.github import fetch_manual_pull_request_event
-from service.gitlab import fetch_manual_gitlab_merge_request_event
 from service.mcp_actions import enqueue_mcp_review_trigger
 from service.mcp_store import (
     AgentTarget,
@@ -649,7 +648,6 @@ async def trigger_code_review(
         trigger_key=trigger_key,
         branch=branch,
         github_fetch=fetch_manual_pull_request_event,
-        gitlab_fetch=fetch_manual_gitlab_merge_request_event,
     )
     return await _database_write_async(
         enqueue_mcp_review_trigger,

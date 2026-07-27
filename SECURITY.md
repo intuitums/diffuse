@@ -9,8 +9,7 @@ Email **security@intuitum.xyz**. Include:
 
 - the affected release version or image digest;
 - the deployment shape (bundled Compose profile, external PostgreSQL, other);
-- the provider involved (GitHub Cloud, GitHub Enterprise, GitLab Cloud,
-  self-managed GitLab, or none);
+- the provider involved (GitHub Cloud, GitHub Enterprise, or none);
 - reproduction steps or a proof of concept; and
 - the impact you believe it has.
 
@@ -59,7 +58,7 @@ The following are explicitly **in scope**:
   disposable worktree or mirror — including escaping the repository root,
   bypassing `DIFFUSE_MAX_REPOSITORY_BYTES`, or reaching the host from a
   container.
-- **Credential exposure.** Any path that leaks `GITHUB_TOKEN`, `GITLAB_TOKEN`,
+- **Credential exposure.** Any path that leaks `GITHUB_TOKEN`,
   the OAuth client secret, `DIFFUSE_API_TOKEN`, or a repository-scoped service
   token into a clone URL sent to an unintended origin, into model input, into
   published review output, into logs, or into an image layer.

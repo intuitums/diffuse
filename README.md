@@ -12,11 +12,10 @@ leaving the operator's environment.
 The current code is the first foundation, not the finished product. It indexes
 tracked source files, combines graph and semantic retrieval, runs a native
 structured review engine, and publishes commit-pinned GitHub reviews and status
-checks plus GitLab exact-line discussions, merge-request summaries, and commit
-statuses. Both providers support durable finding threads, grounded
-clarification replies, inspectable feedback, authorized manual reruns, and
-conservative exact-head automatic approval. The capability ledger distinguishes
-this working foundation from the remaining product surface.
+checks. It supports durable finding threads, grounded clarification replies,
+inspectable feedback, authorized manual reruns, and conservative exact-head
+automatic approval. The capability ledger distinguishes this working foundation
+from the remaining product surface.
 
 See:
 
@@ -29,12 +28,12 @@ See:
 
 ```text
 Repository onboarding CLI or versioned REST API
-  ├─ registers an explicit GitHub/GitLab repository
+  ├─ registers an explicit GitHub repository
   ├─ derives a credential-free HTTPS clone URL
   ├─ maintains a locked bare mirror
   └─ queues the exact default-branch commit for indexing
 
-GitHub or GitLab push / PR/MR / review-thread webhook and reaction ingestion
+GitHub push / PR / review-thread webhook and reaction ingestion
   └─ service.webhook_server
        ├─ verifies the webhook signature
        ├─ normalizes an exact commit or PR revision
@@ -86,19 +85,15 @@ Requirements:
 
 - Python 3.12+
 - Docker with Compose
-- a GitHub or GitLab token that can clone private target repositories
+- a GitHub token that can clone private target repositories
 - a GitHub App installation or user access token with pull-request read/write
   permission, plus Checks write permission when status checks are enabled
-- or a GitLab token with API access that can read merge requests, diff
-  versions, project membership, discussions, and emoji; create/reply to/resolve
-  merge-request discussions; update MR descriptions when configured; approve
-  eligible merge requests; and publish commit statuses when enabled
 - an embedding/model provider supported by LiteLLM
 
 ```bash
 cp .env.example .env
 # Fill in POSTGRES_PASSWORD, DIFFUSE_API_TOKEN, the model credentials,
-# and the applicable SCM token and webhook credentials.
+# and the GitHub token and webhook secret.
 
 docker compose up -d --build
 
@@ -117,12 +112,10 @@ and queues its initial index. Use `list`, `sync <repository-id>`,
 operations.
 
 Before onboarding, Diffuse requires the exact SCM origin to match the
-provider's configured primary origin or explicit allowlist. Set
-`GITHUB_WEB_URL`/`GITHUB_API_URL` or
-`GITLAB_WEB_URL`/`GITLAB_API_URL` for a primary self-managed host. Add any
-additional exact origins to `GITHUB_ALLOWED_INSTANCES` or
-`GITLAB_ALLOWED_INSTANCES`; these hosts receive the applicable process-level
-provider token during clone/fetch, so keep the lists narrow.
+configured primary origin or explicit allowlist. Set
+`GITHUB_WEB_URL`/`GITHUB_API_URL` for a primary GitHub Enterprise host. Add any
+additional exact origins to `GITHUB_ALLOWED_INSTANCES`; these hosts receive the
+process-level GitHub token during clone/fetch, so keep the list narrow.
 
 Compose runs a one-shot migration service after PostgreSQL is healthy and
 starts the API and worker only after that service exits successfully. Every
@@ -297,9 +290,10 @@ codex mcp add diffuse \
 The current server advertises twenty tools:
 
 - repository discovery, repository-authorized `get_review_analytics`,
-  commit-pinned `search_code`, citation-grounded `ask_codebase`, both
-  `list_merge_requests` and `list_pull_requests`, and pull-request detail;
-- review list/detail plus authoritative GitHub and GitLab re-run triggers;
+  commit-pinned `search_code`, citation-grounded `ask_codebase`,
+  `list_pull_requests` alongside its equivalent `list_merge_requests`, and
+  pull-request detail;
+- review list/detail plus an authoritative re-run trigger;
 - PR comment projection plus repository-filterable finding search;
 - custom-context list/detail/search/create plus Diffuse-native optimistic
   update/delete; and
@@ -316,7 +310,7 @@ lineages, active immutable snapshots, operator context, and inspectable
 feedback-derived rules. Every read and write is constrained to the
 repositories assigned to the authenticated token. `search_code` fuses literal
 identifier, semantic, and one-hop graph evidence within an optional literal
-path scope and returns immutable GitHub/GitLab commit permalinks.
+path scope and returns immutable GitHub commit permalinks.
 `ask_codebase` uses the same bounded evidence but emits claim-level citations;
 claims with a missing, ambiguous, out-of-range, or unauthorized citation are
 dropped, and no usable claims produces an explicit insufficient-evidence
@@ -365,7 +359,7 @@ monetary cost remain unavailable until their exact inputs are versioned.
 
 Organizations/team RBAC and a local custom-URL bridge for literal one-click
 agent launch are not yet implemented. Diffuse already marks findings addressed
-or reopened from exact subsequent review diffs and projects GitHub/GitLab thread
+or reopened from exact subsequent review diffs and projects GitHub thread
 state through the comment tools.
 
 Configure a GitHub webhook for `push`, `pull_request`, `issue_comment`, and
@@ -379,49 +373,15 @@ Use the same random value for the webhook's GitHub secret and
 `GITHUB_WEBHOOK_SECRET`. Diffuse refuses webhook requests when the secret is
 missing or the signature is invalid.
 
-For GitLab Cloud or Self-Managed, enable merge-request, push, and comment
-events at:
-
-```text
-https://your-host.example/webhook/gitlab
-```
-
-Preferred GitLab signing uses the Standard Webhooks `webhook-id`,
-`webhook-timestamp`, and `webhook-signature` headers. Put the exact `whsec_`
-token returned by GitLab in `GITLAB_WEBHOOK_SIGNING_TOKEN`; Diffuse verifies
-HMAC-SHA256 over the exact raw body and rejects timestamps outside the bounded
-replay window. Older installations can use `X-Gitlab-Token` with
-`GITLAB_WEBHOOK_SECRET`, but must also send GitLab's stable
-`Idempotency-Key` or `X-Gitlab-Event-UUID`. When Standard Webhooks headers are
-present, an invalid signature never falls back to the legacy token.
-
-Set `GITLAB_WEB_URL` and `GITLAB_API_URL` together for the primary
-Self-Managed installation. `X-Gitlab-Instance` is accepted only when it exactly
-matches that origin or an origin in `GITLAB_ALLOWED_INSTANCES`; this prevents a
-signed payload from redirecting API enrichment to an arbitrary host. The
-process-level token and webhook credentials are still shared across configured
-GitLab instances pending encrypted per-installation credentials.
-
 SCM tokens are passed to Git only through a non-interactive askpass
 environment. They are not embedded in clone URLs, job payloads, database rows,
 or command arguments. Repository onboarding accepts only the configured
-primary origin or an exact entry in `GITHUB_ALLOWED_INSTANCES`/
-`GITLAB_ALLOWED_INSTANCES`, preventing an API request from redirecting
-askpass credentials to an arbitrary host. GitHub Enterprise is selected with
-`GITHUB_WEB_URL` and `GITHUB_API_URL`. Set `GITHUB_GRAPHQL_URL` when its
-GraphQL endpoint cannot be derived from the REST URL. GitLab cloning and API
-paths support nested group namespaces. GitLab merge-request deliveries are
-enriched from the REST API so the durable review always carries the
-authoritative diff base/head/start, lifecycle
-timestamps, source-project identity for forks, and current metadata. If GitLab
-has not prepared a new MR's diff version yet, Diffuse returns a retryable 503
-instead of inventing a base SHA.
-
-A top-level GitLab merge-request comment whose line starts with `@diffuse`
-requests a complete manual rerun. Diffuse accepts it only after GitLab confirms
-that the author has inherited Developer-or-higher project access, re-fetches
-the current open MR metadata, and uses the note ID as the distinct trigger
-identity.
+primary origin or an exact entry in `GITHUB_ALLOWED_INSTANCES`, preventing an
+API request from redirecting askpass credentials to an arbitrary host. GitHub
+Enterprise is selected with `GITHUB_WEB_URL` and `GITHUB_API_URL`. Set
+`GITHUB_GRAPHQL_URL` when its GraphQL endpoint cannot be derived from the REST
+URL. The process-level token and webhook credentials are still shared across
+configured GitHub instances pending encrypted per-installation credentials.
 
 The version-1 database schema expects 1,536-dimensional embeddings. A release
 that supports another stored dimension must add a numbered migration for both
@@ -450,8 +410,8 @@ available and otherwise uses schema-constrained prompting with local Pydantic
 validation. Invalid model output fails the durable attempt and is never posted
 to the SCM.
 
-Before generation, Diffuse deterministically inspects bounded PR/MR commit
-metadata—authors, committers, bot identities, verification state, and Git
+Before generation, Diffuse deterministically inspects bounded pull-request
+commit metadata—authors, committers, bot identities, verification state, and Git
 trailers such as `Co-authored-by` and `Made-with`. No model is called for this
 classification. Strong Anthropic attribution makes a configured non-Anthropic
 model the candidate generator, and strong OpenAI attribution makes a non-OpenAI
@@ -460,8 +420,8 @@ verifier, so routing reorders the pair rather than collapsing it. Cursor,
 Copilot, mixed, incomplete, or absent attribution cannot weaken or skip a
 review; those cases retain the configured candidate/verifier pair.
 
-Only identities GitHub or GitLab themselves assert—a bot login, or an agent
-email on a verified-signature commit—can reach the routing threshold. Git author
+Only identities GitHub itself asserts—a bot login, or an agent email on a
+verified-signature commit—can reach the routing threshold. Git author
 names, emails, and trailers are freely settable by whoever wrote the commit, so
 they are recorded as evidence but never route on their own; without this a
 pull-request author could pick the model that reviews their own change. Set
@@ -502,14 +462,15 @@ grant cannot safely authorize an object that does not exist yet.
 The first v1 surface provides:
 
 - repository list/detail with mirror and active immutable-index state;
-- repository PR/MR list/detail, review list/detail, and current finding list;
+- repository pull-request list/detail, review list/detail, and current finding
+  list;
 - exact half-open review analytics with optional repository and author filters;
 - commit-pinned hybrid code search; and
 - evidence-bounded repository Q&A with claim-level source citations;
-- an authoritative GitHub/GitLab PR/MR review trigger that re-fetches the
+- an authoritative GitHub pull-request review trigger that re-fetches the
   current open head before enqueueing durable work;
-- administrative GitHub/GitLab repository registration that validates the
-  exact configured origin and clone access before queueing the resolved
+- administrative GitHub repository registration that validates the exact
+  configured origin and clone access before queueing the resolved
   default-branch commit; and
 - repository-authorized default-branch reindex requests using the same mirror,
   push-event ledger, and exact-commit worker path as authenticated webhooks.
@@ -694,8 +655,7 @@ check annotations as either `🔒 Security vulnerability` or
 
 `auto_approval.enabled` defaults to `false`. When requested, Diffuse records an
 inspectable decision after the ordinary review and status check finish, and
-submits a commit-pinned GitHub review or SHA-pinned GitLab approval only when
-all of these hold:
+submits a commit-pinned GitHub review only when all of these hold:
 
 - every touched path scope enables auto-approval;
 - authoritative PR metadata and the diff are complete, including both sides of
@@ -715,14 +675,9 @@ including when `risk_ceiling` is set to `critical`. Nested scopes merge
 strictest-wins: every scope must enable the feature, the lowest ceiling and
 smallest file limit win, exclusion filters union, and every applicable
 inclusion filter must match. Approval state and attempts are durable. Before
-posting, Diffuse re-fetches the PR/MR and cancels approval if it closed, became
-a draft, or moved to another head commit. GitHub uses a hidden per-run/head
-marker to recover remote-create crash windows. GitLab additionally waits until
-`detailed_merge_status` leaves its approval-sync states and the matching diff
-version has a non-null patch ID, sends the exact reviewed SHA, verifies the
-authenticated bot in `approved_by`, and safely recovers an already-present bot
-approval only after that exact-SHA request. A GitLab SHA conflict cancels the
-stale action.
+posting, Diffuse re-fetches the pull request and cancels approval if it closed,
+became a draft, or moved to another head commit. A hidden per-run/head marker
+recovers remote-create crash windows.
 
 `context.repos` also replaces its inherited value for the applicable path.
 Every entry must be an explicitly onboarded, enabled repository on the same
@@ -767,9 +722,9 @@ retries recover the same GitHub check instead of creating duplicates.
 
 `failure_comment` defaults to `true`, because a failed review must never be
 silent. When a review job fails terminally — retries exhausted, or an error
-that retrying cannot resolve — Diffuse posts one comment on the pull request or
-merge request naming the error-code slug and the workflow job id so an operator
-can find the failure in the worker logs. The notice carries no exception text,
+that retrying cannot resolve — Diffuse posts one comment on the pull request
+naming the error-code slug and the workflow job id so an operator can find the
+failure in the worker logs. The notice carries no exception text,
 traceback, or credential, and credential-shaped substrings are redacted before
 publication. Posting is best effort: it can never mask the original failure.
 The comment carries a Diffuse-owned `diffuse-review-failure` marker, which both
@@ -812,22 +767,22 @@ issues table never hides a validated finding when inline publication fails or
 summary-only mode is active—the detailed fallback remains mandatory.
 
 `update_description` places the complete review summary in one managed region
-of the GitHub PR or GitLab MR description while preserving all human-authored
+of the GitHub pull-request description while preserving all human-authored
 text. The region is replaced idempotently on retries and is written only after
-the provider confirms that the PR/MR is still open at the reviewed head.
+GitHub confirms that the pull request is still open at the reviewed head.
 `summary_comment=false` suppresses the visible top-level review summary without
 suppressing eligible exact-line findings, and `fix_with_agent=false` hides
 published fix-one/fix-all guidance and suggested-fix blocks without deleting
 the durable finding evidence. Description output takes precedence over the
-summary-comment setting. Diffuse ignores the provider webhook generated solely
-by its managed-region write, but still reviews genuine human description edits.
+summary-comment setting. Diffuse ignores the GitHub webhook generated solely by
+its managed-region write, but still reviews genuine human description edits.
 
 When reviews run on later commits, Diffuse compares the previously published
 head with the new head and maintains finding lineage across line movement and
 minor wording changes. A finding remains open when it is detected again. When
 a pushed commit touches its file and the verifier no longer detects it, Diffuse
-posts one idempotent addressed reply and resolves the original GitHub or GitLab
-thread. If the finding returns, Diffuse reopens that same thread and records the
+posts one idempotent addressed reply and resolves the original GitHub thread.
+If the finding returns, Diffuse reopens that same thread and records the
 transition. Only genuinely new lineages create new inline comments; persistent
 findings do not create duplicates.
 
@@ -838,21 +793,21 @@ blocking finding from an earlier review cannot silently pass because a later
 model call omitted it.
 
 An authorized repository member can deliberately bypass all automatic trigger
-filters—including draft and update gates—by starting a top-level PR/MR comment
-line with `@diffuse`. GitHub requires a human owner/member/collaborator; GitLab
-requires inherited Developer-or-higher project access. Diffuse fetches fresh
-metadata for the open PR/MR from the configured provider API, and the comment
-or note ID gives every manual rerun a distinct idempotency identity. Manual
-questions in a top-level comment still start a complete review.
+filters—including draft and update gates—by starting a top-level pull-request
+comment line with `@diffuse`. GitHub requires a human owner/member/
+collaborator. Diffuse fetches fresh metadata for the open pull request from the
+GitHub API, and the comment ID gives every manual rerun a distinct idempotency
+identity. Manual questions in a top-level comment still start a complete
+review.
 
 On an inline finding created by Diffuse, an authorized repository member can
 reply with `@diffuse <question>` to ask for clarification, alternatives,
 testing guidance, or related repository patterns. Diffuse verifies that the
 root is one of its stored finding threads and checks GitHub owner/member/
-collaborator authority or GitLab inherited Developer-or-higher membership. It
-then retrieves hybrid graph/lexical/vector context around the finding, includes
-prior published turns, and posts a structured answer with only validated code
-references into the same provider-native thread. Questions on the same thread
+collaborator authority. It then retrieves hybrid graph/lexical/vector context
+around the finding, includes prior published turns, and posts a structured
+answer with only validated code references into the same GitHub thread.
+Questions on the same thread
 are processed in order. Durable message state plus a hidden marker recovers
 both model/publication retries and the remote-create crash window without
 duplicate answers.
@@ -867,10 +822,10 @@ inspectable context signals, even when they do not mention `@diffuse`.
 `[Human discussion only]` excludes a reply from both inference and feedback
 capture. The worker schedules low-priority provider API reconciliation jobs so
 retries and reaction removals have one consistent durable model. Only current
-👍 and 👎 reactions from GitHub collaborators or GitLab Developer-or-higher
-members become positive or negative signals; other emoji and unauthorized
-actors are neutral, removed reactions are recorded as withdrawn, and
-addressed/reopened commit outcomes are retained separately.
+👍 and 👎 reactions from GitHub collaborators become positive or negative
+signals; other emoji and unauthorized actors are neutral, removed reactions are
+recorded as withdrawn, and addressed/reopened commit outcomes are retained
+separately.
 
 Configure reaction reconciliation with
 `FEEDBACK_SYNC_INTERVAL_SECONDS` (60–86400),
@@ -1006,15 +961,14 @@ Diffuse currently:
   clusters into a bounded immutable context plan, searches related snapshots
   read-only, preserves repository-qualified path provenance, and snapshots the
   exact related commits on each review run;
-- persists normalized GitHub/GitLab deliveries and exact PR/MR revisions,
+- persists normalized GitHub deliveries and exact pull-request revisions,
   deduplicates delivery retries and repeated revisions, preserves authoritative
   lifecycle events, and supersedes older queued heads;
-- explicitly registers GitHub/GitLab repositories and maintains credential-safe
-  bare mirrors plus disposable exact-commit worktrees, with CLI and
-  admin-authorized idempotent REST onboarding constrained to configured SCM
-  origins;
-- queues idempotent default-branch indexing from authenticated GitHub/GitLab
-  push events and serializes work for each provider/host/repository ref;
+- explicitly registers GitHub repositories and maintains credential-safe bare
+  mirrors plus disposable exact-commit worktrees, with CLI and admin-authorized
+  idempotent REST onboarding constrained to configured SCM origins;
+- queues idempotent default-branch indexing from authenticated GitHub push
+  events and serializes work for each host/repository ref;
 - runs review work in a separate leased PostgreSQL worker with bounded
   exponential retry and terminal failed/dead states;
 - runs bounded correctness, security, performance, and test/contract passes,
@@ -1035,8 +989,7 @@ Diffuse currently:
 - normalizes bounded PR author/branch/label/title/draft and authoritative
   changed-file-count metadata, enforces
   cascading automatic trigger filters before retrieval, supports same-SHA
-  ready/label transitions plus authorized GitHub/GitLab `@diffuse` manual
-  reruns, and
+  ready/label transitions plus authorized `@diffuse` manual reruns, and
   records stable skip reasons without publishing noise;
 - persists versioned review runs, findings, risk, 0–5 confidence, durable
   per-PR review numbers, token counts, immutable index and policy provenance,
@@ -1046,11 +999,6 @@ Diffuse currently:
   footer linking the reviewed commit with a working re-trigger command; policy
   can instead place the summary in a human-preserving managed PR-description
   region, suppress the visible summary, or hide fix guidance;
-- publishes the same validated report to GitLab with exact version-pinned
-  added/removed-line discussions and an idempotent commit-linked summary or
-  managed MR-description region;
-  invalid/unavailable positions fail safe to complete finding details in the
-  summary;
 - snapshots cascading summary/issues/confidence/diagram/footer presentation
   controls plus description/summary/fix publication controls on each report
   and preserves mandatory fallback finding details on an enabled summary
@@ -1061,7 +1009,7 @@ Diffuse currently:
   context/approved memory, supports inline, JSON, and agent output, and safely
   resumes unchanged failed runs;
 - serves a bearer-authenticated, DNS-rebinding-protected Streamable HTTP MCP
-  foundation with pull-request list/detail, authoritative GitHub/GitLab re-runs,
+  foundation with pull-request list/detail, authoritative GitHub re-runs,
   review reports/findings, commit-pinned hybrid code search, citation-grounded
   repository Q&A, repository-authorized durable review analytics, and
   first-class custom context, backed by non-recoverable repository-scoped
@@ -1073,21 +1021,20 @@ Diffuse currently:
   plus audited, durably idempotent exact-commit onboarding/reindexing and
   provider-revalidated manual review triggers, a separate generation scope,
   and stable Problem Details failures;
-- optionally publishes a commit-pinned GitHub check or GitLab commit status
-  with configurable blocking severities, retry recovery, and deterministic
-  success/failure/cancellation conclusions; exact-line status annotations are
-  currently GitHub-only;
-- conservatively auto-approves fully reviewed, clean GitHub/GitLab changes only
-  after strictest-wins path policy, hard critical-surface protections, inherent
-  risk classification, exact-head revalidation, provider-specific
-  synchronization guards, and durable idempotent publication;
+- optionally publishes a commit-pinned GitHub check with configurable blocking
+  severities, exact-line status annotations, retry recovery, and deterministic
+  success/failure/cancellation conclusions;
+- conservatively auto-approves fully reviewed, clean changes only after
+  strictest-wins path policy, hard critical-surface protections, inherent
+  risk classification, exact-head revalidation, and durable idempotent
+  publication;
 - tracks durable finding lineages across commits, classifies new/persistent/
   addressed/reopened findings, avoids duplicate inline comments, and
-  idempotently resolves or reopens the original GitHub/GitLab review thread;
-- accepts explicit authorized `@diffuse` questions on Diffuse-owned
-  GitHub/GitLab finding threads, serializes turns, retrieves snapshot-compatible
-  repository context, filters unsupported model references, and publishes
-  same-thread replies with durable retry/crash recovery;
+  idempotently resolves or reopens the original GitHub review thread;
+- accepts explicit authorized `@diffuse` questions on Diffuse-owned GitHub
+  finding threads, serializes turns, retrieves snapshot-compatible repository
+  context, filters unsupported model references, and publishes same-thread
+  replies with durable retry/crash recovery;
 - captures authorized finding-thread replies, periodically reconciles
   collaborator 👍/👎 reactions, records reaction withdrawals and commit
   outcomes, and exposes inspectable per-finding summaries with hard
@@ -1096,19 +1043,18 @@ Diffuse currently:
   threshold, consolidates duplicates, records immutable edit/approval/rejection/
   activation history, applies only active human-approved versions, and
   snapshots those versions onto review runs;
-- recovers GitHub and GitLab publication crash windows through hidden
-  idempotency markers and managed description regions, suppresses self-induced
-  description webhook loops, and falls back to complete summary details when
-  GitHub rejects inline positions or GitLab rejects an exact discussion
-  position;
+- recovers GitHub publication crash windows through hidden idempotency markers
+  and managed description regions, suppresses self-induced description webhook
+  loops, and falls back to complete summary details when GitHub rejects inline
+  positions;
 - uses parser-backed definition boundaries with bounded line-window fallback,
   without claiming compiler-grade type analysis;
 - retrieves by cosine similarity from one embedding of the meaningful diff
   lines, while exact code identifiers remain recoverable through PostgreSQL
   full-text search;
-- supports GitHub and GitLab PR/MR and default-branch push webhooks, review
-  publication, provider-native status output, grounded finding-thread replies,
-  and authorized feedback ingestion.
+- supports GitHub pull-request and default-branch push webhooks, review
+  publication, native status output, grounded finding-thread replies, and
+  authorized feedback ingestion.
 
 It does not yet perform multi-hop retrieval, expose workflow administration,
 use stored SCM App/OAuth installation credentials, or answer top-level or

@@ -380,7 +380,7 @@ def _commit_signals(commit: CommitMetadata) -> tuple[ProvenanceSignal, ...]:
             actor_type=actor_type,
             source=source,
             commit_sha=commit.sha,
-            # Commit-signature verification, on GitHub and on GitLab alike,
+            # Commit-signature verification
             # authenticates the committer identity. A separately configured
             # author remains freely chosen Git metadata.
             verified=verified,

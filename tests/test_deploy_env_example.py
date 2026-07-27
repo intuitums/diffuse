@@ -6,10 +6,9 @@ The release bundle ships only `deploy/README.md`, `deploy/compose.yaml`, and
 invisible to a self-hosted customer.
 
 That gap had already grown to 50 variables, including security-relevant ones a
-customer needs to reason about: `DIFFUSE_ALLOW_PLAINTEXT_ORIGINS`,
-`GITLAB_WEBHOOK_MAX_AGE_SECONDS`, the `GITHUB_OAUTH_*` settings, and
-`MIN_REVIEW_CONFIDENCE`. These tests keep the two files in sync so it cannot
-silently reopen.
+customer needs to reason about: `DIFFUSE_ALLOW_PLAINTEXT_ORIGINS`, the
+`GITHUB_OAUTH_*` settings, and `MIN_REVIEW_CONFIDENCE`. These tests keep the
+two files in sync so it cannot silently reopen.
 """
 
 from __future__ import annotations
@@ -74,9 +73,7 @@ def test_security_relevant_settings_reach_customers():
     declared = _declared(CUSTOMER_ENV)
     for name in (
         "DIFFUSE_ALLOW_PLAINTEXT_ORIGINS",
-        "GITLAB_WEBHOOK_MAX_AGE_SECONDS",
         "GITHUB_ALLOWED_INSTANCES",
-        "GITLAB_ALLOWED_INSTANCES",
         "MIN_REVIEW_CONFIDENCE",
         "SCM_API_TIMEOUT_SECONDS",
     ):
