@@ -347,6 +347,7 @@ class ResolvedTriggerPolicy:
     exclude_keywords: tuple[str, ...] = ()
     file_change_limit: int | None = None
     status_check: bool = False
+    failure_comment: bool = True
     blocking_severities: tuple[str, ...] = ("critical", "high")
 
 
@@ -620,6 +621,7 @@ class ResolvedReviewPolicy:
             exclude_keywords=exclude_union("exclude_keywords"),
             file_change_limit=min(limits) if limits else None,
             status_check=bool(status_policies),
+            failure_comment=any(policy.failure_comment for policy in policies),
             blocking_severities=tuple(
                 severity
                 for severity in ("critical", "high", "medium", "low")
@@ -1028,6 +1030,24 @@ def evaluate_trigger(
     return TriggerDecision(True, "automatic_trigger", "Automatic review trigger accepted.")
 
 
+def repository_failure_comment_enabled(policy: RepositoryPolicySnapshot) -> bool:
+    """Resolve ``triggers.failure_comment`` without a diff.
+
+    A review can die before its diff is ever fetched, so the terminal-failure
+    notice cannot use the path-scoped resolution that ``triggers`` performs.
+    Only repository-root ``.diffuse`` layers govern it, which is the deepest
+    scope that is knowable when nothing about the change was read.
+    """
+    enabled = ResolvedTriggerPolicy().failure_comment
+    for layer in policy.layers:
+        if layer.directory_path:
+            continue
+        configured = layer.config.triggers.failure_comment
+        if configured is not None:
+            enabled = configured
+    return enabled
+
+
 def resolve_review_policy(
     policy: RepositoryPolicySnapshot,
     paths: list[str] | tuple[str, ...] | set[str],
@@ -1320,6 +1340,11 @@ def resolve_review_policy(
                     if trigger_patch.status_check is not None
                     else triggers.status_check
                 ),
+                failure_comment=(
+                    trigger_patch.failure_comment
+                    if trigger_patch.failure_comment is not None
+                    else triggers.failure_comment
+                ),
                 blocking_severities=(
                     trigger_patch.blocking_severities
                     if trigger_patch.blocking_severities is not None
@@ -1479,6 +1504,7 @@ def resolve_review_policy(
                     "exclude_keywords": item.triggers.exclude_keywords,
                     "file_change_limit": item.triggers.file_change_limit,
                     "status_check": item.triggers.status_check,
+                    "failure_comment": item.triggers.failure_comment,
                     "blocking_severities": item.triggers.blocking_severities,
                 },
                 "rules": [

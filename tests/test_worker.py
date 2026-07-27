@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -1188,10 +1189,11 @@ async def test_terminal_review_failure_completes_existing_status_check(monkeypat
         lambda *args: terminal_failure.append(args),
     )
     monkeypatch.setattr(worker, "_complete_existing_job_check", finalize)
+    monkeypatch.setattr(worker, "_post_terminal_failure_notice", AsyncMock())
 
     assert await worker.run_once("worker-1")
 
-    assert terminal_failure == [(job.id,)]
+    assert terminal_failure == [(job.id, "review_workflow_exhausted")]
     finalize.assert_awaited_once_with(
         job,
         event,
@@ -1201,6 +1203,160 @@ async def test_terminal_review_failure_completes_existing_status_check(monkeypat
             "its retry policy."
         ),
     )
+
+
+def _arm_terminal_failure(monkeypatch, job, *, next_status: str, error=None):
+    """Drive run_once to a terminal review failure with everything else stubbed."""
+    monkeypatch.setattr(worker, "_claim", lambda *_args: job)
+    monkeypatch.setattr(
+        worker,
+        "process_job",
+        AsyncMock(side_effect=error or RuntimeError("model unavailable")),
+    )
+    monkeypatch.setattr(worker, "_fail", lambda *_args, **_kwargs: next_status)
+    monkeypatch.setattr(
+        worker,
+        "_mark_native_review_terminal_failed",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(worker, "_complete_existing_job_check", AsyncMock())
+    monkeypatch.setattr(worker, "_failure_notice_enabled", lambda *_args: True)
+
+
+@pytest.mark.anyio
+async def test_terminal_review_failure_posts_one_github_notice(monkeypatch):
+    event = _event()
+    job = _job(event)
+    posted = AsyncMock(return_value="88")
+
+    _arm_terminal_failure(monkeypatch, job, next_status="dead")
+    monkeypatch.setattr(worker, "post_github_review_failure_notice", posted)
+    monkeypatch.setattr(
+        worker,
+        "post_gitlab_review_failure_notice",
+        AsyncMock(side_effect=AssertionError("wrong provider")),
+    )
+
+    assert await worker.run_once("worker-1")
+
+    posted.assert_awaited_once()
+    failure = posted.await_args.kwargs["failure"]
+    assert posted.await_args.args == (event,)
+    assert failure.job_id == job.id
+    assert failure.error_code == "review_workflow_exhausted"
+
+
+@pytest.mark.anyio
+async def test_terminal_review_failure_posts_one_gitlab_notice(monkeypatch):
+    event = _event(
+        provider="gitlab",
+        scm_base_url="https://gitlab.example.com",
+        api_base_url="https://gitlab.example.com/api/v4",
+        web_url="https://gitlab.example.com/owner/repo/-/merge_requests/3",
+    )
+    job = _job(event)
+    posted = AsyncMock(return_value="88")
+
+    _arm_terminal_failure(
+        monkeypatch,
+        job,
+        next_status="failed",
+        error=NonRetryableError("Unsupported SCM provider: svn"),
+    )
+    monkeypatch.setattr(worker, "post_gitlab_review_failure_notice", posted)
+    monkeypatch.setattr(
+        worker,
+        "post_github_review_failure_notice",
+        AsyncMock(side_effect=AssertionError("wrong provider")),
+    )
+
+    assert await worker.run_once("worker-1")
+
+    posted.assert_awaited_once()
+    assert posted.await_args.kwargs["failure"].error_code == "review_workflow_failed"
+
+
+@pytest.mark.anyio
+async def test_retryable_intermediate_failure_posts_no_notice(monkeypatch):
+    """A review that will be retried must stay silent on the pull request."""
+    event = _event()
+    job = _job(event)
+    github = AsyncMock()
+    gitlab = AsyncMock()
+
+    monkeypatch.setattr(worker, "_claim", lambda *_args: job)
+    monkeypatch.setattr(
+        worker,
+        "process_job",
+        AsyncMock(side_effect=RuntimeError("model unavailable")),
+    )
+    monkeypatch.setattr(worker, "_fail", lambda *_args, **_kwargs: "queued")
+    monkeypatch.setattr(worker, "post_github_review_failure_notice", github)
+    monkeypatch.setattr(worker, "post_gitlab_review_failure_notice", gitlab)
+
+    assert await worker.run_once("worker-1")
+
+    github.assert_not_awaited()
+    gitlab.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_failure_notice_is_suppressed_by_repository_policy(monkeypatch):
+    event = _event()
+    job = _job(event)
+    posted = AsyncMock()
+
+    _arm_terminal_failure(monkeypatch, job, next_status="dead")
+    monkeypatch.setattr(worker, "_failure_notice_enabled", lambda *_args: False)
+    monkeypatch.setattr(worker, "post_github_review_failure_notice", posted)
+
+    assert await worker.run_once("worker-1")
+
+    posted.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_failure_notice_post_error_does_not_mask_the_original_failure(
+    monkeypatch,
+    caplog,
+):
+    event = _event()
+    job = _job(event)
+
+    _arm_terminal_failure(monkeypatch, job, next_status="dead")
+    monkeypatch.setattr(
+        worker,
+        "post_github_review_failure_notice",
+        AsyncMock(side_effect=RuntimeError("GitHub is down")),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        assert await worker.run_once("worker-1")
+
+    assert "Failed to post the terminal review failure notice" in caplog.text
+    assert "Workflow job failed" in caplog.text
+    assert "model unavailable" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_terminal_failure_log_names_the_repository_and_pull_request(
+    monkeypatch,
+    caplog,
+):
+    """The operator needs more than an opaque bigint to find the failure."""
+    event = _event()
+    job = _job(event)
+
+    _arm_terminal_failure(monkeypatch, job, next_status="dead")
+    monkeypatch.setattr(worker, "post_github_review_failure_notice", AsyncMock())
+
+    with caplog.at_level(logging.ERROR):
+        assert await worker.run_once("worker-1")
+
+    assert "Terminal review failure" in caplog.text
+    assert "repo=owner/repo" in caplog.text
+    assert "number=3" in caplog.text
+    assert "error_code=review_workflow_exhausted" in caplog.text
 
 
 def _capture_failure_classification(monkeypatch, job, error):
@@ -1220,6 +1376,7 @@ def _capture_failure_classification(monkeypatch, job, error):
         lambda *_args: None,
     )
     monkeypatch.setattr(worker, "_complete_existing_job_check", AsyncMock())
+    monkeypatch.setattr(worker, "_post_terminal_failure_notice", AsyncMock())
     return recorded
 
 
@@ -1305,6 +1462,7 @@ async def test_non_retryable_failure_check_does_not_claim_exhausted_retries(
         lambda *_args: None,
     )
     monkeypatch.setattr(worker, "_complete_existing_job_check", finalize)
+    monkeypatch.setattr(worker, "_post_terminal_failure_notice", AsyncMock())
 
     assert await worker.run_once("worker-1")
 

@@ -14,6 +14,10 @@ from service.finding_lineage import ReviewContinuity
 from service.finding_store import PublishedFindingComment
 from service.github import GITHUB_API_VERSION
 from service.review_description import merge_review_description
+from service.review_failure_notice import (
+    TerminalReviewFailure,
+    format_failure_notice,
+)
 from service.review_models import (
     Category,
     ReviewFinding,
@@ -455,6 +459,97 @@ async def _published_finding_comments(
         if len(value) < 100:
             break
     return tuple(comments[key] for key in sorted(comments))
+
+
+def _issue_comments_url(event: PullRequestEvent) -> str:
+    owner, repository = event.repo_full_name.split("/", maxsplit=1)
+    return (
+        f"{event.api_base_url}/repos/{quote(owner, safe='')}/"
+        f"{quote(repository, safe='')}/issues/{event.number}/comments"
+    )
+
+
+async def _find_existing_issue_comment(
+    client: httpx.AsyncClient,
+    event: PullRequestEvent,
+    marker: str,
+) -> str | None:
+    url = _issue_comments_url(event)
+    for page in range(1, 21):
+        response = await client.get(
+            url,
+            headers=_headers(),
+            params={"per_page": 100, "page": page},
+        )
+        response.raise_for_status()
+        comments = response.json()
+        if not isinstance(comments, list):
+            raise RuntimeError("GitHub returned an invalid issue comment list")
+        for comment in comments:
+            body = comment.get("body") if isinstance(comment, dict) else None
+            if isinstance(body, str) and marker in body:
+                external_id = comment.get("id")
+                if external_id is None:
+                    raise RuntimeError("GitHub comment is missing its identifier")
+                return str(external_id)
+        if len(comments) < 100:
+            break
+    return None
+
+
+async def _post_github_failure_notice(
+    client: httpx.AsyncClient,
+    event: PullRequestEvent,
+    failure: TerminalReviewFailure,
+) -> str:
+    body = format_failure_notice(failure)
+    existing = await _find_existing_issue_comment(client, event, failure.marker)
+    if existing is not None:
+        # Edit the single notice rather than appending another. The marker is
+        # per-pull-request, so this covers a later failing job as well as a retry,
+        # and the body carries the current job id.
+        owner, repository = event.repo_full_name.split("/", maxsplit=1)
+        updated = await client.patch(
+            f"{event.api_base_url}/repos/{quote(owner, safe='')}/"
+            f"{quote(repository, safe='')}/issues/comments/"
+            f"{quote(existing, safe='')}",
+            headers=_headers(),
+            json={"body": body},
+        )
+        updated.raise_for_status()
+        return existing
+    response = await client.post(
+        _issue_comments_url(event),
+        headers=_headers(),
+        json={"body": body},
+    )
+    response.raise_for_status()
+    value = response.json()
+    if not isinstance(value, dict) or value.get("id") is None:
+        raise RuntimeError("GitHub returned an invalid created issue comment")
+    return str(value["id"])
+
+
+async def post_github_review_failure_notice(
+    event: PullRequestEvent,
+    *,
+    failure: TerminalReviewFailure,
+    client: httpx.AsyncClient | None = None,
+) -> str:
+    """Post one terminal-failure notice, reusing any notice already present.
+
+    The Diffuse-owned marker on the comment body is the idempotency key: a
+    replayed terminal path finds its own earlier notice and posts nothing.
+    """
+    if event.provider != "github":
+        raise ValueError("GitHub failure notice received a non-GitHub event")
+    if client is not None:
+        return await _post_github_failure_notice(client, event, failure)
+    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
+    if timeout <= 0:
+        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    async with httpx.AsyncClient(timeout=timeout) as owned_client:
+        return await _post_github_failure_notice(owned_client, event, failure)
 
 
 def _validated_pull_request(

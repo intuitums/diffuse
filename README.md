@@ -625,6 +625,7 @@ subdirectory:
     "exclude_keywords": ["do not review"],
     "file_change_limit": 250,
     "status_check": true,
+    "failure_comment": true,
     "blocking_severities": ["critical", "high"]
   },
   "context": {
@@ -763,6 +764,20 @@ Nested status-check scopes combine blocking severities conservatively. A newer
 PR event cancels an in-progress check, and terminal workflow failure fails it.
 Creation and completion are persisted with a stable external key so worker
 retries recover the same GitHub check instead of creating duplicates.
+
+`failure_comment` defaults to `true`, because a failed review must never be
+silent. When a review job fails terminally — retries exhausted, or an error
+that retrying cannot resolve — Diffuse posts one comment on the pull request or
+merge request naming the error-code slug and the workflow job id so an operator
+can find the failure in the worker logs. The notice carries no exception text,
+traceback, or credential, and credential-shaped substrings are redacted before
+publication. Posting is best effort: it can never mask the original failure.
+The comment carries a Diffuse-owned `diffuse-review-failure` marker, which both
+makes a replayed terminal path reuse the existing comment instead of posting a
+second one and keeps Diffuse from re-ingesting its own notice as human
+feedback. Because a review can die before its diff is ever read, only the
+repository-root `.diffuse` layer governs `failure_comment`; nested scopes
+cannot disable it. Set it to `false` at the repository root to opt out.
 
 Every published review includes a deterministic 0–5 confidence score alongside
 the independent 0–10 risk score. Confidence starts from verified risk, then
