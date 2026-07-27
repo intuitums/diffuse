@@ -11,7 +11,14 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-POLICY_SCHEMA_VERSION = "repository-policy-v11-publication-controls"
+# Bumping this is mandatory whenever the policy models or policy_fingerprint
+# change shape. The version feeds INDEX_FORMAT_VERSION, so existing snapshots
+# become format-incompatible and are rebuilt. Without the bump, a stored
+# snapshot's persisted policy_fingerprint no longer matches its recomputed value,
+# RepositoryPolicySnapshot.__post_init__ raises, and that ValueError is
+# classified non-retryable -- so every configured repository's next review fails
+# terminally instead of taking the documented reindex path.
+POLICY_SCHEMA_VERSION = "repository-policy-v12-failure-comment"
 REVIEW_PASS_NAMES = ("correctness", "security", "performance", "tests")
 ReviewPassName = Literal["correctness", "security", "performance", "tests"]
 SeverityName = Literal["critical", "high", "medium", "low"]
@@ -218,6 +225,7 @@ class TriggerSettingsPatch(StrictPolicyModel):
     exclude_keywords: tuple[str, ...] | None = Field(default=None, max_length=100)
     file_change_limit: int | None = Field(default=None, ge=1, le=100_000)
     status_check: bool | None = None
+    failure_comment: bool | None = None
     blocking_severities: tuple[SeverityName, ...] | None = Field(
         default=None,
         min_length=1,
