@@ -11,3 +11,4 @@ build/
 dist/
 uv.lock
 .context/
+docker-compose.override.yml
