@@ -584,10 +584,10 @@ async def _publish_finding_discussions(
     report: ReviewReport,
     continuity: ReviewContinuity | None,
     diff_text: str,
-) -> tuple[tuple[PublishedFindingComment, ...], bool]:
+) -> tuple[tuple[PublishedFindingComment, ...], bool, tuple[str, ...]]:
     findings = _inline_findings(report, continuity)
     if not findings:
-        return (), True
+        return (), True, ()
     parsed_diff = parse_unified_diff(diff_text)
     published = await _published_finding_discussions(client, event)
     all_attached = True
@@ -618,6 +618,7 @@ async def _publish_finding_discussions(
             for fingerprint in sorted(expected & published.keys())
         ),
         all_attached,
+        tuple(sorted(expected - published.keys())),
     )
 
 
@@ -713,7 +714,7 @@ async def publish_gitlab_review(
     marker = f"<!-- diffuse-review:{review_run_id}:{event.head_sha} -->"
 
     async def publish(active_client: httpx.AsyncClient) -> PublishedReview:
-        finding_comments, inline_comments_attached = (
+        finding_comments, inline_comments_attached, unattached_fingerprints = (
             await _publish_finding_discussions(
                 active_client,
                 event,
@@ -750,6 +751,7 @@ async def publish_gitlab_review(
                     external_url=existing.external_url,
                     finding_comments=finding_comments,
                     inline_comments_attached=existing.inline_comments_attached,
+                    unattached_fingerprints=unattached_fingerprints,
                 )
             else:
                 body = format_review_body(
@@ -790,6 +792,7 @@ async def publish_gitlab_review(
                     external_url=f"{event.web_url}#note_{external_id}",
                     finding_comments=finding_comments,
                     inline_comments_attached=inline_comments_attached,
+                    unattached_fingerprints=unattached_fingerprints,
                 )
         else:
             prefix = "description" if report.update_description else "silent"
@@ -798,6 +801,7 @@ async def publish_gitlab_review(
                 external_url=event.web_url,
                 finding_comments=finding_comments,
                 inline_comments_attached=inline_comments_attached,
+                unattached_fingerprints=unattached_fingerprints,
             )
         if report.update_description:
             await _update_merge_request_description(

@@ -38,6 +38,11 @@ class PublishedReview:
     external_url: str | None
     finding_comments: tuple[PublishedFindingComment, ...] = ()
     inline_comments_attached: bool = True
+    # Fingerprints of `new` findings this publication tried and failed to anchor
+    # to an inline thread. Findings the provider never attempts (summary-only
+    # policy, inline caps) are absent, so activation only withholds lineages
+    # whose promised root thread is genuinely missing.
+    unattached_fingerprints: tuple[str, ...] = ()
 
 
 def _safe_markdown(value: str) -> str:
@@ -602,6 +607,7 @@ async def _publish_with_client(
             external_url=existing.external_url,
             finding_comments=finding_comments,
             inline_comments_attached=existing.inline_comments_attached,
+            unattached_fingerprints=tuple(sorted(expected - found)),
         )
         if report.update_description:
             await _update_pull_request_description(
@@ -706,6 +712,7 @@ async def _publish_with_client(
         external_url=value.get("html_url"),
         finding_comments=finding_comments,
         inline_comments_attached=bool(payload["comments"] or not expected),
+        unattached_fingerprints=tuple(sorted(expected - found)),
     )
     if report.update_description:
         await _update_pull_request_description(
