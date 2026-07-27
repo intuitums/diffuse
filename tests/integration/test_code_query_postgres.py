@@ -14,14 +14,6 @@ from indexer.store import (
 )
 from service import code_query
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not os.environ.get("POSTGRES_TEST_DATABASE_URL"),
-        reason="POSTGRES_TEST_DATABASE_URL is not configured",
-    ),
-]
-
 
 def _embedding(index: int) -> list[float]:
     output = [0.0] * 1536
