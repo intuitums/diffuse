@@ -733,9 +733,9 @@ async def list_merge_request_comments(
         str | None,
         Field(validation_alias=AliasChoices("remoteUrl", "remote_url")),
     ] = None,
-    greptileGenerated: Annotated[
+    diffuseGenerated: Annotated[
         bool | None,
-        Field(validation_alias=AliasChoices("greptileGenerated", "generated")),
+        Field(validation_alias=AliasChoices("diffuseGenerated", "generated")),
     ] = None,
     addressed: bool | None = None,
     limit: int = 20,
@@ -750,7 +750,7 @@ async def list_merge_request_comments(
         remote_url=remoteUrl,
         pull_request_number=prNumber,
         addressed=addressed,
-        generated=greptileGenerated,
+        generated=diffuseGenerated,
         limit=limit,
         offset=offset,
     )
@@ -776,25 +776,6 @@ async def search_review_comments(
 
 
 @diffuse_mcp.tool()
-async def search_greptile_comments(
-    query: str,
-    limit: int = 10,
-    includeAddressed: Annotated[
-        bool,
-        Field(validation_alias=AliasChoices("includeAddressed", "include_addressed")),
-    ] = False,
-) -> dict[str, object]:
-    """Compatibility alias for organization-wide Diffuse finding search."""
-    return await _database_query_async(
-        search_mcp_review_comments,
-        query=query,
-        include_addressed=includeAddressed,
-        limit=limit,
-        offset=0,
-    )
-
-
-@diffuse_mcp.tool()
 async def list_custom_context(
     repository_id: int | None = None,
     status: McpCustomContextStatus | None = None,
@@ -802,9 +783,9 @@ async def list_custom_context(
         McpCustomContextType | None,
         Field(validation_alias=AliasChoices("type", "context_type")),
     ] = None,
-    greptileGenerated: Annotated[
+    diffuseGenerated: Annotated[
         bool | None,
-        Field(validation_alias=AliasChoices("greptileGenerated", "generated")),
+        Field(validation_alias=AliasChoices("diffuseGenerated", "generated")),
     ] = None,
     limit: int = 20,
     offset: int = 0,
@@ -815,7 +796,7 @@ async def list_custom_context(
         repository_id=repository_id,
         status=status,
         context_type=type,
-        generated=greptileGenerated,
+        generated=diffuseGenerated,
         limit=limit,
         offset=offset,
     )
