@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from repository_policy.models import is_sensitive_repo_path
+
 if TYPE_CHECKING:
     from .graph_models import CodeSymbol
 
@@ -103,13 +105,6 @@ SKIP_EXTENSIONS = {
     ".woff2",
     ".zip",
 }
-PRIVATE_KEY_EXTENSIONS = {".key", ".p12", ".pfx", ".pem"}
-SENSITIVE_FILENAMES = {
-    "credentials.json",
-    "service-account.json",
-    "service_account.json",
-}
-ENV_TEMPLATE_SUFFIXES = (".example", ".sample", ".template")
 SKIP_FILENAME_SUFFIXES = (".min.js", ".min.css")
 
 
@@ -126,13 +121,6 @@ class Chunk:
         return hashlib.sha256(self.content.encode("utf-8")).hexdigest()
 
 
-def _is_sensitive(path: Path) -> bool:
-    name = path.name.lower()
-    if name in SENSITIVE_FILENAMES or path.suffix.lower() in PRIVATE_KEY_EXTENSIONS:
-        return True
-    return name.startswith(".env") and not name.endswith(ENV_TEMPLATE_SUFFIXES)
-
-
 def _is_candidate(path: Path, repo_root: Path) -> bool:
     try:
         relative = path.relative_to(repo_root)
@@ -146,7 +134,7 @@ def _is_candidate(path: Path, repo_root: Path) -> bool:
         and not any(part in SKIP_DIRS for part in relative.parts[:-1])
         and path.suffix.lower() not in SKIP_EXTENSIONS
         and not path.name.lower().endswith(SKIP_FILENAME_SUFFIXES)
-        and not _is_sensitive(relative)
+        and not is_sensitive_repo_path(relative.as_posix())
     )
 
 

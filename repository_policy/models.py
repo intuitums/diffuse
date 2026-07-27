@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -31,6 +32,49 @@ MAX_FILTER_PATTERN_LENGTH = 256
 CONTEXT_REPOSITORY_PATTERN = re.compile(
     r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$"
 )
+PRIVATE_KEY_EXTENSIONS = frozenset(
+    {
+        ".asc",
+        ".der",
+        ".gpg",
+        ".jks",
+        ".kdbx",
+        ".key",
+        ".keystore",
+        ".p12",
+        ".p8",
+        ".pem",
+        ".pfx",
+        ".pkcs12",
+        ".ppk",
+    }
+)
+SENSITIVE_FILENAMES = frozenset(
+    {
+        ".git-credentials",
+        ".htpasswd",
+        ".netrc",
+        ".npmrc",
+        ".pgpass",
+        ".pypirc",
+        "_netrc",
+        "credentials",
+        "credentials.json",
+        "secring.gpg",
+        "secrets.json",
+        "secrets.yaml",
+        "secrets.yml",
+        "service-account.json",
+        "service_account.json",
+        "serviceaccount.json",
+    }
+)
+# Private-key material is conventionally named for its algorithm, with or without a
+# trailing qualifier (`id_rsa`, `id_ed25519_deploy`), and carries no extension at all.
+SENSITIVE_FILENAME_PREFIXES = ("id_rsa", "id_dsa", "id_ecdsa", "id_ed25519")
+# Credential stores that identify themselves by directory rather than by file name.
+SENSITIVE_DIRECTORIES = frozenset({".aws", ".azure", ".gcloud", ".gnupg", ".ssh"})
+ENV_TEMPLATE_SUFFIXES = (".dist", ".example", ".sample", ".template", ".tmpl")
 
 
 def validate_repo_glob(value: str) -> str:
@@ -57,6 +101,32 @@ def validate_repo_path(value: str) -> str:
     ):
         raise ValueError("paths must be normalized repository-relative paths")
     return value
+
+
+def is_sensitive_repo_path(value: str) -> bool:
+    """Report whether a repository path is secret-shaped.
+
+    Diffuse never ships these files to a model provider, so both the indexer and the
+    repository-policy loader must agree on one definition; a repository must not be able
+    to opt its own secrets back in by naming them as review context.
+
+    This is a conservative name-based filter for conventionally named credential files,
+    not a secret scanner: it cannot recognize a key pasted into `docs/notes.md`.
+    """
+    posix_path = PurePosixPath(value)
+    name = posix_path.name.lower()
+    if any(part.lower() in SENSITIVE_DIRECTORIES for part in posix_path.parts[:-1]):
+        return True
+    # Checked-in placeholders (`.env.example`, `secrets.yaml.template`) carry no secret
+    # and are frequently the clearest statement of a repository's configuration surface.
+    if name.endswith(ENV_TEMPLATE_SUFFIXES):
+        return False
+    if name in SENSITIVE_FILENAMES or name.startswith(SENSITIVE_FILENAME_PREFIXES):
+        return True
+    if PurePosixPath(name).suffix in PRIVATE_KEY_EXTENSIONS:
+        return True
+    # Both `.env`/`.envrc`/`.env.production` and the equally common `prod.env` shape.
+    return name.startswith(".env") or name.endswith(".env")
 
 
 def validate_filter_pattern(value: str) -> str:
