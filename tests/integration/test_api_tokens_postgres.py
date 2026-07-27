@@ -2,7 +2,6 @@ import os
 import uuid
 
 import psycopg2
-import pytest
 
 from service.api_tokens import (
     MCP_GENERATE_SCOPE,
@@ -14,14 +13,6 @@ from service.api_tokens import (
     revoke_service_token,
 )
 from service.repositories import register_repository
-
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not os.environ.get("POSTGRES_TEST_DATABASE_URL"),
-        reason="POSTGRES_TEST_DATABASE_URL is not configured",
-    ),
-]
 
 
 def test_service_tokens_are_hashed_scoped_audited_and_revocable():
