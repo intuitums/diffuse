@@ -802,3 +802,78 @@ def test_traceback_escape_hatch_reraises_for_debugging(monkeypatch):
 
     with pytest.raises(RuntimeError, match="boom"):
         review_cli.run_handler(SimpleNamespace(handler=handler))
+
+
+def test_provider_credentials_are_redacted_from_diagnostics(monkeypatch):
+    """Every model provider's key must be redacted, not only OpenAI's.
+
+    `redact_secrets` runs over litellm error strings, which for non-OpenAI
+    providers can echo request context. The original hand-maintained list named
+    only OpenAI plus a `DIFFUSE_WEBHOOK_SECRET` that does not exist anywhere in
+    the codebase, so an Anthropic, Gemini, or OpenRouter key would have been
+    printed verbatim.
+    """
+    secrets = {
+        "ANTHROPIC_API_KEY": "sk-ant-aaaaaaaaaaaaaaaa",
+        "GEMINI_API_KEY": "gemini-bbbbbbbbbbbbbbbb",
+        "OPENROUTER_API_KEY": "sk-or-cccccccccccccccc",
+        "POSTGRES_PASSWORD": "dddddddddddddddd",
+        "GITHUB_WEBHOOK_SECRET": "eeeeeeeeeeeeeeee",
+        # Not in SECRET_ENV_NAMES: caught by the suffix heuristic instead.
+        "SOME_FUTURE_PROVIDER_API_KEY": "ffffffffffffffff",
+    }
+    for name, value in secrets.items():
+        monkeypatch.setenv(name, value)
+
+    leaked = " ".join(secrets.values())
+    redacted = review_cli.redact_secrets(f"upstream rejected the request: {leaked}")
+
+    for name, value in secrets.items():
+        assert value not in redacted, f"{name} leaked into the diagnostic"
+    assert "upstream rejected the request" in redacted
+
+
+def test_non_secret_configuration_is_not_redacted(monkeypatch):
+    """Redacting REVIEW_API_BASE or VERTEXAI_PROJECT would hide useful context."""
+    monkeypatch.setenv("REVIEW_API_BASE", "http://ollama.internal:11434")
+    monkeypatch.setenv("VERTEXAI_PROJECT", "acme-production")
+
+    text = review_cli.redact_secrets(
+        "cannot reach http://ollama.internal:11434 for acme-production"
+    )
+
+    assert "http://ollama.internal:11434" in text
+    assert "acme-production" in text
+
+
+def test_a_secret_containing_another_secret_is_fully_redacted(monkeypatch):
+    """Longest-first replacement, or the tail of the longer value survives."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-abcdefgh")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-abcdefghijklmnop")
+
+    redacted = review_cli.redact_secrets("key=sk-abcdefghijklmnop")
+
+    assert "abcdefghijklmnop" not in redacted
+    assert redacted == "key=***"
+
+
+def test_traceback_mode_redacts_the_traceback(monkeypatch, capsys):
+    """DIFFUSE_CLI_TRACEBACK is the documented bug-report path, so it must redact.
+
+    Python's default handler prints the exception verbatim, and
+    psycopg2.OperationalError routinely embeds the whole connection string.
+    """
+    monkeypatch.setenv("POSTGRES_PASSWORD", "sup3rs3cretvalue")
+    review_cli._install_redacting_excepthook()
+
+    try:
+        raise RuntimeError("connection failed for user:sup3rs3cretvalue@db")
+    except RuntimeError:
+        import sys as _sys
+
+        _sys.excepthook(*_sys.exc_info())
+
+    err = capsys.readouterr().err
+    assert "sup3rs3cretvalue" not in err
+    assert "RuntimeError" in err
+    assert "Traceback (most recent call last)" in err

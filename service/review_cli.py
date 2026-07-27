@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import traceback
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
@@ -69,14 +70,50 @@ EXIT_USAGE = 2
 EXIT_CONFIG = 3
 EXIT_INTERNAL = 4
 
+# Names that must be redacted even when the suffix scan below would miss them.
 SECRET_ENV_NAMES = (
     "OPENAI_API_KEY",
     "OPENAI_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "AZURE_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
     "DIFFUSE_API_TOKEN",
-    "DIFFUSE_WEBHOOK_SECRET",
     "GITHUB_TOKEN",
     "GITLAB_TOKEN",
+    "GITHUB_WEBHOOK_SECRET",
+    "GITLAB_WEBHOOK_SECRET",
+    "GITLAB_WEBHOOK_SIGNING_TOKEN",
+    "POSTGRES_PASSWORD",
 )
+
+# A hand-maintained list silently rots: this one omitted every model provider
+# except OpenAI while naming a DIFFUSE_WEBHOOK_SECRET that does not exist
+# anywhere in the codebase. The suffix scan covers new providers, per-installation
+# credentials, and anything an operator adds, while deliberately not matching
+# non-secret configuration such as REVIEW_API_BASE or VERTEXAI_PROJECT, whose
+# values are useful in a diagnostic.
+_SECRET_ENV_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PRIVATE_KEY")
+
+
+def _secret_values() -> list[str]:
+    """Every configured secret value, longest first.
+
+    Longest first matters: when one secret contains another as a substring,
+    replacing the shorter first would leave the tail of the longer one behind.
+    """
+    values: set[str] = set()
+    for name, value in os.environ.items():
+        if name in SECRET_ENV_NAMES or name.endswith(_SECRET_ENV_SUFFIXES):
+            candidate = value.strip()
+            # Short values are usually placeholders, and redacting them would
+            # mangle unrelated text that happens to contain the same characters.
+            if len(candidate) >= 8:
+                values.add(candidate)
+    return sorted(values, key=len, reverse=True)
 
 EXIT_CODE_HELP = """\
 exit codes:
@@ -1031,10 +1068,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
 
 def redact_secrets(text: str) -> str:
     """Remove any configured secret value that leaked into a diagnostic string."""
-    for name in SECRET_ENV_NAMES:
-        value = os.environ.get(name, "").strip()
-        if len(value) >= 8:
-            text = text.replace(value, "***")
+    for value in _secret_values():
+        text = text.replace(value, "***")
     password = _database_password()
     if password:
         text = text.replace(password, "***")
@@ -1172,7 +1207,30 @@ def run_handler(args: argparse.Namespace) -> None:
         )
 
 
+def _install_redacting_excepthook() -> None:
+    """Redact secrets from an unhandled traceback.
+
+    ``DIFFUSE_CLI_TRACEBACK=1`` re-raises the original exception, and the README
+    advertises that as the way to file a bug report -- so its output is exactly
+    what an operator pastes into a ticket. Python's default handler would print
+    it verbatim, and ``psycopg2.OperationalError`` routinely embeds the whole
+    connection string, password included.
+    """
+    original = sys.excepthook
+
+    def hook(exc_type, exc_value, exc_traceback):
+        rendered = "".join(
+            traceback.format_exception(exc_type, exc_value, exc_traceback)
+        )
+        sys.stderr.write(redact_secrets(rendered))
+
+    sys.excepthook = hook
+    return original
+
+
 def main() -> None:
+    if os.environ.get("DIFFUSE_CLI_TRACEBACK", "").strip():
+        _install_redacting_excepthook()
     parser, commands = _build_parser()
     args, unknown = parser.parse_known_args()
     if unknown:
@@ -1180,7 +1238,7 @@ def main() -> None:
         # irrelevant usage block for a subcommand's flag. Report them where they
         # were typed instead. ArgumentParser.error() exits with EXIT_USAGE.
         target = commands.get(getattr(args, "command", ""), parser)
-        target.error(f"unrecognized arguments: {' '.join(unknown)}")
+        target.error(redact_secrets(f"unrecognized arguments: {' '.join(unknown)}"))
     run_handler(args)
 
 
