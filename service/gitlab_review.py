@@ -30,7 +30,10 @@ from service.review_provenance import (
     PullRequestCommits,
     commit_names_agent_identity,
 )
-from service.scm import PullRequestEvent
+from service.scm import (
+    PullRequestEvent,
+    scm_api_timeout_seconds,
+)
 
 MAX_DIFF_BYTES = 2_000_000
 MAX_RESPONSE_BYTES = 2_000_000
@@ -117,9 +120,7 @@ async def fetch_gitlab_merge_request_diff(
 
     if client is not None:
         return await fetch(client)
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     async with httpx.AsyncClient(timeout=timeout) as owned_client:
         return await fetch(owned_client)
 
@@ -302,9 +303,7 @@ async def fetch_gitlab_merge_request_commits(
 
     if client is not None:
         return await fetch(client)
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     async with httpx.AsyncClient(timeout=timeout) as owned_client:
         return await fetch(owned_client)
 
@@ -409,9 +408,7 @@ async def fetch_gitlab_pull_request_update_diff(
 
     if client is not None:
         return await fetch(client)
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     async with httpx.AsyncClient(timeout=timeout) as owned_client:
         return await fetch(owned_client)
 
@@ -747,9 +744,7 @@ async def post_gitlab_review_failure_notice(
         raise ValueError("GitLab failure notice received a non-GitLab event")
     if client is not None:
         return await _post_gitlab_failure_notice(client, event, failure)
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     async with httpx.AsyncClient(timeout=timeout) as owned_client:
         return await _post_gitlab_failure_notice(owned_client, event, failure)
 
@@ -874,8 +869,6 @@ async def publish_gitlab_review(
 
     if client is not None:
         return await publish(client)
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     async with httpx.AsyncClient(timeout=timeout) as owned_client:
         return await publish(owned_client)

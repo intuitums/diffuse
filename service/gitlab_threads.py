@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from urllib.parse import quote
 
@@ -10,7 +9,10 @@ import httpx
 
 from service.finding_store import PublishedThreadOperation, ThreadOperationHandle
 from service.gitlab_review import MAX_RESPONSE_BYTES, _headers, _merge_request_path
-from service.scm import PullRequestEvent
+from service.scm import (
+    PullRequestEvent,
+    scm_api_timeout_seconds,
+)
 
 DISCUSSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,255}$")
 
@@ -171,9 +173,7 @@ async def apply_gitlab_thread_operation(
     discussion_id = operation.thread_node_id or ""
     if not DISCUSSION_ID_PATTERN.fullmatch(discussion_id):
         raise ValueError("GitLab finding thread has no valid discussion ID")
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
 
     async def apply(active_client: httpx.AsyncClient) -> PublishedThreadOperation:
         value = await _get_discussion(active_client, event, discussion_id)

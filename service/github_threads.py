@@ -13,7 +13,11 @@ from service.finding_store import (
     ThreadOperationHandle,
 )
 from service.github import GITHUB_API_VERSION
-from service.scm import PullRequestEvent, normalize_base_url
+from service.scm import (
+    PullRequestEvent,
+    normalize_base_url,
+    scm_api_timeout_seconds,
+)
 
 MAX_THREAD_PAGES = 20
 MAX_COMMENT_PAGES = 20
@@ -268,9 +272,7 @@ async def apply_github_thread_operation(
         raise ValueError("Invalid finding-thread operation")
     if not operation.root_comment_id.isdigit():
         raise ValueError("GitHub root review-comment ID must be numeric")
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     if client is None:
         async with httpx.AsyncClient(timeout=timeout) as owned_client:
             return await _apply_with_client(owned_client, event, operation)
