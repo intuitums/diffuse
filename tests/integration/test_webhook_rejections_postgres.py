@@ -164,30 +164,30 @@ def test_a_recorded_rejection_does_not_block_the_delivery_once_onboarded():
             _cleanup(connection, repo=repo, delivery=delivery)
 
 
-def test_rejections_are_distinguished_by_provider_and_base_url():
+def test_rejections_are_distinguished_by_base_url():
     """`docs/deployment.md` tells operators to filter by provider and base URL.
 
-    Diffuse serves GitHub and GitLab, and the same repository path and delivery
-    id can legitimately occur on different instances, so the uniqueness key has
-    to include both or one provider's refusals would overwrite the other's.
+    Diffuse serves github.com and self-hosted GitHub Enterprise instances, and
+    the same repository path and delivery id can legitimately occur on more
+    than one of them, so the uniqueness key has to include the base URL or one
+    instance's refusals would overwrite another's.
     """
     database_url = os.environ["POSTGRES_TEST_DATABASE_URL"]
     suffix = uuid.uuid4().hex[:12]
     repo = f"shared/{suffix}"
     delivery = f"delivery-{suffix}"
-    origins = [
-        ("github", "https://github.com"),
-        ("gitlab", "https://gitlab.com"),
-        ("gitlab", "https://gitlab.self-hosted.example"),
+    base_urls = [
+        "https://github.com",
+        "https://github.self-hosted.example",
     ]
 
     with closing(psycopg2.connect(database_url)) as connection:
         try:
-            for provider, base_url in origins:
+            for base_url in base_urls:
                 with connection:
                     record_webhook_rejection(
                         connection,
-                        scm_provider=provider,
+                        scm_provider="github",
                         scm_base_url=base_url,
                         delivery_id=delivery,
                         event_name="pull_request",
@@ -209,8 +209,7 @@ def test_rejections_are_distinguished_by_provider_and_base_url():
 
             assert rows == [
                 ("github", "https://github.com", 1),
-                ("gitlab", "https://gitlab.com", 1),
-                ("gitlab", "https://gitlab.self-hosted.example", 1),
+                ("github", "https://github.self-hosted.example", 1),
             ]
         finally:
             with connection, connection.cursor() as cursor:
@@ -225,6 +224,7 @@ def test_rejection_recording_validates_its_inputs():
     with closing(psycopg2.connect(database_url)) as connection:
         for kwargs, expected in (
             ({"scm_provider": "svn"}, "provider is invalid"),
+            ({"scm_provider": "gitlab"}, "provider is invalid"),
             ({"reason": "because"}, "reason is invalid"),
             ({"delivery_id": ""}, "delivery id is invalid"),
             ({"event_name": ""}, "event name is invalid"),

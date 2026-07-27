@@ -1,4 +1,5 @@
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -118,36 +119,19 @@ def _eligible_approval_decision() -> AutoApprovalDecision:
 
 
 @pytest.mark.anyio
-async def test_native_auto_approval_dispatches_to_gitlab(monkeypatch):
-    event = _event(
-        provider="gitlab",
-        scm_base_url="https://gitlab.example.com",
-        api_base_url="https://gitlab.example.com/api/v4",
-        web_url="https://gitlab.example.com/owner/repo/-/merge_requests/3",
-    )
-    decision = _eligible_approval_decision()
-    published = PublishedApproval(
-        external_id="gitlab:owner/repo:3:41:head",
-        external_url=event.web_url,
-    )
+async def test_native_auto_approval_rejects_unsupported_provider(monkeypatch):
+    """Only GitHub can publish a native approval; anything else is terminal."""
     github_publisher = AsyncMock()
-    gitlab_publisher = AsyncMock(return_value=published)
     monkeypatch.setattr(worker, "publish_github_approval", github_publisher)
-    monkeypatch.setattr(worker, "publish_gitlab_approval", gitlab_publisher)
 
-    result = await worker._publish_native_auto_approval(
-        event,
-        review_run_id=42,
-        decision=decision,
-    )
+    with pytest.raises(NonRetryableError, match="Unsupported SCM provider"):
+        await worker._publish_native_auto_approval(
+            SimpleNamespace(provider="bitbucket"),
+            review_run_id=42,
+            decision=_eligible_approval_decision(),
+        )
 
-    assert result == published
     github_publisher.assert_not_awaited()
-    gitlab_publisher.assert_awaited_once_with(
-        event,
-        review_run_id=42,
-        decision=decision,
-    )
 
 
 def _context_plan() -> CrossRepositoryContextPlan:
@@ -1231,11 +1215,6 @@ async def test_terminal_review_failure_posts_one_github_notice(monkeypatch):
 
     _arm_terminal_failure(monkeypatch, job, next_status="dead")
     monkeypatch.setattr(worker, "post_github_review_failure_notice", posted)
-    monkeypatch.setattr(
-        worker,
-        "post_gitlab_review_failure_notice",
-        AsyncMock(side_effect=AssertionError("wrong provider")),
-    )
 
     assert await worker.run_once("worker-1")
 
@@ -1247,13 +1226,9 @@ async def test_terminal_review_failure_posts_one_github_notice(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_terminal_review_failure_posts_one_gitlab_notice(monkeypatch):
-    event = _event(
-        provider="gitlab",
-        scm_base_url="https://gitlab.example.com",
-        api_base_url="https://gitlab.example.com/api/v4",
-        web_url="https://gitlab.example.com/owner/repo/-/merge_requests/3",
-    )
+async def test_terminal_review_failure_posts_one_notice_without_retries(monkeypatch):
+    """A deterministic fault reports as failed, not as exhausted retries."""
+    event = _event()
     job = _job(event)
     posted = AsyncMock(return_value="88")
 
@@ -1263,12 +1238,7 @@ async def test_terminal_review_failure_posts_one_gitlab_notice(monkeypatch):
         next_status="failed",
         error=NonRetryableError("Unsupported SCM provider: svn"),
     )
-    monkeypatch.setattr(worker, "post_gitlab_review_failure_notice", posted)
-    monkeypatch.setattr(
-        worker,
-        "post_github_review_failure_notice",
-        AsyncMock(side_effect=AssertionError("wrong provider")),
-    )
+    monkeypatch.setattr(worker, "post_github_review_failure_notice", posted)
 
     assert await worker.run_once("worker-1")
 
@@ -1282,7 +1252,6 @@ async def test_retryable_intermediate_failure_posts_no_notice(monkeypatch):
     event = _event()
     job = _job(event)
     github = AsyncMock()
-    gitlab = AsyncMock()
 
     monkeypatch.setattr(worker, "_claim", lambda *_args: job)
     monkeypatch.setattr(
@@ -1292,12 +1261,10 @@ async def test_retryable_intermediate_failure_posts_no_notice(monkeypatch):
     )
     monkeypatch.setattr(worker, "_fail", lambda *_args, **_kwargs: "queued")
     monkeypatch.setattr(worker, "post_github_review_failure_notice", github)
-    monkeypatch.setattr(worker, "post_gitlab_review_failure_notice", gitlab)
 
     assert await worker.run_once("worker-1")
 
     github.assert_not_awaited()
-    gitlab.assert_not_awaited()
 
 
 @pytest.mark.anyio

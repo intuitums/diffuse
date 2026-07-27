@@ -42,7 +42,7 @@ INSUFFICIENT_EVIDENCE_ANSWER = (
 class CodeQueryTarget:
     repository_id: int
     repository_name: str
-    remote: Literal["github", "gitlab"]
+    remote: Literal["github"]
     remote_url: str
     default_branch: str
     include_related: bool
@@ -192,20 +192,12 @@ def _source_url(
     encoded_repository = quote(repository_name, safe="/")
     encoded_commit = quote(commit_sha, safe="")
     encoded_path = quote(file_path, safe="/")
-    if target.remote == "gitlab":
-        fragment = (
-            f"#L{start_line}"
-            if start_line == end_line
-            else f"#L{start_line}-{end_line}"
-        )
-        route = f"{encoded_repository}/-/blob/{encoded_commit}/{encoded_path}"
-    else:
-        fragment = (
-            f"#L{start_line}"
-            if start_line == end_line
-            else f"#L{start_line}-L{end_line}"
-        )
-        route = f"{encoded_repository}/blob/{encoded_commit}/{encoded_path}"
+    fragment = (
+        f"#L{start_line}"
+        if start_line == end_line
+        else f"#L{start_line}-L{end_line}"
+    )
+    route = f"{encoded_repository}/blob/{encoded_commit}/{encoded_path}"
     return f"{target.remote_url.rstrip('/')}/{route}{fragment}"
 
 

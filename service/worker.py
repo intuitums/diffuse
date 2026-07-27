@@ -115,21 +115,6 @@ from service.github_review import (
     publish_github_review,
 )
 from service.github_threads import apply_github_thread_operation
-from service.gitlab_approval import publish_gitlab_approval
-from service.gitlab_check import (
-    complete_gitlab_check_run,
-    ensure_gitlab_check_run,
-)
-from service.gitlab_conversation import publish_gitlab_conversation_reply
-from service.gitlab_feedback import fetch_gitlab_review_reactions
-from service.gitlab_review import (
-    fetch_gitlab_merge_request_commits,
-    fetch_gitlab_merge_request_diff,
-    fetch_gitlab_pull_request_update_diff,
-    post_gitlab_review_failure_notice,
-    publish_gitlab_review,
-)
-from service.gitlab_threads import apply_gitlab_thread_operation
 from service.learning_engine import (
     RULE_LEARNING_PROMPT_VERSION,
     generate_suggested_rules,
@@ -224,8 +209,6 @@ class MissingRepositoryIndexError(RuntimeError):
 async def _fetch_scm_pull_request_diff(event: PullRequestEvent) -> str:
     if event.provider == "github":
         return await fetch_pull_request_diff(event)
-    if event.provider == "gitlab":
-        return await fetch_gitlab_merge_request_diff(event)
     raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
 
 
@@ -234,8 +217,6 @@ async def _fetch_scm_pull_request_commits(
 ) -> PullRequestCommits:
     if event.provider == "github":
         return await fetch_pull_request_commits(event)
-    if event.provider == "gitlab":
-        return await fetch_gitlab_merge_request_commits(event)
     raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
 
 
@@ -264,11 +245,6 @@ async def _fetch_scm_pull_request_update_diff(
 ) -> str:
     if event.provider == "github":
         return await fetch_pull_request_update_diff(event, previous_head_sha)
-    if event.provider == "gitlab":
-        return await fetch_gitlab_pull_request_update_diff(
-            event,
-            previous_head_sha,
-        )
     raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
 
 
@@ -298,14 +274,6 @@ def _schedule_feedback_syncs() -> int:
             github_scm_base_url=os.environ.get(
                 "GITHUB_WEB_URL",
                 "https://github.com",
-            ),
-            gitlab_scm_base_url=os.environ.get(
-                "GITLAB_WEB_URL",
-                "https://gitlab.com",
-            ),
-            gitlab_api_base_url=os.environ.get(
-                "GITLAB_API_URL",
-                "https://gitlab.com/api/v4",
             ),
             interval_seconds=interval_seconds,
             limit=batch_size,
@@ -1054,8 +1022,6 @@ async def _publish_native_thread_operations(
         try:
             if event.provider == "github":
                 result = await apply_github_thread_operation(event, operation)
-            elif event.provider == "gitlab":
-                result = await apply_gitlab_thread_operation(event, operation)
             else:
                 raise NonRetryableError(
                     f"Unsupported SCM provider: {event.provider}"
@@ -1145,13 +1111,6 @@ async def _ensure_native_check(
                 existing_external_id=handle.external_id,
                 existing_external_url=handle.external_url,
             )
-        elif event.provider == "gitlab":
-            published = await ensure_gitlab_check_run(
-                event,
-                external_key=handle.external_key,
-                existing_external_id=handle.external_id,
-                existing_external_url=handle.external_url,
-            )
         else:
             raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
         await anyio.to_thread.run_sync(
@@ -1208,16 +1167,6 @@ async def _complete_native_check(
                 message=message,
                 unresolved_findings=unresolved_findings,
             )
-        elif event.provider == "gitlab":
-            await complete_gitlab_check_run(
-                event,
-                external_id=handle.external_id,
-                conclusion=conclusion,
-                blocking_severities=blocking_severities,
-                report=report,
-                message=message,
-                unresolved_findings=unresolved_findings,
-            )
         else:
             raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
     except Exception:
@@ -1238,8 +1187,6 @@ async def _publish_native_auto_approval(
 ) -> PublishedApproval:
     if event.provider == "github":
         publisher = publish_github_approval
-    elif event.provider == "gitlab":
-        publisher = publish_gitlab_approval
     else:
         raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
     return await publisher(
@@ -1291,8 +1238,6 @@ async def _post_terminal_failure_notice(
             return
         if event.provider == "github":
             await post_github_review_failure_notice(event, failure=failure)
-        elif event.provider == "gitlab":
-            await post_gitlab_review_failure_notice(event, failure=failure)
         else:
             LOGGER.error(
                 "Cannot report a terminal review failure on provider=%s job=%s",
@@ -1603,15 +1548,6 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
                         review_number=publication.review_number,
                         continuity=continuity,
                     )
-                elif event.provider == "gitlab":
-                    published = await publish_gitlab_review(
-                        event,
-                        review_run_id=review_run.id,
-                        report=report,
-                        diff_text=diff_text,
-                        review_number=publication.review_number,
-                        continuity=continuity,
-                    )
                 else:
                     raise NonRetryableError(
                         f"Unsupported SCM provider: {event.provider}"
@@ -1816,12 +1752,6 @@ async def process_conversation_job(job: WorkflowJob, worker_id: str) -> None:
                     answer=publication.answer,
                     references=publication.references,
                 )
-            elif event.provider == "gitlab":
-                result = await publish_gitlab_conversation_reply(
-                    event,
-                    answer=publication.answer,
-                    references=publication.references,
-                )
             else:
                 raise NonRetryableError(
                     f"Unsupported SCM provider: {event.provider}"
@@ -1906,8 +1836,6 @@ async def process_feedback_sync_job(job: WorkflowJob, worker_id: str) -> None:
         )
         if event.provider == "github":
             reactions = await fetch_github_review_reactions(event)
-        elif event.provider == "gitlab":
-            reactions = await fetch_gitlab_review_reactions(event)
         else:
             raise NonRetryableError(
                 f"Unsupported SCM provider: {event.provider}"

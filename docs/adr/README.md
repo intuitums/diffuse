@@ -56,26 +56,36 @@ These four carry the decisions the rest of the system is built on:
 | 0027 | [Audited custom-context mutation](0027-audited-custom-context-mutation.md) | Accepted |
 | 0028 | [Repository-authorized review analytics](0028-repository-authorized-review-analytics.md) | Accepted |
 | 0029 | [Authoritative pull-request lifecycle analytics](0029-authoritative-pull-request-lifecycle-analytics.md) | Accepted |
-| 0030 | [Native GitLab webhooks and review publication](0030-native-gitlab-webhooks-and-review-publication.md) | Accepted |
-| 0031 | [GitLab inline discussions and review interaction](0031-gitlab-inline-discussions-and-interaction.md) | Accepted |
-| 0032 | [GitLab manual review and exact-head automatic approval](0032-gitlab-manual-review-and-auto-approval.md) | Accepted |
-| 0033 | [Provider-neutral MCP manual review triggering](0033-provider-neutral-mcp-review-trigger.md) | Accepted |
+| 0030 | [Native GitLab webhooks and review publication](0030-native-gitlab-webhooks-and-review-publication.md) | Superseded by [0041](0041-github-only-source-control.md) |
+| 0031 | [GitLab inline discussions and review interaction](0031-gitlab-inline-discussions-and-interaction.md) | Superseded by [0041](0041-github-only-source-control.md) |
+| 0032 | [GitLab manual review and exact-head automatic approval](0032-gitlab-manual-review-and-auto-approval.md) | Superseded by [0041](0041-github-only-source-control.md) |
+| 0033 | [Provider-neutral MCP manual review triggering](0033-provider-neutral-mcp-review-trigger.md) | Accepted, amended |
 | 0035 | [Managed descriptions and immutable publication controls](0035-managed-description-and-publication-controls.md) | Accepted |
 | 0036 | [Transactional versioned database migrations](0036-transactional-versioned-database-migrations.md) | Accepted |
 | 0037 | [Repository-authorized versioned REST API](0037-repository-authorized-rest-api.md) | Accepted |
 | 0038 | [Idempotent REST review trigger](0038-idempotent-rest-review-trigger.md) | Accepted |
 | 0039 | [Idempotent repository onboarding and indexing API](0039-idempotent-repository-onboarding-and-indexing-api.md) | Accepted |
 | 0040 | [Proprietary self-hosted and managed-cloud distribution](0040-proprietary-self-hosted-and-managed-cloud-distribution.md) | Accepted |
+| 0041 | [GitHub as the only supported source-control provider](0041-github-only-source-control.md) | Accepted |
+
+## Superseded records
+
+- **0030, 0031, 0032** — the GitLab provider they specified was removed on
+  2026-07-27. [0041](0041-github-only-source-control.md) records why, and which
+  two GitLab-shaped defences were deliberately kept. The records stay for
+  history; nothing in them binds the code.
 
 ## Amended records
 
-Two records are still accepted but no longer describe the system exactly as
+Three records are still accepted but no longer describe the system exactly as
 written. Their `Status` lines carry the detail:
 
 - **0021** — its "read-only" constraint is void. ADR 0023 introduced
   write-scoped MCP tools and ADR 0027 added update and delete.
 - **0024** — the legacy comment-search alias and its compatibility response
   field were removed from the server.
+- **0033** — its provider neutrality now spans exactly one provider. The
+  authoritative-refetch decision it records still binds.
 
 ## A note on this set
 
