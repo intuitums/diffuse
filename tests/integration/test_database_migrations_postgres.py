@@ -20,14 +20,6 @@ from service.database_migrations import (
     verify_database_current,
 )
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not os.environ.get("POSTGRES_TEST_DATABASE_URL"),
-        reason="POSTGRES_TEST_DATABASE_URL is not configured",
-    ),
-]
-
 
 def _database_url(base_url: str, database_name: str) -> str:
     parsed = urlsplit(base_url)

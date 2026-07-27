@@ -43,14 +43,6 @@ from service.cross_repository import (
 )
 from service.repositories import register_repository
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not os.environ.get("POSTGRES_TEST_DATABASE_URL"),
-        reason="POSTGRES_TEST_DATABASE_URL is not configured",
-    ),
-]
-
 
 def _symbol(key: str, name: str, start_line: int, end_line: int) -> CodeSymbol:
     return CodeSymbol(

@@ -14,14 +14,6 @@ from service.workflow import (
     record_webhook_rejection,
 )
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not os.environ.get("POSTGRES_TEST_DATABASE_URL"),
-        reason="POSTGRES_TEST_DATABASE_URL is not configured",
-    ),
-]
-
 
 def _event(*, repo: str, delivery: str) -> PullRequestEvent:
     return PullRequestEvent.from_payload(

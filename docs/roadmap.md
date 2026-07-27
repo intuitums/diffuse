@@ -14,10 +14,15 @@ must leave a deployable, observable system.
   adoption, status/verification commands, and a Compose startup gate. Add
   release-by-release downgrade policy, backup/restore drills, and migration
   compatibility CI across supported versions.
-- The versioned review-evaluation harness now measures labeled true bugs,
-  false positives/negatives, addressed findings, precision/recall/F1, median
-  latency, tokens, and estimated cost. Replace the committed synthetic example
-  with reviewed private PR fixtures and establish release gates.
+- A versioned review-evaluation *scorer* exists: given labeled and observed
+  findings it computes true bugs, false positives/negatives, addressed
+  findings, precision/recall/F1, median latency, tokens, and estimated cost.
+  It does not yet run a review — `observed` is transcribed by hand into the
+  input file, so nothing measures review quality automatically. Build a harness
+  that invokes the review engine against fixtures, replace the committed
+  synthetic example (whose recorded run has 0% recall) with reviewed private PR
+  fixtures, package `evals/` so the documented command runs in the image, and
+  establish release gates.
 - Replace free-form environment access with validated configuration.
 
 Exit: every planned capability has an owner component, data boundary, and
