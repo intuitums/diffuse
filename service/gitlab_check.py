@@ -11,7 +11,10 @@ import httpx
 from service.check_store import CHECK_NAME, VALID_CONCLUSIONS, CheckConclusion
 from service.github_check import PublishedCheckRun
 from service.review_models import ReviewFinding, ReviewReport
-from service.scm import PullRequestEvent
+from service.scm import (
+    PullRequestEvent,
+    scm_api_timeout_seconds,
+)
 
 MAX_RESPONSE_BYTES = 1_000_000
 
@@ -97,9 +100,7 @@ async def ensure_gitlab_check_run(
 
     if client is not None:
         return await publish(client)
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     async with httpx.AsyncClient(timeout=timeout) as owned_client:
         return await publish(owned_client)
 
@@ -172,8 +173,6 @@ async def complete_gitlab_check_run(
     if client is not None:
         await publish(client)
         return
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     async with httpx.AsyncClient(timeout=timeout) as owned_client:
         await publish(owned_client)

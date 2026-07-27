@@ -17,7 +17,10 @@ from service.review_models import (
     ReviewReport,
     SecurityClassification,
 )
-from service.scm import PullRequestEvent
+from service.scm import (
+    PullRequestEvent,
+    scm_api_timeout_seconds,
+)
 
 MAX_CHECK_SUMMARY_CHARS = 60_000
 MAX_CHECK_ANNOTATIONS = 50
@@ -121,9 +124,7 @@ async def ensure_github_check_run(
         raise ValueError("GitHub check publisher received a non-GitHub event")
     if existing_external_id:
         return PublishedCheckRun(existing_external_id, existing_external_url)
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     if client is None:
         async with httpx.AsyncClient(timeout=timeout) as owned_client:
             return await _ensure_with_client(owned_client, event, external_key)
@@ -338,9 +339,7 @@ async def complete_github_check_run(
         raise ValueError("GitHub check publisher received a non-GitHub event")
     if conclusion not in VALID_CONCLUSIONS:
         raise ValueError("Invalid GitHub check-run conclusion")
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     payload = {
         "name": CHECK_NAME,
         "status": "completed",

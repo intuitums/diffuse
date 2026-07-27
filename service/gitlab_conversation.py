@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from urllib.parse import quote
 
@@ -12,7 +11,10 @@ from service.conversation_models import ConversationReference
 from service.conversation_store import PublishedConversationReply
 from service.github_conversation import format_conversation_reply
 from service.gitlab_review import MAX_RESPONSE_BYTES, _headers
-from service.scm import ReviewConversationEvent
+from service.scm import (
+    ReviewConversationEvent,
+    scm_api_timeout_seconds,
+)
 
 DISCUSSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,255}$")
 
@@ -84,9 +86,7 @@ async def publish_gitlab_conversation_reply(
         raise ValueError("GitLab conversation has no valid discussion ID")
     if not answer.strip():
         raise ValueError("GitLab conversation answer cannot be empty")
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
 
     async def publish(active_client: httpx.AsyncClient) -> PublishedConversationReply:
         existing = await _find_existing_reply(active_client, event)
