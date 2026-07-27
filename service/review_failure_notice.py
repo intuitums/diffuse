@@ -67,11 +67,18 @@ class TerminalReviewFailure:
     def marker(self) -> str:
         """The Diffuse-owned identity marker that makes the notice idempotent.
 
+        Deliberately does not include ``job_id``. The marker scopes one notice
+        per pull request, so a repeated failure edits that notice instead of
+        appending another comment. Keying it per job meant every retry, and every
+        later failing job on the same pull request, posted a fresh comment onto a
+        pull request that was already failing. The job id is still rendered in
+        the visible body, where support needs it.
+
         The ``diffuse-`` prefix is also what ``is_diffuse_generated`` matches,
         which is what keeps the notice out of Diffuse's own feedback and
         conversation ingestion.
         """
-        return f"<!-- diffuse-review-failure:{self.job_id} -->"
+        return "<!-- diffuse-review-failure -->"
 
 
 def terminal_review_failure(

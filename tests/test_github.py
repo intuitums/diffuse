@@ -413,3 +413,36 @@ async def test_github_diff_fetch_uses_the_configured_scm_timeout(monkeypatch):
 
     assert diff.startswith("diff --git")
     assert observed["timeout"] == 7.5
+
+
+def test_quoting_a_diffuse_review_still_triggers_a_manual_review():
+    """A maintainer quoting a Diffuse comment is a human request, not Diffuse.
+
+    Diffuse must not treat its own comments as manual triggers, but matching the
+    marker anywhere in the body also dropped a quote-reply -- the most natural way
+    to ask for a re-review of a specific finding. Diffuse opens its own comments
+    with the marker, so the check is anchored at the start instead.
+    """
+    quoted = (
+        "> <!-- diffuse-review-failure -->\n"
+        "> ## Diffuse could not complete this review\n"
+        "\n"
+        "@diffuse review please retry this one\n"
+    )
+
+    request = normalize_manual_review_request(_comment_payload(body=quoted))
+
+    assert request is not None
+    assert request.number == 42
+
+
+def test_diffuse_own_comment_is_not_a_manual_trigger():
+    """The marker at the start still identifies Diffuse's own comment."""
+    own = (
+        "<!-- diffuse-review-failure -->\n"
+        "## Diffuse could not complete this review\n"
+        "\n"
+        "@diffuse review\n"
+    )
+
+    assert normalize_manual_review_request(_comment_payload(body=own)) is None

@@ -502,13 +502,26 @@ async def _post_github_failure_notice(
     event: PullRequestEvent,
     failure: TerminalReviewFailure,
 ) -> str:
+    body = format_failure_notice(failure)
     existing = await _find_existing_issue_comment(client, event, failure.marker)
     if existing is not None:
+        # Edit the single notice rather than appending another. The marker is
+        # per-pull-request, so this covers a later failing job as well as a retry,
+        # and the body carries the current job id.
+        owner, repository = event.repo_full_name.split("/", maxsplit=1)
+        updated = await client.patch(
+            f"{event.api_base_url}/repos/{quote(owner, safe='')}/"
+            f"{quote(repository, safe='')}/issues/comments/"
+            f"{quote(existing, safe='')}",
+            headers=_headers(),
+            json={"body": body},
+        )
+        updated.raise_for_status()
         return existing
     response = await client.post(
         _issue_comments_url(event),
         headers=_headers(),
-        json={"body": format_failure_notice(failure)},
+        json={"body": body},
     )
     response.raise_for_status()
     value = response.json()

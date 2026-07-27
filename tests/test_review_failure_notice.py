@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import httpx
 import pytest
 
@@ -74,8 +76,12 @@ def test_terminal_failure_distinguishes_exhaustion_from_deterministic_faults():
 def test_failure_notice_names_the_error_code_and_job_id():
     body = format_failure_notice(terminal_review_failure(4821, retries_exhausted=True))
 
-    assert body.startswith("<!-- diffuse-review-failure:4821 -->")
+    # The marker is per-pull-request, deliberately without the job id, so a
+    # repeated failure edits one notice instead of appending another.
+    assert body.startswith("<!-- diffuse-review-failure -->")
+    assert "4821" not in body.splitlines()[0]
     assert "`review_workflow_exhausted`" in body
+    # The job id still has to be visible; support needs it to find the logs.
     assert "`4821`" in body
     assert body.count("\n\n") == 4
 
@@ -214,27 +220,40 @@ async def test_github_posts_exactly_one_failure_notice(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_github_second_terminal_pass_reuses_the_existing_notice(monkeypatch):
+async def test_github_second_terminal_pass_edits_the_existing_notice(monkeypatch):
+    """A later failing job must edit the one notice, not append another.
+
+    The marker used to embed job_id, so every retry and every subsequent failing
+    job posted a fresh comment onto a pull request that was already failing.
+    """
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
-    failure = terminal_review_failure(4821, retries_exhausted=True)
+    first = terminal_review_failure(4821, retries_exhausted=True)
+    second = terminal_review_failure(9999, retries_exhausted=False)
     methods: list[str] = []
+    edited: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         methods.append(request.method)
-        return httpx.Response(
-            200,
-            json=[{"id": 88, "body": format_failure_notice(failure)}],
-        )
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[{"id": 88, "body": format_failure_notice(first)}],
+            )
+        edited.append(request.content.decode())
+        return httpx.Response(200, json={"id": 88})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         external_id = await post_github_review_failure_notice(
             _github_event(),
-            failure=failure,
+            failure=second,
             client=client,
         )
 
     assert external_id == "88"
-    assert methods == ["GET"]
+    assert methods == ["GET", "PATCH"]
+    # The notice is refreshed to the current job, not left stale.
+    assert "9999" in edited[0]
+    assert "review_workflow_failed" in edited[0]
 
 
 @pytest.mark.anyio
@@ -262,27 +281,35 @@ async def test_gitlab_posts_exactly_one_failure_notice(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_gitlab_second_terminal_pass_reuses_the_existing_notice(monkeypatch):
+async def test_gitlab_second_terminal_pass_edits_the_existing_notice(monkeypatch):
+    """A later failing job must edit the one note, not append another."""
     monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-    failure = terminal_review_failure(4821, retries_exhausted=False)
+    first = terminal_review_failure(4821, retries_exhausted=False)
+    second = terminal_review_failure(9999, retries_exhausted=True)
     methods: list[str] = []
+    edited: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         methods.append(request.method)
-        return httpx.Response(
-            200,
-            json=[{"id": 88, "body": format_failure_notice(failure)}],
-        )
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[{"id": 88, "body": format_failure_notice(first)}],
+            )
+        edited.append(request.content.decode())
+        return httpx.Response(200, json={"id": 88})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         external_id = await post_gitlab_review_failure_notice(
             _gitlab_event(),
-            failure=failure,
+            failure=second,
             client=client,
         )
 
     assert external_id == "88"
-    assert methods == ["GET"]
+    assert methods == ["GET", "PUT"]
+    assert "9999" in edited[0]
+    assert "review_workflow_exhausted" in edited[0]
 
 
 @pytest.mark.anyio
@@ -334,3 +361,102 @@ def test_nested_scopes_cannot_disable_the_repository_failure_notice():
 
     assert repository_failure_comment_enabled(snapshot) is True
     assert resolve_review_policy(snapshot, {"src/app.py"}).triggers.failure_comment is False
+
+
+def _eligible_event(**overrides):
+    """A normalized, fully-enriched automatic event, as the provider API yields."""
+    # metadata_complete=True makes PullRequestEvent validate the enriched
+    # fields, so they all have to be present and well formed.
+    defaults = {
+        "is_draft": False,
+        "action": "opened",
+        "trigger_kind": "automatic",
+        "metadata_complete": True,
+        "author": "octocat",
+        "base_branch": "main",
+        "head_branch": "feature/tenant-scope",
+        "title": "Scope the query to the caller's tenant",
+    }
+    return replace(_github_event(), **{**defaults, **overrides})
+
+
+def test_no_failure_notice_on_a_pull_request_diffuse_would_not_review(monkeypatch):
+    """A draft must not be told a review it never asked for did not complete.
+
+    A terminal failure can happen before trigger evaluation, so the notice path
+    has to evaluate eligibility itself. Regression: an earlier version of this
+    gate read a field name that does not exist on TriggerDecision, and a broad
+    `except Exception` turned that AttributeError into fail-open -- the gate did
+    nothing while its test still passed. This asserts the suppression directly.
+    """
+    from service import worker
+
+    snapshot = _snapshot()
+    monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_a: 11)
+    monkeypatch.setattr(worker, "get_conn", lambda: _NullConn())
+    monkeypatch.setattr(worker, "load_repository_policy", lambda *_a: snapshot)
+
+    # review_drafts defaults off, so a draft is a deliberate exclusion.
+    assert (
+        worker._failure_notice_enabled("acme/api", 1, _eligible_event(is_draft=True))
+        is False
+    )
+    # Without the event there is nothing to evaluate, so it still fails open.
+    assert worker._failure_notice_enabled("acme/api", 1) is True
+
+
+def test_failure_notice_still_posts_for_an_eligible_pull_request(monkeypatch):
+    from service import worker
+
+    snapshot = _snapshot()
+    monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_a: 11)
+    monkeypatch.setattr(worker, "get_conn", lambda: _NullConn())
+    monkeypatch.setattr(worker, "load_repository_policy", lambda *_a: snapshot)
+
+    assert worker._failure_notice_enabled("acme/api", 1, _eligible_event()) is True
+
+
+def test_unenriched_metadata_does_not_suppress_the_failure_notice(monkeypatch):
+    """`metadata_unavailable` must still post -- it is often the failure itself.
+
+    Diffuse could not enrich the event from the provider API, which is a common
+    cause of the very failure being reported. Treating that as "not eligible"
+    would silence the notice in exactly the case it exists for.
+    """
+    from service import worker
+
+    monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_a: 11)
+    monkeypatch.setattr(worker, "get_conn", lambda: _NullConn())
+    monkeypatch.setattr(worker, "load_repository_policy", lambda *_a: _snapshot())
+
+    unenriched = replace(
+        _github_event(),
+        trigger_kind="automatic",
+        action="opened",
+        metadata_complete=False,
+    )
+
+    assert worker._failure_notice_enabled("acme/api", 1, unenriched) is True
+
+
+def test_failure_notice_respects_the_repository_opt_out_before_eligibility(monkeypatch):
+    from service import worker
+
+    monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_a: 11)
+    monkeypatch.setattr(worker, "get_conn", lambda: _NullConn())
+    monkeypatch.setattr(
+        worker, "load_repository_policy", lambda *_a: _snapshot(failure_comment=False)
+    )
+
+    assert worker._failure_notice_enabled("acme/api", 1, _github_event()) is False
+
+
+class _NullConn:
+    def close(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False

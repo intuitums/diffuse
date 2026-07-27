@@ -706,13 +706,24 @@ async def _post_gitlab_failure_notice(
     event: PullRequestEvent,
     failure: TerminalReviewFailure,
 ) -> str:
+    body = format_failure_notice(failure)
     existing = await _find_existing_note(client, event, failure.marker)
     if existing is not None:
+        # Edit the single notice rather than appending another. The marker is
+        # per-merge-request, so this covers a later failing job as well as a
+        # retry, and the body carries the current job id.
+        updated = await client.put(
+            f"{_merge_request_path(event)}/notes/"
+            f"{quote(existing.external_id, safe='')}",
+            headers=_headers(),
+            json={"body": body},
+        )
+        updated.raise_for_status()
         return existing.external_id
     response = await client.post(
         f"{_merge_request_path(event)}/notes",
         headers=_headers(),
-        json={"body": format_failure_notice(failure)},
+        json={"body": body},
     )
     response.raise_for_status()
     value = response.json()

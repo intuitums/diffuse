@@ -49,6 +49,18 @@ def is_diffuse_generated(body: str) -> bool:
     return "<!-- diffuse-" in body
 
 
+def is_diffuse_authored_comment(body: str) -> bool:
+    """Whether Diffuse wrote this comment itself.
+
+    Anchored at the start, unlike ``is_diffuse_generated``. Diffuse opens its own
+    comments with the marker, so a maintainer quote-replying to a Diffuse review
+    and adding ``@diffuse review`` is a human request, not Diffuse talking to
+    itself -- the quoted marker appears after a ``>`` prefix. Matching the marker
+    anywhere silently dropped those manual triggers.
+    """
+    return body.lstrip().startswith("<!-- diffuse-")
+
+
 def is_manual_review_trigger(body: str) -> bool:
     return MANUAL_REVIEW_TRIGGER_PATTERN.search(body) is not None
 

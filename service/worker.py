@@ -747,14 +747,44 @@ def _mark_native_review_terminal_failed(
         mark_review_terminal_failed(conn, workflow_job_id, error_code=error_code)
 
 
+# Only a deliberate policy exclusion suppresses the notice. Notably absent:
+# `metadata_unavailable`. That means Diffuse could not enrich the event from the
+# provider API -- a common cause of the very failure being reported -- so
+# treating it as "not eligible" would silence the notice in exactly the case it
+# exists for. Anything unrecognized also falls through to posting.
+_NOTICE_SUPPRESSING_REASONS = frozenset(
+    {
+        "automatic_disabled",
+        "draft_pull_request",
+        "updates_disabled",
+        "disabled_label",
+        "excluded_author",
+        "excluded_branch",
+        "excluded_keyword",
+        "author_not_included",
+        "branch_not_included",
+        "required_label_missing",
+        "required_keyword_missing",
+        "file_change_limit",
+    }
+)
+
+
 def _failure_notice_enabled(
     repo_full_name: str,
     repository_id: int | None,
+    event: PullRequestEvent | None = None,
 ) -> bool:
-    """Resolve whether this repository wants terminal-failure notices.
+    """Resolve whether this repository wants a terminal-failure notice here.
 
     Fails open: the whole point of the notice is that the default experience is
     not silence, so a policy that cannot be read still gets a notice.
+
+    When the event is available this also declines to comment on a pull request
+    Diffuse would never have reviewed. A terminal failure can happen before
+    trigger evaluation, so without this check a draft, an excluded author, or a
+    ``do not review`` pull request would be told that a review it never asked
+    for did not complete.
     """
     try:
         snapshot_id = compatible_snapshot_id(repo_full_name, repository_id)
@@ -768,7 +798,38 @@ def _failure_notice_enabled(
             repo_full_name,
         )
         return True
-    return repository_failure_comment_enabled(snapshot)
+    if not repository_failure_comment_enabled(snapshot):
+        return False
+    if event is None:
+        return True
+    try:
+        policy = resolve_review_policy(
+            snapshot,
+            (),
+            default_passes=review_passes(),
+            default_minimum_confidence=minimum_review_confidence(),
+        )
+        decision = _trigger_decision(event, "", policy)
+    except (OSError, RuntimeError, ValueError):
+        # Narrow deliberately. A broad `except Exception` here hid an
+        # AttributeError on the decision field and made this gate silently
+        # fail open while its tests still passed.
+        LOGGER.exception(
+            "Failed to evaluate failure-notice eligibility repo=%s number=%s",
+            repo_full_name,
+            event.number,
+        )
+        return True
+    if decision.reason_code in _NOTICE_SUPPRESSING_REASONS:
+        LOGGER.info(
+            "Suppressed a terminal failure notice for an excluded pull request "
+            "repo=%s number=%s reason=%s",
+            repo_full_name,
+            event.number,
+            decision.reason_code,
+        )
+        return False
+    return True
 
 
 def _latest_native_review_head(
@@ -1219,7 +1280,12 @@ async def _post_terminal_failure_notice(
     """
     try:
         enabled = await anyio.to_thread.run_sync(
-            partial(_failure_notice_enabled, event.repo_full_name, job.repository_id)
+            partial(
+                _failure_notice_enabled,
+                event.repo_full_name,
+                job.repository_id,
+                event,
+            )
         )
         if not enabled:
             return
