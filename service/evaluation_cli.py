@@ -54,8 +54,27 @@ def _run(args: argparse.Namespace) -> None:
 
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("suite", type=Path)
-    parser.add_argument("--min-precision", type=_threshold, default=0)
-    parser.add_argument("--min-recall", type=_threshold, default=0)
-    parser.add_argument("--min-f1", type=_threshold, default=0)
+    parser.add_argument(
+        "suite",
+        type=Path,
+        help="Path to a labeled evaluation set, for example evals/baseline.example.json",
+    )
+    parser.add_argument(
+        "--min-precision",
+        type=_threshold,
+        default=0,
+        help="Fail when precision falls below this 0-1 threshold (default: 0, no gate)",
+    )
+    parser.add_argument(
+        "--min-recall",
+        type=_threshold,
+        default=0,
+        help="Fail when recall falls below this 0-1 threshold (default: 0, no gate)",
+    )
+    parser.add_argument(
+        "--min-f1",
+        type=_threshold,
+        default=0,
+        help="Fail when F1 falls below this 0-1 threshold (default: 0, no gate)",
+    )
     parser.set_defaults(handler=_run)

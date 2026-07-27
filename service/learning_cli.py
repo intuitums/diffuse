@@ -110,13 +110,37 @@ def _moderation_parser(
         "reactivate": "Reactivate a previously approved rule",
     }
     parser = subparsers.add_parser(command, help=help_text[command])
-    parser.add_argument("repository_id", type=int)
-    parser.add_argument("rule_id", type=int)
-    parser.add_argument("--expected-version", type=int, required=True)
-    parser.add_argument("--actor", required=True)
-    parser.add_argument("--event-key")
+    parser.add_argument(
+        "repository_id",
+        type=int,
+        help="Numeric repository id from `diffuse repository list`",
+    )
+    parser.add_argument(
+        "rule_id",
+        type=int,
+        help="Numeric rule id from `diffuse learning list <repository_id>`",
+    )
+    parser.add_argument(
+        "--expected-version",
+        type=int,
+        required=True,
+        help="Rule version this moderation applies to; mismatches fail closed",
+    )
+    parser.add_argument(
+        "--actor",
+        required=True,
+        help="Operator identity recorded in the immutable audit trail",
+    )
+    parser.add_argument(
+        "--event-key",
+        help="Idempotency key so a retried moderation is applied at most once",
+    )
     if requires_reason:
-        parser.add_argument("--reason", required=True)
+        parser.add_argument(
+            "--reason",
+            required=True,
+            help="Required justification stored with the moderation event",
+        )
     parser.set_defaults(handler=_moderate)
     return parser
 
@@ -131,10 +155,15 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "list",
         help="List suggested or moderated learned rules",
     )
-    list_parser.add_argument("repository_id", type=int)
+    list_parser.add_argument(
+        "repository_id",
+        type=int,
+        help="Numeric repository id from `diffuse repository list`",
+    )
     list_parser.add_argument(
         "--status",
         choices=("suggested", "active", "inactive", "rejected"),
+        help="Only list rules in this lifecycle state (default: all states)",
     )
     list_parser.set_defaults(handler=_list)
 
@@ -142,27 +171,52 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "show",
         help="Show one learned rule and its audit history",
     )
-    show_parser.add_argument("repository_id", type=int)
-    show_parser.add_argument("rule_id", type=int)
+    show_parser.add_argument(
+        "repository_id",
+        type=int,
+        help="Numeric repository id from `diffuse repository list`",
+    )
+    show_parser.add_argument(
+        "rule_id",
+        type=int,
+        help="Numeric rule id from `diffuse learning list <repository_id>`",
+    )
     show_parser.set_defaults(handler=_show)
 
     learn_parser = subparsers.add_parser(
         "learn",
         help="Queue rule inference from repository feedback",
     )
-    learn_parser.add_argument("repository_id", type=int)
+    learn_parser.add_argument(
+        "repository_id",
+        type=int,
+        help="Numeric repository id from `diffuse repository list`",
+    )
     learn_parser.set_defaults(handler=_learn)
 
     edit_parser = _moderation_parser(subparsers, "edit")
-    edit_parser.add_argument("--title")
-    edit_parser.add_argument("--guidance")
-    edit_parser.add_argument("--applies-to", action="append")
+    edit_parser.add_argument(
+        "--title",
+        help="Replacement rule title (default: keep the current title)",
+    )
+    edit_parser.add_argument(
+        "--guidance",
+        help="Replacement reviewer guidance (default: keep the current guidance)",
+    )
+    edit_parser.add_argument(
+        "--applies-to",
+        action="append",
+        metavar="GLOB",
+        help="Repeat for each path glob the rule applies to; replaces the current set",
+    )
     edit_parser.add_argument(
         "--severity",
         choices=("critical", "high", "medium", "low"),
+        help="Replacement severity (default: keep the current severity)",
     )
     edit_parser.add_argument(
         "--category",
+        help="Replacement finding category (default: keep the current category)",
         choices=(
             "correctness",
             "security",

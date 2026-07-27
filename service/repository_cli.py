@@ -184,11 +184,35 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "add",
         help="Register a repository and queue its initial index",
     )
-    add_parser.add_argument("--provider", choices=("github", "gitlab"), required=True)
-    add_parser.add_argument("--base-url", required=True)
-    add_parser.add_argument("--repo", required=True)
-    add_parser.add_argument("--default-branch", required=True)
-    add_parser.add_argument("--no-initial-index", action="store_true")
+    add_parser.add_argument(
+        "--provider",
+        choices=("github", "gitlab"),
+        required=True,
+        help="Source-control provider hosting the repository",
+    )
+    add_parser.add_argument(
+        "--base-url",
+        required=True,
+        metavar="URL",
+        help="SCM base URL, for example https://github.com or https://gitlab.example.com",
+    )
+    add_parser.add_argument(
+        "--repo",
+        required=True,
+        metavar="OWNER/NAME",
+        help="Repository full name as it appears on the provider",
+    )
+    add_parser.add_argument(
+        "--default-branch",
+        required=True,
+        metavar="BRANCH",
+        help="Branch to index and to use as the default review base, for example main",
+    )
+    add_parser.add_argument(
+        "--no-initial-index",
+        action="store_true",
+        help="Register the repository without queueing the initial index job",
+    )
     add_parser.set_defaults(handler=_add_repository)
 
     sync_parser = subparsers.add_parser(
@@ -199,7 +223,10 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "repository_id",
         type=int,
         nargs="?",
-        help="Repository to reindex; omit when using --all",
+        help=(
+            "Numeric repository id from `diffuse repository list`; "
+            "omit when using --all"
+        ),
     )
     sync_parser.add_argument(
         "--all",
@@ -222,14 +249,22 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "disable",
         help="Disable indexing and review for a repository",
     )
-    disable_parser.add_argument("repository_id", type=int)
+    disable_parser.add_argument(
+        "repository_id",
+        type=int,
+        help="Numeric repository id from `diffuse repository list`",
+    )
     disable_parser.set_defaults(handler=lambda args: _set_enabled(args, enabled=False))
 
     enable_parser = subparsers.add_parser(
         "enable",
         help="Re-enable an onboarded repository",
     )
-    enable_parser.add_argument("repository_id", type=int)
+    enable_parser.add_argument(
+        "repository_id",
+        type=int,
+        help="Numeric repository id from `diffuse repository list`",
+    )
     enable_parser.set_defaults(handler=lambda args: _set_enabled(args, enabled=True))
 
 
