@@ -13,7 +13,10 @@ from service.approval_publication import (
 )
 from service.auto_approval import AutoApprovalDecision
 from service.github import GITHUB_API_VERSION
-from service.scm import PullRequestEvent
+from service.scm import (
+    PullRequestEvent,
+    scm_api_timeout_seconds,
+)
 
 
 def _headers() -> dict[str, str]:
@@ -122,9 +125,7 @@ async def publish_github_approval(
     if not decision.eligible:
         raise ValueError("An ineligible decision cannot publish an approval")
     marker = f"<!-- diffuse-auto-approval:{review_run_id}:{event.head_sha} -->"
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     if client is None:
         async with httpx.AsyncClient(timeout=timeout) as owned_client:
             return await _publish_with_client(
