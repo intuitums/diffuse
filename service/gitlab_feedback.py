@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-import os
 from urllib.parse import quote
 
 import httpx
 
 from service.feedback_models import ReviewReaction
 from service.gitlab_review import MAX_RESPONSE_BYTES, _headers
-from service.scm import FeedbackSyncEvent
+from service.scm import (
+    FeedbackSyncEvent,
+    scm_api_timeout_seconds,
+)
 
 MAX_REACTION_PAGES = 20
 REACTION_CONTENT = {
@@ -55,9 +57,7 @@ async def fetch_gitlab_review_reactions(
 ) -> tuple[ReviewReaction, ...]:
     if event.provider != "gitlab":
         raise ValueError("GitLab feedback reader received a non-GitLab event")
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
 
     async def fetch(active_client: httpx.AsyncClient) -> tuple[ReviewReaction, ...]:
         candidates: list[tuple[ReviewReaction, int]] = []

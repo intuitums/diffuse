@@ -30,6 +30,7 @@ from service.scm import (
     ReviewFeedbackCommentEvent,
     normalize_base_url,
     normalize_timestamp,
+    scm_api_timeout_seconds,
     validate_repository_name,
 )
 
@@ -505,9 +506,7 @@ async def fetch_gitlab_merge_request_event(
         return value, versions
 
     if client is None:
-        timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-        if timeout <= 0:
-            raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+        timeout = scm_api_timeout_seconds()
         async with httpx.AsyncClient(timeout=timeout) as owned_client:
             merge_request, versions = await fetch(owned_client)
     else:
@@ -711,9 +710,7 @@ async def fetch_manual_gitlab_merge_request_event(
         )
 
     if client is None:
-        timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-        if timeout <= 0:
-            raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+        timeout = scm_api_timeout_seconds()
         async with httpx.AsyncClient(timeout=timeout) as owned_client:
             event = await fetch(owned_client)
     else:
@@ -1024,9 +1021,7 @@ async def fetch_gitlab_review_interaction(
 
     if client is not None:
         return await fetch(client)
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     async with httpx.AsyncClient(timeout=timeout) as owned_client:
         return await fetch(owned_client)
 
