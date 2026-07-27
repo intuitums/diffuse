@@ -34,14 +34,6 @@ from service.repositories import register_repository
 from service.scm import PullRequestEvent
 from service.workflow import enqueue_review_event
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not os.environ.get("POSTGRES_TEST_DATABASE_URL"),
-        reason="POSTGRES_TEST_DATABASE_URL is not configured",
-    ),
-]
-
 
 def test_mcp_read_projections_use_durable_review_lineage_and_context():
     connection = psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])

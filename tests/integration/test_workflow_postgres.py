@@ -102,14 +102,6 @@ from service.workflow import (
     workflow_job_is_latest,
 )
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not os.environ.get("POSTGRES_TEST_DATABASE_URL"),
-        reason="POSTGRES_TEST_DATABASE_URL is not configured",
-    ),
-]
-
 
 def _event(*, delivery: str, head: str, updated_at: str) -> PullRequestEvent:
     return PullRequestEvent.from_payload(

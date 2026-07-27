@@ -20,14 +20,6 @@ from service.scm import PullRequestEvent
 from service.webhook_server import app
 from service.workflow import enqueue_review_event
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not os.environ.get("POSTGRES_TEST_DATABASE_URL"),
-        reason="POSTGRES_TEST_DATABASE_URL is not configured",
-    ),
-]
-
 
 @pytest.mark.anyio
 async def test_rest_service_tokens_enforce_scope_and_repository_grants(
