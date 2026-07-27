@@ -15,6 +15,7 @@ from fastapi import HTTPException, status
 from service.review_interaction import (
     ManualReviewRequest,
     conversation_question,
+    is_diffuse_authored_comment,
     is_diffuse_generated,
     is_human_only_discussion,
     is_manual_review_trigger,
@@ -241,6 +242,7 @@ def normalize_manual_review_request(payload: dict) -> ManualReviewRequest | None
     if (
         actor_type.casefold() == "bot"
         or author_association not in MANUAL_TRIGGER_ASSOCIATIONS
+        or is_diffuse_authored_comment(body)
         or not is_manual_review_trigger(body)
     ):
         return None
