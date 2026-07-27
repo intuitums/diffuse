@@ -237,7 +237,18 @@ def test_terminal_output_removes_control_characters():
     assert _terminal_text("safe\x00\x1b[31m\ntext\tvalue") == "safe\ntext\tvalue"
 
 
-def test_unified_cli_routes_operator_commands_without_breaking_legacy_parsers():
+def test_unified_cli_routes_operator_commands():
+    """`diffuse` is the only entry point; every operator command routes through it.
+
+    The sub-CLI modules used to each carry a standalone `_parser()` and `main()`
+    so they could be run as `python -m service.cluster_cli`. Those are gone: only
+    `service.review_cli:main` is declared in `[project.scripts]`, four of the
+    seven sub-CLIs never had them, the packaged image contains no Python
+    interpreter at all (CI asserts `test ! -e /usr/local/bin/python`), and they
+    bypassed the exit-code contract, secret redaction, and psycopg2 handling that
+    the unified entry point provides -- so they gave strictly worse diagnostics
+    than the documented path.
+    """
     parser = review_cli._parser()
 
     repository = parser.parse_args(["repository", "list"])
@@ -255,13 +266,11 @@ def test_unified_cli_routes_operator_commands_without_breaking_legacy_parsers():
     assert learning.repository_id == 7
     assert learning.rule_id == 11
     assert learning.handler is learning_cli._show
-    assert repository_cli._parser().parse_args(["list"]).handler is (
-        repository_cli._list_registered_repositories
-    )
-    assert cluster_cli._parser().parse_args(["list"]).handler is cluster_cli._list
-    assert learning_cli._parser().parse_args(["show", "7", "11"]).handler is (
-        learning_cli._show
-    )
+
+    # The standalone per-module parsers are deliberately gone.
+    for module in (repository_cli, cluster_cli, learning_cli):
+        assert not hasattr(module, "_parser")
+        assert not hasattr(module, "main")
 
 
 def test_unified_cli_dispatches_repository_handler(monkeypatch, capsys):

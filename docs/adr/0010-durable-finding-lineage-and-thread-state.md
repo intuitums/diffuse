@@ -1,7 +1,8 @@
 # ADR 0010: Durable finding lineage and review-thread state
 
-- Status: accepted
-- Date: 2026-07-23
+Date: 2026-07-23
+
+Status: Accepted
 
 ## Context
 
