@@ -1,8 +1,9 @@
 # ADR 0031: GitLab inline discussions and review interaction
 
-## Status
+Date: 2026-07-24
 
-Accepted
+Status: Accepted
+
 
 ## Context
 

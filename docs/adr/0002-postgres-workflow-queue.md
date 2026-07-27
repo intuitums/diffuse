@@ -1,7 +1,8 @@
 # ADR 0002: PostgreSQL-backed durable workflow queue
 
-- Status: accepted
-- Date: 2026-07-23
+Date: 2026-07-23
+
+Status: Accepted
 
 ## Context
 

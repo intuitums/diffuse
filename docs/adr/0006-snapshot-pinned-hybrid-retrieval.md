@@ -1,7 +1,8 @@
 # ADR 0006: Snapshot-pinned hybrid retrieval
 
-- Status: accepted
-- Date: 2026-07-23
+Date: 2026-07-23
+
+Status: Accepted
 
 ## Context
 
