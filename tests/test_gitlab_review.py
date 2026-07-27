@@ -760,9 +760,59 @@ async def test_uncommentable_finding_falls_back_to_complete_summary(monkeypatch)
 
     assert not published.inline_comments_attached
     assert published.finding_comments == ()
+    assert published.unattached_fingerprints == ("f" * 64,)
     assert len(payloads) == 1
     assert "<!-- diffuse-inline-comments:fallback -->" in payloads[0]["body"]
     assert "The changed code does not constrain the query by tenant." in payloads[0]["body"]
+
+
+@pytest.mark.anyio
+async def test_partial_discussion_attach_reports_only_the_rejected_finding(monkeypatch):
+    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+    attachable = _report().findings[0]
+    rejected = attachable.model_copy(
+        update={
+            "fingerprint": "e" * 64,
+            "title": "Reject the unscoped identifier",
+            "file_path": "service/absent.py",
+            "line": 5,
+        }
+    )
+    report = _report().model_copy(update={"findings": [attachable, rejected]})
+    discussion_payloads: list[dict[str, list[str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        if request.url.path.endswith("/discussions"):
+            discussion_payloads.append(parse_qs(request.content.decode()))
+            return httpx.Response(
+                201,
+                json={
+                    "id": "discussion-9",
+                    "notes": [
+                        {"id": 909, "body": discussion_payloads[-1]["body"][0]},
+                    ],
+                },
+            )
+        return httpx.Response(201, json={"id": 404})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        published = await publish_gitlab_review(
+            _event(),
+            review_run_id=44,
+            report=report,
+            diff_text=DIFF,
+            client=client,
+        )
+
+    # Only the finding whose line is absent from the diff lost its root thread.
+    assert len(discussion_payloads) == 1
+    assert [comment.fingerprint for comment in published.finding_comments] == [
+        attachable.fingerprint
+    ]
+    assert published.unattached_fingerprints == (rejected.fingerprint,)
+    assert not published.inline_comments_attached
 
 
 @pytest.mark.anyio
