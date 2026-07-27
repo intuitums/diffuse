@@ -2,10 +2,7 @@
 
 Date: 2026-07-23
 
-Status: Accepted; amended after the legacy comment-search alias and its
-compatibility response field were removed from the server.
-`search_review_comments` and `diffuseGenerated` are the only names Diffuse
-exposes.
+Status: Accepted; amended after the legacy comment-search alias and its compatibility response field were removed from the server. `search_review_comments` and `diffuseGenerated` are the only names Diffuse exposes.
 
 ## Context
 

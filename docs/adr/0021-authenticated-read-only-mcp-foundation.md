@@ -2,11 +2,7 @@
 
 Date: 2026-07-23
 
-Status: Accepted; authentication boundary extended by ADR 0022. The read-only
-constraint recorded here is superseded: ADR 0023 introduced write-scoped MCP
-tools including `create_custom_context`, and ADR 0027 added
-`update_custom_context` and `delete_custom_context`. The MCP server is no longer
-read-only; everything else in this decision still holds.
+Status: Accepted; authentication boundary extended by ADR 0022. The read-only constraint recorded here is superseded: ADR 0023 introduced write-scoped MCP tools including `create_custom_context`, and ADR 0027 added `update_custom_context` and `delete_custom_context`. The MCP server is no longer read-only; everything else in this decision still holds.
 
 ## Context
 

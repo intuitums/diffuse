@@ -1,8 +1,9 @@
 # ADR 0032: GitLab manual review and exact-head automatic approval
 
-## Status
+Date: 2026-07-24
 
-Accepted
+Status: Accepted
+
 
 ## Context
 
