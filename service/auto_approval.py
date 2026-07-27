@@ -39,7 +39,6 @@ CRITICAL_PATH_PATTERNS = (
     # all, so approving them would let a pull request widen the rules that
     # approved it.
     "**/.diffuse/**",
-    "greptile.json",
     # Repository prose steers the reviewer prompt, which makes these files
     # configuration rather than documentation despite their .md extension.
     "**/AGENTS.md",
