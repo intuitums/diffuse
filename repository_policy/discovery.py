@@ -11,11 +11,6 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import ValidationError
 
-from .greptile_compat import (
-    GreptileConfig,
-    ImportedGreptilePolicy,
-    import_greptile_config,
-)
 from .models import (
     ContextFilesConfig,
     GuidanceDocument,
@@ -183,62 +178,10 @@ def discover_repository_policy(root: Path) -> RepositoryPolicySnapshot:
     layers: list[PolicyLayer] = []
     guidance: list[GuidanceDocument] = []
     total_bytes = 0
-    imported_greptile: ImportedGreptilePolicy | None = None
-    native_root_policy = any(
-        source_path
-        in {
-            ".diffuse/config.json",
-            ".diffuse/files.json",
-            ".diffuse/rules.md",
-        }
-        for source_path in tracked_paths
-    )
 
     for source_path in tracked_paths:
         path = PurePosixPath(source_path)
-        if source_path == "greptile.json" and not native_root_policy:
-            content, size = _read_text(
-                root,
-                source_path,
-                max_bytes=MAX_POLICY_SOURCE_BYTES,
-            )
-            total_bytes += size
-            compatibility_config = _parse_json_model(
-                GreptileConfig,
-                content,
-                source_path,
-            )
-            try:
-                imported_greptile = import_greptile_config(
-                    compatibility_config
-                )
-            except ValueError as error:
-                raise ValueError(
-                    f"Invalid repository policy in {source_path}: {error}"
-                ) from error
-            layers.append(
-                PolicyLayer(
-                    directory_path="",
-                    source_path=source_path,
-                    config=imported_greptile.config,
-                )
-            )
-            guidance.extend(
-                GuidanceDocument(
-                    directory_path="",
-                    source_path=document.source_path,
-                    kind=document.kind,
-                    applies_to=document.applies_to,
-                    content=document.content,
-                    content_hash=hashlib.sha256(
-                        document.content.encode()
-                    ).hexdigest(),
-                    description=document.description,
-                    priority=document.priority,
-                )
-                for document in imported_greptile.inline_guidance
-            )
-        elif path.name == "config.json" and path.parent.name == ".diffuse":
+        if path.name == "config.json" and path.parent.name == ".diffuse":
             content, size = _read_text(
                 root,
                 source_path,
@@ -291,47 +234,6 @@ def discover_repository_policy(root: Path) -> RepositoryPolicySnapshot:
             )
 
     referenced_contexts: set[tuple[str, str, tuple[str, ...]]] = set()
-    if imported_greptile is not None:
-        for entry in imported_greptile.context_files:
-            context_path = _join_relative("", entry.path)
-            if context_path not in tracked:
-                raise ValueError(
-                    "greptile.json references an untracked or missing file: "
-                    f"{context_path}"
-                )
-            # A repository must not be able to exfiltrate its own secrets to the model
-            # provider by naming a secret-shaped file as review context.
-            if is_sensitive_repo_path(context_path):
-                LOGGER.warning(
-                    "Dropped secret-shaped context file %s referenced by greptile.json",
-                    context_path,
-                )
-                continue
-            identity = ("", context_path, entry.scope)
-            if identity in referenced_contexts:
-                raise ValueError(
-                    "Duplicate context-file reference in greptile.json: "
-                    f"{entry.path}"
-                )
-            referenced_contexts.add(identity)
-            context, context_size = _read_text(
-                root,
-                context_path,
-                max_bytes=MAX_CONTEXT_FILE_BYTES,
-            )
-            total_bytes += context_size
-            guidance.append(
-                GuidanceDocument(
-                    directory_path="",
-                    source_path=context_path,
-                    kind="context",
-                    applies_to=entry.scope,
-                    content=context,
-                    content_hash=hashlib.sha256(context.encode()).hexdigest(),
-                    description=entry.description,
-                    priority=0,
-                )
-            )
     for source_path in tracked_paths:
         path = PurePosixPath(source_path)
         if path.name != "files.json" or path.parent.name != ".diffuse":
