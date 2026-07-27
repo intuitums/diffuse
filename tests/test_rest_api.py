@@ -286,20 +286,20 @@ async def test_rest_repository_reindex_recovers_saved_event_without_refetching(
     requested_at = datetime(2026, 7, 24, 14, 0, tzinfo=UTC)
     repository = RegisteredRepository(
         id=7,
-        scm_provider="gitlab",
-        scm_base_url="https://gitlab.example.com",
+        scm_provider="github",
+        scm_base_url="https://github.example.com",
         full_name="group/repo",
         default_branch="main",
-        clone_url="https://gitlab.example.com/group/repo.git",
+        clone_url="https://github.example.com/group/repo.git",
         enabled=True,
         mirror_state="ready",
         last_fetched_sha="a" * 40,
         last_error_code=None,
     )
     event = PushEvent(
-        provider="gitlab",
-        scm_base_url="https://gitlab.example.com",
-        api_base_url="https://gitlab.example.com/api/v4",
+        provider="github",
+        scm_base_url="https://github.example.com",
+        api_base_url="https://github.example.com/api/v3",
         repo_full_name="group/repo",
         ref_name="refs/heads/main",
         default_branch="main",

@@ -123,13 +123,14 @@ def test_auto_approval_is_default_off_and_clean_low_risk_is_opt_in():
     assert enabled.risk_ceiling is AutoApprovalRisk.LOW
 
 
-def test_auto_approval_supports_gitlab_with_the_same_policy_guards():
-    event = _event(
-        provider="gitlab",
-        scm_base_url="https://gitlab.example.com",
-        api_base_url="https://gitlab.example.com/api/v4",
-        web_url="https://gitlab.example.com/owner/repo/-/merge_requests/7",
-    )
+def test_auto_approval_refuses_any_provider_other_than_github():
+    """Diffuse is GitHub-only; the guard is the last line if an event slips through.
+
+    `PullRequestEvent` already rejects a foreign provider at construction, so the
+    event has to be forced past that check to reach `evaluate_auto_approval`.
+    """
+    event = _event()
+    object.__setattr__(event, "provider", "gitlab")
 
     decision = evaluate_auto_approval(
         _policy({"auto_approval": {"enabled": True}}),
@@ -138,8 +139,8 @@ def test_auto_approval_supports_gitlab_with_the_same_policy_guards():
         _report(),
     )
 
-    assert decision.eligible
-    assert decision.reason_code == "approved"
+    assert not decision.eligible
+    assert decision.reason_code == "unsupported_provider"
 
 
 def test_auto_approval_filters_are_all_required_and_renames_check_both_paths():
@@ -499,6 +500,23 @@ def test_policy_bearing_paths_are_never_auto_approved(path):
 
     assert not decision.eligible
     assert decision.reason_code == "critical_risk"
+
+
+def test_foreign_ci_definitions_stay_critical_on_a_github_repository():
+    """CI definitions stay critical even for a provider Diffuse no longer supports.
+
+    A GitHub repository can still carry a .gitlab-ci.yml, and that file decides what
+    runs against the repository, so it must never become auto-approvable.
+    """
+    assert (
+        assess_change_risk(
+            (".gitlab-ci.yml",),
+            changed_file_count=1,
+            changed_line_count=20,
+            diff_chars=800,
+        )
+        is AutoApprovalRisk.CRITICAL
+    )
 
 
 def test_ordinary_documentation_stays_auto_approvable():

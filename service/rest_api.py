@@ -54,7 +54,6 @@ from service.code_query import (
     search_codebase,
 )
 from service.github import fetch_manual_pull_request_event
-from service.gitlab import fetch_manual_gitlab_merge_request_event
 from service.mcp_actions import enqueue_review_trigger
 from service.mcp_store import (
     ProjectionNotFoundError,
@@ -154,7 +153,7 @@ class ReviewTriggerRequest(_StrictRequest):
 
 
 class RepositoryCreateRequest(_StrictRequest):
-    remote: Literal["github", "gitlab"]
+    remote: Literal["github"]
     remote_url: Annotated[str, Field(alias="remoteUrl", min_length=8, max_length=2048)]
     name: Annotated[str, Field(min_length=3, max_length=512)]
     default_branch: Annotated[
@@ -1215,7 +1214,6 @@ async def trigger_pull_request_review(
                     trigger_key=trigger_key,
                     branch=request.branch,
                     github_fetch=fetch_manual_pull_request_event,
-                    gitlab_fetch=fetch_manual_gitlab_merge_request_event,
                 )
             except (HTTPException, httpx.HTTPError, RuntimeError):
                 await _release_review_trigger_safely(

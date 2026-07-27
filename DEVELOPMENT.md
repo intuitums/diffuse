@@ -16,7 +16,7 @@ down here.
   running the full stack
 - Git
 
-No model provider credentials, GitHub token, or GitLab token are needed to run
+No model provider credentials or GitHub token are needed to run
 the unit tests or the linter.
 
 ## Set up a development environment

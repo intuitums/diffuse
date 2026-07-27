@@ -110,11 +110,8 @@ class RepositoryMirror:
         environment = {
             key: value for key, value in os.environ.items() if key in allowed_environment
         }
-        token_variable = (
-            "GITHUB_TOKEN" if self.repository.scm_provider == "github" else "GITLAB_TOKEN"
-        )
-        username = "x-access-token" if self.repository.scm_provider == "github" else "oauth2"
-        token = os.environ.get(token_variable, "")
+        token = os.environ.get("GITHUB_TOKEN", "")
+        username = "x-access-token"
         environment.update(
             {
                 "DIFFUSE_GIT_TOKEN": token,

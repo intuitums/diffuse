@@ -203,7 +203,7 @@ def main() -> None:
     parser.add_argument("--repo-name", required=True, help="Repository identifier, e.g. owner/repo")
     parser.add_argument(
         "--scm-provider",
-        choices=("github", "gitlab"),
+        choices=("github",),
         default="github",
     )
     parser.add_argument("--scm-base-url", default="https://github.com")

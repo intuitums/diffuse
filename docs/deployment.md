@@ -39,10 +39,9 @@ URL. Also set:
 
 - `DIFFUSE_PUBLIC_URL=https://diffuse.example.com`;
 - `DIFFUSE_MCP_ALLOWED_HOSTS=diffuse.example.com`;
-- exactly one or both SCM integrations, including a high-entropy webhook
-  secret/signing token;
-- the applicable SCM web/API origins and the narrowest possible additional
-  instance allowlist; and
+- the GitHub integration, including a high-entropy webhook secret;
+- the GitHub web/API origins and the narrowest possible additional instance
+  allowlist; and
 - the model credentials or self-hosted model endpoint.
 
 Every configured origin ends up carrying a token, a clone credential, or the
@@ -126,9 +125,8 @@ diffuse.example.com {
 }
 ```
 
-Point the provider webhook at
-`https://diffuse.example.com/webhook/github` or
-`https://diffuse.example.com/webhook/gitlab`. Enable only the webhook event
+Point the GitHub webhook at
+`https://diffuse.example.com/webhook/github`. Enable only the webhook event
 types described in the main README, and verify a signed `ping` or harmless test
 delivery before onboarding production repositories.
 

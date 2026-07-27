@@ -517,7 +517,7 @@ def record_finding_threads(
 ) -> None:
     if not comments:
         return
-    if scm_provider not in {"github", "gitlab"}:
+    if scm_provider != "github":
         raise ValueError("Finding threads require a supported SCM provider")
     with conn.cursor() as cursor:
         for comment in comments:
