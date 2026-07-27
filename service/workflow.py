@@ -137,7 +137,7 @@ def record_webhook_rejection(
     Callers must supply their own connection — the transaction that raised has
     already rolled back by the time this runs.
     """
-    if scm_provider not in {"github", "gitlab"}:
+    if scm_provider != "github":
         raise ValueError("Webhook rejection provider is invalid")
     if reason not in WEBHOOK_REJECTION_REASONS:
         raise ValueError("Webhook rejection reason is invalid")
@@ -714,8 +714,6 @@ def schedule_due_feedback_sync_jobs(
     *,
     api_base_url: str,
     github_scm_base_url: str = "https://github.com",
-    gitlab_scm_base_url: str = "https://gitlab.com",
-    gitlab_api_base_url: str = "https://gitlab.com/api/v4",
     interval_seconds: int = 900,
     limit: int = 20,
 ) -> int:
@@ -727,14 +725,6 @@ def schedule_due_feedback_sync_jobs(
     github_scm_base_url = normalize_base_url(
         github_scm_base_url,
         field_name="GITHUB_WEB_URL",
-    )
-    gitlab_scm_base_url = normalize_base_url(
-        gitlab_scm_base_url,
-        field_name="GITLAB_WEB_URL",
-    )
-    gitlab_api_base_url = normalize_base_url(
-        gitlab_api_base_url,
-        field_name="GITLAB_API_URL",
     )
     api_base_url = normalize_base_url(api_base_url, field_name="GITHUB_API_URL")
 
@@ -772,6 +762,11 @@ def schedule_due_feedback_sync_jobs(
               ON repository.id = pull_request.repository_id
             WHERE state.next_sync_at <= now()
               AND repository.enabled = TRUE
+              -- Diffuse is GitHub-only, but the scm_provider CHECK constraint
+              -- still admits legacy rows written before the GitLab removal.
+              -- Excluded here rather than in Python: a skipped row would keep
+              -- its due next_sync_at and consume a LIMIT slot on every pass.
+              AND repository.scm_provider = 'github'
             ORDER BY state.next_sync_at, state.finding_thread_id
             FOR UPDATE OF state SKIP LOCKED
             LIMIT %s
@@ -780,19 +775,17 @@ def schedule_due_feedback_sync_jobs(
         )
         rows = cursor.fetchall()
         for row in rows:
-            if row["scm_provider"] == "github":
-                if row["scm_base_url"] == github_scm_base_url:
-                    provider_api_base_url = api_base_url
-                elif row["scm_base_url"] == "https://github.com":
-                    provider_api_base_url = "https://api.github.com"
-                else:
-                    provider_api_base_url = f"{row['scm_base_url']}/api/v3"
+            # Diffuse is GitHub-only, but the `scm_provider` CHECK constraint
+            # still admits legacy rows written before the GitLab removal. Skip
+            # them rather than routing them at a GitHub API base.
+            if row["scm_provider"] != "github":
+                continue
+            if row["scm_base_url"] == github_scm_base_url:
+                provider_api_base_url = api_base_url
+            elif row["scm_base_url"] == "https://github.com":
+                provider_api_base_url = "https://api.github.com"
             else:
-                provider_api_base_url = (
-                    gitlab_api_base_url
-                    if row["scm_base_url"] == gitlab_scm_base_url
-                    else f"{row['scm_base_url']}/api/v4"
-                )
+                provider_api_base_url = f"{row['scm_base_url']}/api/v3"
             event = FeedbackSyncEvent(
                 provider=row["scm_provider"],
                 scm_base_url=row["scm_base_url"],

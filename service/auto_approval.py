@@ -301,7 +301,7 @@ def evaluate_auto_approval(
             **details,
         )
 
-    if event.provider not in {"github", "gitlab"}:
+    if event.provider != "github":
         return reject(
             "unsupported_provider",
             "Automatic approval is not implemented for this SCM provider.",

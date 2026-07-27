@@ -2,7 +2,8 @@
 
 Date: 2026-07-24
 
-Status: Accepted
+Status: Superseded by ADR 0041 - GitLab support was removed from Diffuse
+on 2026-07-27. Kept for history; the decision below is no longer binding.
 
 
 ## Context

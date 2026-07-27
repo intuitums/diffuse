@@ -70,6 +70,6 @@ and the worker indexes up to the embedding call. Full indexing/review additional
 
 - `OPENAI_API_KEY` (or `REVIEW_API_BASE`) — embeddings + review model. Without it the worker
   reaches `indexer/embed.py` and fails with "Missing credentials … OPENAI_API_KEY".
-- `GITHUB_TOKEN` / `GITLAB_TOKEN` + webhook secrets — to clone private repos and publish reviews.
+- `GITHUB_TOKEN` + webhook secret — to clone private repos and publish reviews.
 
 The bare-repo mirrors live under `/var/lib/diffuse/repositories` (created, owned by `ubuntu`).

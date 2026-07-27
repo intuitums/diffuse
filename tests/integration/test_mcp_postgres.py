@@ -1164,41 +1164,38 @@ def test_closed_pull_request_state_is_durable_and_cancels_queued_review():
         connection.close()
 
 
-def test_gitlab_mcp_trigger_is_authorized_audited_and_durable():
+def test_mcp_trigger_is_authorized_audited_and_durable():
     connection = psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])
     suffix = uuid.uuid4().hex
     try:
         repository = register_repository(
             connection,
-            scm_provider="gitlab",
-            scm_base_url="https://gitlab.example.com",
-            full_name=f"group/{suffix}/repo",
+            scm_provider="github",
+            scm_base_url="https://github.example.com",
+            full_name=f"trigger/{suffix}",
             default_branch="main",
         )
         opened_at = datetime.now(UTC)
         common = {
-            "provider": "gitlab",
-            "scm_base_url": "https://gitlab.example.com",
-            "api_base_url": "https://gitlab.example.com/api/v4",
+            "provider": "github",
+            "scm_base_url": "https://github.example.com",
+            "api_base_url": "https://api.github.example.com",
             "repo_full_name": repository.full_name,
             "number": 17,
             "web_url": (
-                f"https://gitlab.example.com/{repository.full_name}/"
-                "-/merge_requests/17"
+                f"https://github.example.com/{repository.full_name}/pull/17"
             ),
             "head_sha": "a" * 40,
             "base_sha": "b" * 40,
             "author": "developer",
             "base_branch": "main",
             "head_branch": "feature/mcp",
-            "title": "Add GitLab MCP review trigger",
+            "title": "Add MCP review trigger",
             "description": "Queues an authorized manual review.",
             "metadata_complete": True,
             "changed_file_count": 2,
             "state": "open",
             "source_created_at": opened_at.isoformat(),
-            "source_project_id": 91,
-            "start_sha": "c" * 40,
         }
         opened = PullRequestEvent(
             **common,
@@ -1221,14 +1218,14 @@ def test_gitlab_mcp_trigger_is_authorized_audited_and_durable():
         target = get_mcp_review_trigger_target(
             connection,
             repository_name=repository.full_name,
-            remote="gitlab",
+            remote="github",
             default_branch="main",
-            remote_url="https://gitlab.example.com",
+            remote_url="https://github.example.com",
             pull_request_number=17,
             authorized_repository_ids=frozenset({repository.id}),
         )
         assert target["repositoryId"] == repository.id
-        assert target["remote"] == "gitlab"
+        assert target["remote"] == "github"
         assert target["headBranch"] == "feature/mcp"
 
         manual = PullRequestEvent(
@@ -1250,7 +1247,7 @@ def test_gitlab_mcp_trigger_is_authorized_audited_and_durable():
         )
 
         assert result["success"]
-        assert result["repository"]["remote"] == "gitlab"
+        assert result["repository"]["remote"] == "github"
         assert result["queueState"] == "queued"
         with connection.cursor() as cursor:
             cursor.execute(
@@ -1262,7 +1259,7 @@ def test_gitlab_mcp_trigger_is_authorized_audited_and_durable():
                 (result["jobId"],),
             )
             payload = cursor.fetchone()[0]
-            assert payload["provider"] == "gitlab"
+            assert payload["provider"] == "github"
             assert payload["action"] == "manual"
             assert payload["trigger_id"] == f"mcp:{suffix}"
             cursor.execute(

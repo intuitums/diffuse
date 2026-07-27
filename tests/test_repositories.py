@@ -31,13 +31,13 @@ def _git(root, *arguments):
     )
 
 
-def test_clone_url_supports_nested_gitlab_namespaces():
+def test_clone_url_joins_a_trailing_slash_origin_with_a_nested_name():
     assert (
         repository_clone_url(
-            "https://gitlab.example.com/",
+            "https://github.example.com/",
             "platform/backend/payments",
         )
-        == "https://gitlab.example.com/platform/backend/payments.git"
+        == "https://github.example.com/platform/backend/payments.git"
     )
 
 
@@ -60,6 +60,17 @@ def test_repository_onboarding_origin_requires_explicit_allowlist(monkeypatch):
             "github",
             "https://attacker.example",
         )
+
+
+@pytest.mark.parametrize("provider", ["gitlab", "bitbucket", "GitHub", ""])
+def test_repository_onboarding_refuses_any_provider_other_than_github(
+    monkeypatch,
+    provider,
+):
+    monkeypatch.setenv("GITHUB_WEB_URL", "https://github.com")
+
+    with pytest.raises(ValueError, match="scm_provider must be github"):
+        validate_repository_origin_allowed(provider, "https://github.com")
 
 
 @pytest.mark.parametrize("branch", ["../main", "feature//unsafe", "main.lock", "a@{b"])
@@ -140,7 +151,6 @@ def test_git_environment_exposes_only_the_selected_token(monkeypatch, tmp_path):
         last_error_code=None,
     )
     monkeypatch.setenv("GITHUB_TOKEN", "selected-token")
-    monkeypatch.setenv("GITLAB_TOKEN", "other-token")
     monkeypatch.setenv("DATABASE_URL", "must-not-reach-git")
     monkeypatch.setenv("OPENAI_KEY", "must-not-reach-git")
 
@@ -148,7 +158,6 @@ def test_git_environment_exposes_only_the_selected_token(monkeypatch, tmp_path):
 
     assert environment["DIFFUSE_GIT_TOKEN"] == "selected-token"
     assert "GITHUB_TOKEN" not in environment
-    assert "GITLAB_TOKEN" not in environment
     assert "DATABASE_URL" not in environment
     assert "OPENAI_KEY" not in environment
     assert environment["GIT_CONFIG_KEY_2"] == "core.hooksPath"

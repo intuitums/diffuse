@@ -1,10 +1,10 @@
-"""Provider-neutral copy for Diffuse's terminal review-failure notice.
+"""Copy for Diffuse's terminal review-failure notice.
 
 A review job that dies without publishing anything used to be invisible on the
 pull request: the status check is opt-in and is created too late to describe an
 early failure. This module owns the one comment Diffuse posts instead, so the
-GitHub and GitLab publishers stay thin and share identical wording, identity
-marker, and redaction rules.
+GitHub publisher stays thin and the wording, identity marker, and redaction
+rules live in one place.
 """
 
 from __future__ import annotations
@@ -27,7 +27,9 @@ REDACTION_PLACEHOLDER = "[redacted]"
 _CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Credentials embedded in a connection string or clone URL.
     re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^\s/@]+:[^\s/@]+@"),
-    # Provider access tokens (GitHub ghp_/gho_/ghu_/ghs_/ghr_, GitLab glpat-).
+    # Provider access tokens. The glpat- rule is kept deliberately: redaction is
+    # defence in depth, and an operator migrating off GitLab may still have a
+    # stale GITLAB_TOKEN in the environment when a failure is rendered.
     re.compile(r"(?i)\bgh[pousr]_[A-Za-z0-9]{16,}"),
     re.compile(r"(?i)\bglpat-[A-Za-z0-9_\-]{16,}"),
     # Anything self-identifying as a secret, including a scheme-prefixed value.
@@ -109,7 +111,6 @@ def format_failure_notice(failure: TerminalReviewFailure) -> str:
     body = "\n\n".join(
         (
             failure.marker,
-            # Deliberately provider-neutral: GitLab calls this a merge request.
             "## Diffuse could not complete this review",
             (
                 f"{failure.summary} No findings were published, so these "

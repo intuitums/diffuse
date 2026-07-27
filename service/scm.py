@@ -155,7 +155,7 @@ class PullRequestEvent:
         api_base_url = normalize_base_url(self.api_base_url, field_name="api_base_url")
         start_sha = self.start_sha or self.base_sha
         valid = (
-            self.provider in {"github", "gitlab"}
+            self.provider == "github"
             and validate_repository_name(self.repo_full_name)
             and self.number > 0
             and self.web_url.startswith(f"{scm_base_url}/")
@@ -445,7 +445,7 @@ class ReviewConversationEvent:
         api_base_url = normalize_base_url(self.api_base_url, field_name="api_base_url")
         file_path = validate_repo_path(self.file_path)
         valid = (
-            self.provider in {"github", "gitlab"}
+            self.provider == "github"
             and validate_repository_name(self.repo_full_name)
             and self.number > 0
             and 0 < len(self.delivery_id) <= 255
@@ -468,8 +468,6 @@ class ReviewConversationEvent:
             and 0 <= len(self.thread_id) <= 255
             and "\x00" not in self.thread_id
         )
-        if self.provider == "gitlab" and not self.thread_id:
-            valid = False
         if not valid:
             raise ValueError("Invalid review-conversation event")
         object.__setattr__(self, "scm_base_url", scm_base_url)
@@ -578,7 +576,7 @@ class ReviewFeedbackCommentEvent:
         api_base_url = normalize_base_url(self.api_base_url, field_name="api_base_url")
         file_path = validate_repo_path(self.file_path)
         valid = (
-            self.provider in {"github", "gitlab"}
+            self.provider == "github"
             and validate_repository_name(self.repo_full_name)
             and self.number > 0
             and 0 < len(self.delivery_id) <= 255
@@ -619,7 +617,7 @@ class FeedbackSyncEvent:
         scm_base_url = normalize_base_url(self.scm_base_url, field_name="scm_base_url")
         api_base_url = normalize_base_url(self.api_base_url, field_name="api_base_url")
         valid = (
-            self.provider in {"github", "gitlab"}
+            self.provider == "github"
             and validate_repository_name(self.repo_full_name)
             and self.number > 0
             and self.root_comment_id.isdigit()
@@ -702,7 +700,7 @@ class PushEvent:
         validate_repository_name(self.repo_full_name)
         validate_branch_name(self.default_branch)
         valid = (
-            self.provider in {"github", "gitlab"}
+            self.provider == "github"
             and self.ref_name == f"refs/heads/{self.default_branch}"
             and COMMIT_SHA_PATTERN.fullmatch(self.before_sha)
             and COMMIT_SHA_PATTERN.fullmatch(self.after_sha)
