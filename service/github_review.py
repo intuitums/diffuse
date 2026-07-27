@@ -74,12 +74,6 @@ def _finding_comment(
         ),
         _safe_markdown(finding.body),
     ]
-    if include_fix_guidance and review_run_id is not None:
-        parts.append(
-            "**Fix with your agent:** use the Diffuse MCP tool "
-            f"`get_fix_handoff` with `codeReviewId=review_{review_run_id}` and "
-            f"`findingFingerprint={finding.fingerprint}`."
-        )
     parts.append(f"**Evidence:** {_safe_markdown(finding.evidence)}")
     metadata = f"**Category:** `{finding.category.value}`"
     if include_confidence:
@@ -87,10 +81,23 @@ def _finding_comment(
     parts.append(metadata)
     if include_fix_guidance and finding.suggested_fix:
         parts.append(f"**Suggested fix:**\n\n{_safe_markdown(finding.suggested_fix)}")
+    handoff = ""
+    if include_fix_guidance and review_run_id is not None:
+        handoff = _output_section(
+            "Fix with your agent",
+            (
+                "Use the Diffuse MCP tool "
+                f"`get_fix_handoff` with `codeReviewId=review_{review_run_id}` and "
+                f"`findingFingerprint={finding.fingerprint}`."
+            ),
+            collapsible=True,
+            default_open=False,
+        )
     marker = f"<!-- diffuse-finding:{finding.fingerprint} -->"
-    content_limit = MAX_INLINE_BODY_CHARS - len(marker) - 2
+    suffix = f"{handoff}\n\n{marker}" if handoff else marker
+    content_limit = MAX_INLINE_BODY_CHARS - len(suffix) - 2
     content = "\n\n".join(parts)[:content_limit].rstrip()
-    return f"{content}\n\n{marker}"
+    return f"{content}\n\n{suffix}"
 
 
 def _output_section(
@@ -209,12 +216,6 @@ def format_review_body(
     if diagram_section is not None:
         parts.append(diagram_section)
     if report.findings:
-        if report.fix_with_agent_enabled:
-            parts.append(
-                "**Fix all with your agent:** use the Diffuse MCP tool "
-                f"`get_fix_all_handoff` with `codeReviewId=review_{review_run_id}`. "
-                "The handoff refuses stale review revisions."
-            )
         if report.issues_table_section_included:
             table = [
                 "| Severity | Finding | Location | Confidence |",
@@ -234,7 +235,7 @@ def format_review_body(
                     f"`{_table_cell(finding.file_path)}:{finding.line}` |"
                 )
                 if report.confidence_score_section_included:
-                    row = f"{row[:-1]} {finding.confidence:.0%} |"
+                    row = f"{row} {finding.confidence:.0%} |"
                 table.append(row)
             parts.append(
                 _output_section(
@@ -242,6 +243,19 @@ def format_review_body(
                     "\n".join(table),
                     collapsible=report.issues_table_section_collapsible,
                     default_open=report.issues_table_section_default_open,
+                )
+            )
+        if report.fix_with_agent_enabled:
+            parts.append(
+                _output_section(
+                    "Fix all with your agent",
+                    (
+                        "Use the Diffuse MCP tool "
+                        f"`get_fix_all_handoff` with `codeReviewId=review_{review_run_id}`. "
+                        "The handoff refuses stale review revisions."
+                    ),
+                    collapsible=True,
+                    default_open=False,
                 )
             )
         if not inline_comments_attached or not report.inline_comments_enabled:
@@ -260,8 +274,6 @@ def format_review_body(
                     "\n\n"
                     f"{_safe_markdown(finding.body)}"
                 )
-    else:
-        parts.append("No inline findings were published.")
     if continuity is not None and continuity.addressed:
         parts.append("### Addressed since the previous review")
         parts.extend(
