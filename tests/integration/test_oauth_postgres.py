@@ -4,7 +4,6 @@ import time
 import uuid
 
 import psycopg2
-import pytest
 
 from service.oauth_store import (
     APP_INSTALL_PURPOSE,
@@ -23,14 +22,6 @@ from service.oauth_store import (
     state_sha256,
     upsert_user,
 )
-
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not os.environ.get("POSTGRES_TEST_DATABASE_URL"),
-        reason="POSTGRES_TEST_DATABASE_URL is not configured",
-    ),
-]
 
 
 def _github_user_id() -> int:

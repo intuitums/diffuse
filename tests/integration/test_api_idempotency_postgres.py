@@ -15,14 +15,6 @@ from service.api_idempotency import (
     save_idempotency_operation_data,
 )
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not os.environ.get("POSTGRES_TEST_DATABASE_URL"),
-        reason="POSTGRES_TEST_DATABASE_URL is not configured",
-    ),
-]
-
 
 def test_idempotency_reservations_recover_and_replay_exact_response():
     database_url = os.environ["POSTGRES_TEST_DATABASE_URL"]
