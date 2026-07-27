@@ -6,10 +6,10 @@ Status: Accepted
 
 ## Context
 
-Greptile's analytics dashboard exposes PRs reviewed, average time from PR open
-to merge, addressed rate, critical findings, reaction ratios, and repository,
-author, team, and time filters. Its MCP reporting recipes also call for total
-PRs reviewed versus unreviewed. Diffuse's first analytics projection could
+An analytics surface needs PRs reviewed, average time from PR open to merge,
+addressed rate, critical findings, reaction ratios, and repository, author,
+team, and time filters, plus total PRs reviewed versus unreviewed. Diffuse's
+first analytics projection could
 report review and finding facts, but its PR row held only creation and latest
 event times. Treating generic update or webhook-receipt time as merge time
 would create a plausible but false metric. A mutable current-state row would
@@ -22,8 +22,6 @@ self-managed versions, so missing data must remain visible.
 
 Public references:
 
-- <https://www.greptile.com/docs/analytics>
-- <https://www.greptile.com/docs/mcp/reports>
 - <https://docs.github.com/en/rest/pulls/pulls>
 - <https://docs.gitlab.com/user/project/integrations/webhook_events/>
 
@@ -65,8 +63,8 @@ Public references:
 
 ## Consequences
 
-Diffuse can reproduce Greptile's PR-reviewed and merge-time summary cards from
-authoritative SCM facts while showing how complete those facts are. Close,
+Diffuse can produce PR-reviewed and merge-time summary cards from authoritative
+SCM facts while showing how complete those facts are. Close,
 reopen, stale-delivery, and merge history survives later state changes, and
 repository/author filters cannot widen a token's repository grants.
 

@@ -6,22 +6,17 @@ Status: Accepted
 
 ## Context
 
-Greptile publicly documents a default-off beta that submits an approval only
-after a clean 5/5 review, an inherent change-risk check, and configurable
-filters. Its cascading configuration is strictest-wins across every directory
-a PR touches, rename filters inspect both sides, and critical changes are never
-approved.
+Teams need conservative automatic approval of low-risk changes: a default-off
+capability that submits an approval only after a clean 5/5 review, an inherent
+change-risk check, and configurable filters. Its cascading configuration must be
+strictest-wins across every directory a PR touches, rename filters must inspect
+both sides, and critical changes must never be approved.
 
 Automatic approval is a higher-impact action than publishing review feedback.
 A self-hosted implementation must not equate “the model emitted no findings”
 with “safe,” approve a partially reviewed or stale head, let a nested directory
 silently weaken root policy, or create duplicate approvals after a worker
 crash.
-
-Public references:
-
-- <https://www.greptile.com/docs/code-review/auto-approve-prs>
-- <https://www.greptile.com/docs/code-review/greptile-config-reference>
 
 ## Decision
 
@@ -57,4 +52,4 @@ audit why any run was or was not approved.
 
 This remains a foundation. Dashboard and organization policy, installation-
 scoped approval credentials, versioned risk evals, analytics, and an operator
-kill switch remain parity work. ADR 0032 supplies the GitLab publisher.
+kill switch remain outstanding. ADR 0032 supplies the GitLab publisher.

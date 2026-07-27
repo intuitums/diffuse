@@ -6,17 +6,12 @@ Status: Accepted
 
 ## Context
 
-Greptile publicly documents repository-authored `context.repos` and reusable
-repository clusters for giving reviews read-only context from related
+Reviews need repository-authored `context.repos` and reusable repository
+clusters so that a review can read read-only context from related
 repositories. A self-hosted implementation must not turn an `owner/repo`
 string into an unrestricted fetch, mix hosts or credentials, let a moving
 active index change evidence during one review, or collapse equal paths from
 different repositories into one retrieval candidate.
-
-Public references:
-
-- <https://www.greptile.com/docs/code-review/greptile-config-reference>
-- <https://www.greptile.com/changelog>
 
 ## Decision
 
@@ -50,5 +45,5 @@ without inventing graph relationships that the index does not contain.
 
 Organization/team RBAC, encrypted installation-scoped credential checks,
 dashboard/API management, cross-repository graph edges, conversations using
-the multi-repository plan, and measured cross-repository recall remain parity
-work.
+the multi-repository plan, and measured cross-repository recall remain
+outstanding.

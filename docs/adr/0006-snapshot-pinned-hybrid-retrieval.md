@@ -9,7 +9,7 @@ Embeddings are good at conceptual similarity but often miss exact API names,
 error codes, configuration keys, and uncommon identifiers. Graph traversal
 finds known relationships but cannot help when an adapter has not resolved an
 edge. Filling the remaining context budget with vector results alone therefore
-does not provide Greptile-like whole-codebase grounding.
+does not provide whole-codebase grounding.
 
 Raw diffs cannot be passed directly to PostgreSQL query syntax: punctuation,
 operators, comments, and untrusted text could produce invalid or unexpectedly
@@ -51,4 +51,4 @@ The `simple` text-search configuration is language-agnostic and is not a
 compiler-aware lexical index. The foundation does not yet implement BM25,
 symbol-prefix/fuzzy search, query expansion from generated summaries,
 multi-hop graph planning, cross-repository fusion, learned reranking, or
-offline retrieval-quality evaluation. Those remain parity work.
+offline retrieval-quality evaluation. Those remain outstanding.

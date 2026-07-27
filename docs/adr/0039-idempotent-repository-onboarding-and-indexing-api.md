@@ -13,14 +13,10 @@ not-yet-existing numeric ID. Clone/fetch may outlive a short request retry
 window, provider credentials must not be offered to a caller-selected host, and
 a retry after resolving the branch must not silently index a newer commit.
 
-Greptile's public onboarding outcome includes connecting a code provider,
-selecting enabled repositories, and beginning indexing in the background:
-
-- <https://www.greptile.com/docs/quickstart>
-- <https://www.greptile.com/docs/code-review/cli-onboarding>
-
-Diffuse implements that outcome independently within its existing
-self-hosted credential and workflow boundaries.
+The onboarding outcome operators expect is connecting a code provider,
+selecting enabled repositories, and beginning indexing in the background.
+Diffuse implements that outcome within its existing self-hosted credential and
+workflow boundaries.
 
 ## Decision
 

@@ -31,6 +31,8 @@ documentation, not the application source.
    curl --fail http://127.0.0.1:8000/ready
    ```
 
-Read `OPERATIONS.md` before onboarding production repositories. Back up
+Read `OPERATIONS.md`, included alongside this file in the release bundle, before
+onboarding production repositories. (It is not present in the source
+repository — the release build generates it from `docs/deployment.md`.) Back up
 PostgreSQL before every upgrade. Never share the registry credential, `.env`,
 SCM credentials, or model credentials with Diffuse support.

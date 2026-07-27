@@ -6,17 +6,12 @@ Status: Accepted
 
 ## Context
 
-Greptile publicly documents one-finding and Fix All handoffs to Claude Code,
-Codex, Conductor, Cursor, and Devin. The handoff includes file locations,
-review comments, and suggested fixes; a local bridge opens the selected agent.
-Diffuse already stored that review data, but asking an agent to act on an old
-review can edit the wrong revision. Suggested fixes and repository text are
-also untrusted model and source input, not executable instructions.
-
-Public references:
-
-- <https://www.greptile.com/docs/integrations/fix-with-your-agent>
-- <https://www.greptile.com/docs/code-review/key-features>
+Developers need one-finding and Fix All handoffs to Claude Code, Codex,
+Conductor, Cursor, and Devin. A handoff carries file locations, review comments,
+and suggested fixes; a local bridge opens the selected agent. Diffuse already
+stored that review data, but asking an agent to act on an old review can edit
+the wrong revision. Suggested fixes and repository text are also untrusted model
+and source input, not executable instructions.
 
 ## Decision
 

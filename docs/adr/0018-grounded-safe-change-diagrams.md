@@ -6,20 +6,15 @@ Status: Accepted
 
 ## Context
 
-Greptile's review anatomy documents automatically selected sequence,
-entity-relation, class, and flow diagrams, while omitting diagrams for minimal
-changes. Its version-controlled output settings allow diagram inclusion,
-collapse, and default-open behavior to be configured.
+Reviews need automatically selected sequence, entity-relation, class, and flow
+diagrams, and must omit diagrams for minimal changes. Version-controlled output
+settings need to configure diagram inclusion, collapse, and default-open
+behavior.
 
 Mermaid is executable rendering syntax, not inert prose. Passing arbitrary
 model output through a fenced block would permit links, callbacks, directives,
 or embedded content and would make trivial reviews consume unnecessary model
 budget.
-
-Public references:
-
-- <https://www.greptile.com/docs/code-review/first-pr-review>
-- <https://www.greptile.com/docs/code-review/greptile-config-reference>
 
 ## Decision
 

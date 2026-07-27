@@ -88,6 +88,6 @@ The process-level GitLab token must have sufficient API/project access to read
 membership and emoji and to create/reply to/resolve discussions.
 
 Top-level and arbitrary human thread conversations, encrypted per-installation
-credentials, and provider-specific quality evaluations remain parity work. ADR
+credentials, and provider-specific quality evaluations remain outstanding. ADR
 0032 subsequently adds GitLab top-level manual review commands and exact-head
 automatic approval.
