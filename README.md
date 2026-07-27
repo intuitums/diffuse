@@ -209,6 +209,43 @@ diffuse evaluate evals/baseline.example.json \
 The committed set is intentionally synthetic. Replace it with reviewed pull
 requests before using the thresholds as a product-quality claim.
 
+`diffuse review` runs policy discovery, retrieval, and several model passes, so
+it can take minutes. Progress is written to **stderr**, and only when stderr is
+a terminal. The `--json` and `--agent` stdout documents are therefore
+byte-identical interactively and in CI, and CI logs stay free of progress
+noise. Run `diffuse review --help` (or `--help` on any subcommand) for the
+documented flags, worked examples, and this exit-code table.
+
+#### Exit codes
+
+Every `diffuse` command uses the same table, so scripts can branch on failure
+class instead of parsing stderr:
+
+| Code | Meaning | Typical cause |
+| --- | --- | --- |
+| `0` | Success | The command completed; a review may still report findings |
+| `1` | Findings reported | `diffuse review --fail-on-findings` found at least one finding |
+| `2` | Usage error | Unknown flag, missing argument, or an invalid argument value such as a malformed `--base` |
+| `3` | Configuration or environment error | `DATABASE_URL` unreachable, missing or rejected `OPENAI_API_KEY`, repository not onboarded, no compatible index |
+| `4` | Internal error | An unexpected Diffuse defect; please report it |
+
+Failures print a single `diffuse: error: <message>` block on stderr, with
+multi-line tool output indented beneath it and no traceback or irrelevant usage
+dump. Messages name the environment variable to fix and never print a
+credential: connection URLs are shown with the password replaced by `***`. Set
+`DIFFUSE_CLI_TRACEBACK=1` to re-raise the original exception when filing a bug.
+
+A CI gate therefore looks like:
+
+```bash
+diffuse review --json --fail-on-findings > review.json
+case $? in
+  0) echo "clean" ;;
+  1) echo "findings reported"; exit 1 ;;
+  *) echo "diffuse could not run"; exit 1 ;;
+esac
+```
+
 ### MCP
 
 Diffuse serves a stateless JSON Streamable HTTP MCP endpoint at `/mcp`.

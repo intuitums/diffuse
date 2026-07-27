@@ -10,16 +10,22 @@ import re
 import subprocess
 import sys
 import tempfile
+import traceback
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
-from urllib.parse import urlsplit
+from typing import Literal, TextIO
+from urllib.parse import urlsplit, urlunsplit
 
+# litellm builds its provider errors on the openai SDK hierarchy, so openai.OpenAIError
+# is the only base that catches every model failure litellm can raise.
+import openai
+import psycopg2
 from pydantic import BaseModel, ConfigDict, Field
 
 from indexer.embed import embedding_dimensions, embedding_model
-from indexer.store import active_snapshot_id_for_repository, get_conn
+from indexer.store import DEFAULT_DATABASE_URL, active_snapshot_id_for_repository, get_conn
 from repository_policy.discovery import discover_repository_policy
 from repository_policy.models import validate_repo_path
 from repository_policy.resolve import (
@@ -53,7 +59,102 @@ from service.scm import validate_branch_name
 
 MAX_LOCAL_DIFF_BYTES = 5 * 1024 * 1024
 MAX_GIT_ERROR_CHARS = 2000
+MAX_ERROR_LINES = 12
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+
+# Documented, stable exit codes. CI depends on these; keep them and the help
+# epilog and README table in sync.
+EXIT_OK = 0
+EXIT_FINDINGS = 1
+EXIT_USAGE = 2
+EXIT_CONFIG = 3
+EXIT_INTERNAL = 4
+
+# Names that must be redacted even when the suffix scan below would miss them.
+SECRET_ENV_NAMES = (
+    "OPENAI_API_KEY",
+    "OPENAI_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "AZURE_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "DIFFUSE_API_TOKEN",
+    "GITHUB_TOKEN",
+    "GITLAB_TOKEN",
+    "GITHUB_WEBHOOK_SECRET",
+    "GITLAB_WEBHOOK_SECRET",
+    "GITLAB_WEBHOOK_SIGNING_TOKEN",
+    "POSTGRES_PASSWORD",
+)
+
+# A hand-maintained list silently rots: this one omitted every model provider
+# except OpenAI while naming a DIFFUSE_WEBHOOK_SECRET that does not exist
+# anywhere in the codebase. The suffix scan covers new providers, per-installation
+# credentials, and anything an operator adds, while deliberately not matching
+# non-secret configuration such as REVIEW_API_BASE or VERTEXAI_PROJECT, whose
+# values are useful in a diagnostic.
+_SECRET_ENV_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PRIVATE_KEY")
+
+
+def _secret_values() -> list[str]:
+    """Every configured secret value, longest first.
+
+    Longest first matters: when one secret contains another as a substring,
+    replacing the shorter first would leave the tail of the longer one behind.
+    """
+    values: set[str] = set()
+    for name, value in os.environ.items():
+        if name in SECRET_ENV_NAMES or name.endswith(_SECRET_ENV_SUFFIXES):
+            candidate = value.strip()
+            # Short values are usually placeholders, and redacting them would
+            # mangle unrelated text that happens to contain the same characters.
+            if len(candidate) >= 8:
+                values.add(candidate)
+    return sorted(values, key=len, reverse=True)
+
+EXIT_CODE_HELP = """\
+exit codes:
+  0  success (a clean review, or findings without --fail-on-findings)
+  1  findings were reported and --fail-on-findings was supplied
+  2  usage error: unknown flag, missing argument, or invalid argument value
+  3  configuration or environment error: database, credentials, index, or policy
+  4  internal error
+"""
+
+TOP_LEVEL_EPILOG = (
+    """\
+examples:
+  diffuse repository list
+  diffuse review -b origin/main --diff
+  diffuse review --json
+
+"""
+    + EXIT_CODE_HELP
+)
+
+REVIEW_EPILOG = (
+    """\
+examples:
+  diffuse review                          review this branch against its base
+  diffuse review -b origin/main --diff    pick the base and show diff excerpts
+  diffuse review --json                   emit diffuse-cli-review-v1 on stdout
+  diffuse review --agent                  emit terminal-safe text for agents
+  diffuse review --resume                 retry the last interrupted review
+  diffuse review --fail-on-findings       CI gate: exit 1 when findings exist
+
+Progress is written to stderr only when stderr is a terminal, so --json and
+--agent stdout stays byte-for-byte stable in pipelines and CI logs.
+
+"""
+    + EXIT_CODE_HELP
+)
+
+
+class CliUsageError(ValueError):
+    """An argument value supplied on the command line is invalid."""
 
 
 @dataclass(frozen=True)
@@ -121,8 +222,11 @@ def _git_bytes(
     )
     if result.returncode not in accepted_codes:
         message = result.stderr.decode(errors="replace").strip()
+        detail = message[:MAX_GIT_ERROR_CHARS] or "unknown error"
+        # Git writes multi-line diagnostics. Keep the newlines: the CLI error
+        # formatter indents them instead of pasting them into one line.
         raise ValueError(
-            f"Git command failed: {message[:MAX_GIT_ERROR_CHARS] or 'unknown error'}"
+            f"git {' '.join(arguments)} failed with status {result.returncode}:\n{detail}"
         )
     return result.stdout
 
@@ -219,7 +323,15 @@ def select_registered_repository(
 
 
 def _valid_base_ref(value: str) -> str:
-    return validate_branch_name(value)
+    # validate_branch_name() is shared with SCM payload validation and reports the
+    # `default_branch` field name. At the CLI boundary the value came from --base,
+    # so re-word the failure without changing the shared validation semantics.
+    try:
+        return validate_branch_name(value)
+    except ValueError as error:
+        raise CliUsageError(
+            f"--base is not a safe Git branch name: {value!r}"
+        ) from error
 
 
 def _revision_exists(root: Path, revision: str) -> bool:
@@ -239,7 +351,10 @@ def resolve_base_ref(
     if requested_base is not None:
         candidate = _valid_base_ref(requested_base)
         if not _revision_exists(root, candidate):
-            raise ValueError(f"Base revision does not exist: {candidate}")
+            raise CliUsageError(
+                f"--base revision does not exist in this checkout: {candidate}\n"
+                "Fetch it first, for example with `git fetch origin`."
+            )
         return candidate
     candidates = (
         f"origin/{repository.default_branch}",
@@ -386,6 +501,42 @@ def _write_state(root: Path, state: CliReviewState) -> None:
         raise
 
 
+class ProgressReporter:
+    """Single-line progress written to stderr so stdout contracts stay clean."""
+
+    def __init__(self, stream: TextIO) -> None:
+        self._stream = stream
+        self._width = 0
+        self._model_steps = 0
+
+    def stage(self, message: str) -> None:
+        self._write(f"Diffuse: {message}...")
+
+    def model_step(self) -> None:
+        self._model_steps += 1
+        self._write(f"Diffuse: running review model (step {self._model_steps})...")
+
+    def clear(self) -> None:
+        if self._width:
+            self._stream.write("\r" + " " * self._width + "\r")
+            self._stream.flush()
+            self._width = 0
+
+    def _write(self, text: str) -> None:
+        padding = max(0, self._width - len(text))
+        self._stream.write("\r" + text + " " * padding)
+        self._stream.flush()
+        self._width = len(text)
+
+
+def _stderr_progress_reporter() -> ProgressReporter | None:
+    """Report progress only on an interactive terminal; CI logs stay quiet."""
+    stream = sys.stderr
+    if stream is None or not hasattr(stream, "isatty") or not stream.isatty():
+        return None
+    return ProgressReporter(stream)
+
+
 def run_local_review(
     *,
     start: Path,
@@ -394,7 +545,17 @@ def run_local_review(
     requested_base: str | None = None,
     include_untracked: bool = False,
     resume: bool = False,
+    progress: ProgressReporter | None = None,
 ) -> LocalReviewResult | None:
+    def stage(message: str) -> None:
+        if progress is not None:
+            progress.stage(message)
+
+    model_progress: Callable[[], None] | None = (
+        progress.model_step if progress is not None else None
+    )
+
+    stage("resolving repository identity")
     root = find_repository_root(start)
     with closing(get_conn()) as conn:
         repository = select_registered_repository(
@@ -417,6 +578,7 @@ def run_local_review(
             raise ValueError("--include-untracked cannot change while resuming a review")
         requested_base = previous_state.base_ref
         include_untracked = previous_state.include_untracked
+    stage("collecting the local diff")
     local_diff = collect_local_diff(
         root,
         repository,
@@ -441,6 +603,7 @@ def run_local_review(
     }
     if not changed_paths:
         changed_paths = parse_changed_files(local_diff.diff_text)
+    stage("discovering repository policy")
     policy = resolve_review_policy(
         discover_repository_policy(root),
         changed_paths,
@@ -508,10 +671,13 @@ def run_local_review(
     )
     _write_state(root, state)
     try:
+        stage("retrieving repository context")
         context = retrieve_context_from_plan(local_diff.diff_text, context_plan)
+        stage("running review model")
         report = generate_review(
             local_diff.diff_text,
             list(context.contexts),
+            progress_callback=model_progress,
             policy=policy,
             # Pass the models recorded in the run state rather than letting
             # generation re-read the environment, so a resumed attempt uses the
@@ -705,14 +871,20 @@ def render_json(result: LocalReviewResult, *, include_diff: bool = False) -> str
 
 
 def _run_review_command(args: argparse.Namespace) -> None:
-    result = run_local_review(
-        start=Path.cwd(),
-        requested_repo=args.repo,
-        requested_base_url=args.scm_base_url,
-        requested_base=args.base,
-        include_untracked=args.include_untracked,
-        resume=args.resume,
-    )
+    progress = _stderr_progress_reporter()
+    try:
+        result = run_local_review(
+            start=Path.cwd(),
+            requested_repo=args.repo,
+            requested_base_url=args.scm_base_url,
+            requested_base=args.base,
+            include_untracked=args.include_untracked,
+            resume=args.resume,
+            progress=progress,
+        )
+    finally:
+        if progress is not None:
+            progress.clear()
     if result is None:
         output = (
             json.dumps(
@@ -735,29 +907,105 @@ def _run_review_command(args: argparse.Namespace) -> None:
         output = render_human(result, include_diff=args.diff)
     sys.stdout.write(output)
     if result is not None and args.fail_on_findings and result.report.findings:
-        raise SystemExit(1)
+        raise SystemExit(EXIT_FINDINGS)
 
 
 def _parser() -> argparse.ArgumentParser:
+    return _build_parser()[0]
+
+
+def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.ArgumentParser]]:
     parser = argparse.ArgumentParser(
         prog="diffuse",
         description="Self-hosted code intelligence and review",
+        epilog=TOP_LEVEL_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     review = subparsers.add_parser(
         "review",
         help="Review the current local branch against its base",
+        description=(
+            "Review committed, staged, and unstaged changes in this checkout against the\n"
+            "merge base with its base branch, using the same index, policy, learned rules,\n"
+            "retrieval, and verifier as the hosted service. The checkout must correspond to\n"
+            "an enabled, indexed Diffuse repository."
+        ),
+        epilog=REVIEW_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    review.add_argument("-b", "--base")
-    review.add_argument("--repo")
-    review.add_argument("--scm-base-url")
-    review.add_argument("--include-untracked", action="store_true")
-    review.add_argument("--resume", action="store_true")
-    review.add_argument("--diff", action="store_true")
+    review.add_argument(
+        "-b",
+        "--base",
+        metavar="REF",
+        help=(
+            "Base revision to diff against (default: origin/<default branch> of the "
+            "registered repository, falling back to <default branch>)"
+        ),
+    )
+    review.add_argument(
+        "--repo",
+        metavar="OWNER/NAME",
+        help=(
+            "Registered repository full name; required when this checkout has no "
+            "usable origin remote or matches more than one registered repository"
+        ),
+    )
+    review.add_argument(
+        "--scm-base-url",
+        metavar="URL",
+        help=(
+            "SCM base URL, for example https://github.com, that disambiguates --repo "
+            "when the same full name is registered on several hosts"
+        ),
+    )
+    review.add_argument(
+        "--include-untracked",
+        action="store_true",
+        help=(
+            "Also review untracked files (default: untracked files are reported in "
+            "the output but excluded from the diff)"
+        ),
+    )
+    review.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Retry the last interrupted review for this checkout; refuses to run when "
+            "the repository, diff, base, untracked choice, index snapshot, policy, "
+            "model, or prompt version changed"
+        ),
+    )
+    review.add_argument(
+        "--diff",
+        action="store_true",
+        help="Include the exact diff excerpt for each finding (default: omitted)",
+    )
     output = review.add_mutually_exclusive_group()
-    output.add_argument("--json", action="store_true")
-    output.add_argument("--agent", action="store_true")
-    review.add_argument("--fail-on-findings", action="store_true")
+    output.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Emit the versioned diffuse-cli-review-v1 JSON document on stdout "
+            "(default: human-readable text)"
+        ),
+    )
+    output.add_argument(
+        "--agent",
+        action="store_true",
+        help=(
+            "Emit terminal-safe plain text with every finding, evidence item, and "
+            "suggested fix, for consumption by a coding agent"
+        ),
+    )
+    review.add_argument(
+        "--fail-on-findings",
+        action="store_true",
+        help=(
+            "Exit 1 when the review reports at least one finding, for CI gating "
+            "(default: exit 0 whenever the review completes)"
+        ),
+    )
     review.set_defaults(handler=_run_review_command)
 
     repository = subparsers.add_parser(
@@ -801,16 +1049,197 @@ def _parser() -> argparse.ArgumentParser:
         help="Inspect or verify the configured review model",
     )
     model_cli.configure_parser(model)
-    return parser
+
+    # Every subparser must appear here, or an unknown flag typed on that
+    # subcommand is reported against the top-level parser and prints the wrong
+    # usage block -- the defect this mapping exists to fix.
+    commands = {
+        "review": review,
+        "repository": repository,
+        "cluster": cluster,
+        "learning": learning,
+        "token": token,
+        "database": database,
+        "evaluate": evaluate,
+        "model": model,
+    }
+    return parser, commands
+
+
+def redact_secrets(text: str) -> str:
+    """Remove any configured secret value that leaked into a diagnostic string."""
+    for value in _secret_values():
+        text = text.replace(value, "***")
+    password = _database_password()
+    if password:
+        text = text.replace(password, "***")
+    return text
+
+
+def _database_password() -> str | None:
+    try:
+        return urlsplit(_database_url()).password
+    except ValueError:
+        return None
+
+
+def _database_url() -> str:
+    return os.environ.get("DATABASE_URL", "").strip() or DEFAULT_DATABASE_URL
+
+
+def redacted_database_url() -> str:
+    """The effective connection URL with any password replaced by ``***``."""
+    raw = _database_url()
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return "<unparseable DATABASE_URL>"
+    if not parts.password or not parts.hostname:
+        return raw
+    userinfo = f"{parts.username}:***@" if parts.username else "***@"
+    port = f":{parts.port}" if parts.port else ""
+    return urlunsplit(parts._replace(netloc=f"{userinfo}{parts.hostname}{port}"))
+
+
+def database_error_message(error: psycopg2.Error) -> str:
+    configured = bool(os.environ.get("DATABASE_URL", "").strip())
+    source = "DATABASE_URL" if configured else "the built-in default"
+    detail = str(error).strip() or error.__class__.__name__
+    if isinstance(error, psycopg2.OperationalError):
+        return (
+            f"Cannot connect to PostgreSQL at {redacted_database_url()} (from {source}).\n"
+            f"{detail}\n"
+            "Start the database with `docker compose up -d db`, or set DATABASE_URL to a "
+            "reachable instance."
+        )
+    return (
+        f"PostgreSQL rejected a Diffuse query on {redacted_database_url()} (from {source}); "
+        "the schema may be missing or out of date.\n"
+        f"{detail}\n"
+        "Apply migrations with `docker compose run --rm migrate diffuse database migrate`."
+    )
+
+
+def model_error_message(error: openai.OpenAIError) -> str:
+    try:
+        model = review_model()
+    except ValueError:
+        model = os.environ.get("REVIEW_MODEL", "").strip() or "<unset>"
+    detail = str(error).strip() or error.__class__.__name__
+    if isinstance(error, openai.AuthenticationError | openai.PermissionDeniedError):
+        head = (
+            f"The review model provider rejected the credential for REVIEW_MODEL={model}.\n"
+            f"{detail}\n"
+            "Set OPENAI_API_KEY (or OPENAI_KEY) to a key valid for that model."
+        )
+    elif isinstance(error, openai.APIConnectionError):
+        head = (
+            f"Cannot reach the review model endpoint for REVIEW_MODEL={model}.\n"
+            f"{detail}\n"
+            "Check network access and REVIEW_API_BASE, then retry with `diffuse review --resume`."
+        )
+    elif isinstance(error, openai.RateLimitError):
+        head = (
+            f"The review model provider rate-limited REVIEW_MODEL={model}.\n"
+            f"{detail}\n"
+            "Wait and retry with `diffuse review --resume`."
+        )
+    else:
+        head = (
+            f"The review model request failed for REVIEW_MODEL={model}.\n"
+            f"{detail}\n"
+            "Verify REVIEW_MODEL, OPENAI_API_KEY, and REVIEW_API_BASE, then retry with "
+            "`diffuse review --resume`."
+        )
+    return head
+
+
+def format_cli_error(message: str) -> str:
+    """Render a possibly multi-line message as a readable, usage-free CLI error."""
+    lines = [line.rstrip() for line in redact_secrets(message).strip().splitlines()]
+    lines = [line for line in lines if line.strip()]
+    if not lines:
+        lines = ["unknown error"]
+    rendered = [f"diffuse: error: {lines[0]}"]
+    rendered.extend(f"    {line.strip()}" for line in lines[1:MAX_ERROR_LINES])
+    suppressed = len(lines) - MAX_ERROR_LINES
+    if suppressed > 0:
+        rendered.append(f"    ... {suppressed} more line(s) suppressed")
+    return "\n".join(rendered) + "\n"
+
+
+def _fail(message: str, code: int) -> None:
+    sys.stderr.write(format_cli_error(message))
+    raise SystemExit(code)
+
+
+def run_handler(args: argparse.Namespace) -> None:
+    """Invoke the selected handler, mapping every failure to a documented exit code."""
+    debug = bool(os.environ.get("DIFFUSE_CLI_TRACEBACK", "").strip())
+    try:
+        args.handler(args)
+    except SystemExit:
+        raise
+    except CliUsageError as error:
+        if debug:
+            raise
+        _fail(str(error), EXIT_USAGE)
+    except psycopg2.Error as error:
+        if debug:
+            raise
+        _fail(database_error_message(error), EXIT_CONFIG)
+    except openai.OpenAIError as error:
+        if debug:
+            raise
+        _fail(model_error_message(error), EXIT_CONFIG)
+    except (OSError, RuntimeError, ValueError) as error:
+        if debug:
+            raise
+        _fail(str(error), EXIT_CONFIG)
+    except Exception as error:
+        if debug:
+            raise
+        _fail(
+            f"Internal error: {error.__class__.__name__}: {error}\n"
+            "Re-run with DIFFUSE_CLI_TRACEBACK=1 for the full traceback, and report this "
+            "as a Diffuse bug.",
+            EXIT_INTERNAL,
+        )
+
+
+def _install_redacting_excepthook() -> None:
+    """Redact secrets from an unhandled traceback.
+
+    ``DIFFUSE_CLI_TRACEBACK=1`` re-raises the original exception, and the README
+    advertises that as the way to file a bug report -- so its output is exactly
+    what an operator pastes into a ticket. Python's default handler would print
+    it verbatim, and ``psycopg2.OperationalError`` routinely embeds the whole
+    connection string, password included.
+    """
+    original = sys.excepthook
+
+    def hook(exc_type, exc_value, exc_traceback):
+        rendered = "".join(
+            traceback.format_exception(exc_type, exc_value, exc_traceback)
+        )
+        sys.stderr.write(redact_secrets(rendered))
+
+    sys.excepthook = hook
+    return original
 
 
 def main() -> None:
-    parser = _parser()
-    args = parser.parse_args()
-    try:
-        args.handler(args)
-    except (OSError, RuntimeError, ValueError) as error:
-        parser.error(str(error))
+    if os.environ.get("DIFFUSE_CLI_TRACEBACK", "").strip():
+        _install_redacting_excepthook()
+    parser, commands = _build_parser()
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        # argparse reports leftovers against the top-level parser, which prints an
+        # irrelevant usage block for a subcommand's flag. Report them where they
+        # were typed instead. ArgumentParser.error() exits with EXIT_USAGE.
+        target = commands.get(getattr(args, "command", ""), parser)
+        target.error(redact_secrets(f"unrecognized arguments: {' '.join(unknown)}"))
+    run_handler(args)
 
 
 if __name__ == "__main__":
