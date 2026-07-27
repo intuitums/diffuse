@@ -14,6 +14,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # PR #8 merged into a feature branch that `main` had already left behind,
+  # stranding two Urgent security fixes for a day without anything failing.
+  # A pull request must target the default branch unless it is deliberately
+  # stacked on another `claude/` branch, which is a reviewed, temporary state.
+  base-branch:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse a pull request aimed away from the default branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
+            echo "Base branch is $BASE_REF."
+            exit 0
+          fi
+          case "$BASE_REF" in
+            claude/*)
+              echo "::notice::Stacked on $BASE_REF. Retarget to $DEFAULT_BRANCH before merging, or merge the parent first."
+              exit 0
+              ;;
+          esac
+          echo "::error::This pull request targets '$BASE_REF', not '$DEFAULT_BRANCH'." >&2
+          echo "Merging here can strand the change on a branch that $DEFAULT_BRANCH has already moved past." >&2
+          echo "Retarget the pull request, or name the base 'claude/<feature>' if the stack is intentional." >&2
+          exit 1
+
   lint-and-unit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
