@@ -948,3 +948,89 @@ def test_diagram_prompt_neutralizes_both_untrusted_sections():
 
     assert prompt.count("</untrusted_pull_request_diff>") == 1
     assert prompt.count("</untrusted_retrieved_repository_context>") == 1
+
+def test_default_review_model_is_a_frontier_model(monkeypatch):
+    monkeypatch.delenv("REVIEW_MODEL", raising=False)
+
+    assert review_engine.review_model() == review_engine.DEFAULT_REVIEW_MODEL
+    assert review_engine.DEFAULT_REVIEW_MODEL == "anthropic/claude-sonnet-5"
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["anthropic/claude-sonnet-5", "claude-opus-4-8"],
+)
+def test_anthropic_models_resolve_the_anthropic_key(monkeypatch, model):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    assert review_engine._model_api_key(model) == "anthropic-key"
+
+
+def test_openai_models_still_resolve_the_openai_key(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    assert review_engine._model_api_key("openai/gpt-4.1") == "openai-key"
+
+
+def test_unrecognized_providers_defer_to_the_gateway_environment(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    assert review_engine._model_api_key("bedrock/anthropic.claude-sonnet-4-5") is None
+    assert review_engine._model_api_key("ollama/llama3") is None
+
+
+def test_structured_call_sends_the_anthropic_key(monkeypatch):
+    batch = CandidateBatch(analysis_summary="No issue.", findings=[])
+    arguments: list[dict] = []
+
+    def fake_completion(**kwargs):
+        arguments.append(kwargs)
+        return {
+            "choices": [{"message": {"content": batch.model_dump_json()}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 1},
+        }
+
+    monkeypatch.setenv("REVIEW_MODEL", "anthropic/claude-sonnet-5")
+    monkeypatch.setenv("REVIEW_STRUCTURED_OUTPUT_MODE", "prompt")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setattr(review_engine.litellm, "completion", fake_completion)
+
+    value, _, _ = review_engine._call_structured(
+        CandidateBatch,
+        system_prompt="System",
+        user_prompt="User",
+    )
+
+    assert value == batch
+    assert arguments[0]["model"] == "anthropic/claude-sonnet-5"
+    assert arguments[0]["api_key"] == "anthropic-key"
+
+
+def test_structured_call_omits_the_key_for_environment_authenticated_providers(
+    monkeypatch,
+):
+    batch = CandidateBatch(analysis_summary="No issue.", findings=[])
+    arguments: list[dict] = []
+
+    def fake_completion(**kwargs):
+        arguments.append(kwargs)
+        return {
+            "choices": [{"message": {"content": batch.model_dump_json()}}],
+            "usage": {},
+        }
+
+    monkeypatch.setenv("REVIEW_MODEL", "bedrock/anthropic.claude-sonnet-4-5")
+    monkeypatch.setenv("REVIEW_STRUCTURED_OUTPUT_MODE", "prompt")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setattr(review_engine.litellm, "completion", fake_completion)
+
+    review_engine._call_structured(
+        CandidateBatch,
+        system_prompt="System",
+        user_prompt="User",
+    )
+
+    assert "api_key" not in arguments[0]

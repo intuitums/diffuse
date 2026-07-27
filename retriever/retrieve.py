@@ -21,8 +21,11 @@ from indexer.store import (
 from repository_policy.models import validate_repo_path
 from retriever.context_models import CrossRepositoryContextPlan
 
-MAX_CONTEXT_CHUNKS = 6
-MAX_CONTEXT_CHARS = 6000
+DEFAULT_MAX_CONTEXT_CHUNKS = 18
+DEFAULT_MAX_CONTEXT_CHARS = 24_000
+# Retrieval fuses at most MAX_RETRIEVAL_CANDIDATES rows per channel, so a top_k
+# above this ceiling would select from an already exhausted candidate pool.
+MAX_RETRIEVAL_TOP_K = 20
 MAX_QUERY_CHARS = 12_000
 MAX_CODE_QUERY_CHARS = 2000
 MAX_LEXICAL_TERMS = 24
@@ -329,6 +332,30 @@ def minimum_similarity() -> float:
     return value
 
 
+def _positive_int(name: str, default: int) -> int:
+    value = int(os.environ.get(name, str(default)))
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
+def max_context_chunks() -> int:
+    """Resolve how many retrieved chunks a review or query may carry."""
+    value = _positive_int("MAX_CONTEXT_CHUNKS", DEFAULT_MAX_CONTEXT_CHUNKS)
+    if value > MAX_RETRIEVAL_TOP_K:
+        raise ValueError(f"MAX_CONTEXT_CHUNKS must be at most {MAX_RETRIEVAL_TOP_K}")
+    return value
+
+
+def max_context_chars() -> int:
+    """Resolve the character budget for the formatted retrieved-context block.
+
+    The formatted block is repeated verbatim into every review pass and diff
+    chunk, so raising this multiplies prompt tokens by passes x chunks.
+    """
+    return _positive_int("MAX_CONTEXT_CHARS", DEFAULT_MAX_CONTEXT_CHARS)
+
+
 def _fuse_candidates(
     graph_rows: list[dict],
     lexical_rows: list[dict],
@@ -439,10 +466,18 @@ def _fuse_candidates(
     ]
 
 
+def _resolve_top_k(top_k: int | None) -> int:
+    if top_k is None:
+        return max_context_chunks()
+    if not 1 <= top_k <= MAX_RETRIEVAL_TOP_K:
+        raise ValueError(f"top_k must be between 1 and {MAX_RETRIEVAL_TOP_K}")
+    return top_k
+
+
 def retrieve_context(
     repo_name: str,
     diff_text: str,
-    top_k: int = MAX_CONTEXT_CHUNKS,
+    top_k: int | None = None,
 ) -> list[RetrievedContext]:
     return list(retrieve_context_with_snapshot(repo_name, diff_text, top_k).contexts)
 
@@ -484,11 +519,10 @@ def _annotate_rows(
 def retrieve_context_from_plan(
     diff_text: str,
     plan: CrossRepositoryContextPlan,
-    top_k: int = MAX_CONTEXT_CHUNKS,
+    top_k: int | None = None,
 ) -> RetrievedContextBundle:
     """Retrieve from one exact primary snapshot and bounded read-only related snapshots."""
-    if not 1 <= top_k <= 20:
-        raise ValueError("top_k must be between 1 and 20")
+    top_k = _resolve_top_k(top_k)
     if plan.primary_snapshot_id is None and not plan.related_snapshots:
         return RetrievedContextBundle(
             snapshot_id=None,
@@ -651,13 +685,12 @@ def retrieve_query_context_from_plan(
     query: str,
     plan: CrossRepositoryContextPlan,
     *,
-    top_k: int = MAX_CONTEXT_CHUNKS,
+    top_k: int | None = None,
     path_prefix: str | None = None,
 ) -> RetrievedContextBundle:
     """Search exact immutable snapshots for an arbitrary repository question."""
     query = normalize_code_query(query)
-    if not 1 <= top_k <= 20:
-        raise ValueError("top_k must be between 1 and 20")
+    top_k = _resolve_top_k(top_k)
     if path_prefix is not None:
         path_prefix = validate_repo_path(path_prefix)
     if plan.primary_snapshot_id is None and not plan.related_snapshots:
@@ -794,11 +827,10 @@ def retrieve_context_from_snapshot(
     repo_name: str,
     diff_text: str,
     snapshot_id: int | None,
-    top_k: int = MAX_CONTEXT_CHUNKS,
+    top_k: int | None = None,
 ) -> RetrievedContextBundle:
     """Retrieve only from an already selected immutable snapshot."""
-    if not 1 <= top_k <= 20:
-        raise ValueError("top_k must be between 1 and 20")
+    top_k = _resolve_top_k(top_k)
     if snapshot_id is None:
         return RetrievedContextBundle(snapshot_id=None, contexts=())
     query = build_retrieval_query(diff_text)
@@ -859,7 +891,7 @@ def retrieve_context_from_snapshot(
 def retrieve_context_with_snapshot(
     repo_name: str,
     diff_text: str,
-    top_k: int = MAX_CONTEXT_CHUNKS,
+    top_k: int | None = None,
 ) -> RetrievedContextBundle:
     snapshot_id = compatible_snapshot_id(repo_name)
     return retrieve_context_from_snapshot(
@@ -873,8 +905,10 @@ def retrieve_context_with_snapshot(
 def format_as_extra_instructions(
     contexts: list[RetrievedContext],
     *,
-    max_chars: int = MAX_CONTEXT_CHARS,
+    max_chars: int | None = None,
 ) -> str:
+    if max_chars is None:
+        max_chars = max_context_chars()
     if not contexts or max_chars <= 0:
         return ""
 
