@@ -1,12 +1,12 @@
 # Diffuse delivery roadmap
 
-The phases are ordered by dependency and risk, not by demo appeal. Feature
-parity remains the goal throughout; each phase must leave a deployable,
-observable system.
+The phases are ordered by dependency and risk, not by demo appeal. The full
+capability set in `docs/capabilities.md` remains the goal throughout; each phase
+must leave a deployable, observable system.
 
 ## Phase 0 — Product and platform contract
 
-- Maintain `docs/feature-parity.md` as the acceptance ledger.
+- Maintain `docs/capabilities.md` as the acceptance ledger.
 - Adopt the target architecture and threat-model invariants.
 - Architecture decisions and a transactional versioned PostgreSQL migration
   foundation are present. The frozen baseline and append-only catalog use
@@ -109,20 +109,19 @@ target.
 - Add dashboard-level trigger settings, focused manual review instructions,
   and provider-specific ready-for-review evaluation.
 - Extend conversation to top-level/arbitrary-line questions.
-- Complete encrypted per-installation credentials and provider-specific parity
-  evals.
+- Complete encrypted per-installation credentials and provider-specific
+  evaluation sets.
 
 Exit: a self-hosted instance can onboard a repository, keep its index current,
-and complete idempotent high-signal reviews without PR-Agent.
+and complete idempotent high-signal reviews.
 
 ## Phase 3 — Customization and team learning
 
 - The repository-level foundation now provides immutable cascading
   `.diffuse/config.json`, `.diffuse/rules.md`, and `.diffuse/files.json`,
   stable scoped rules/overrides, referenced context, common instruction
-  discovery, deterministic review controls, and a strict root `greptile.json`
-  migration importer with native-policy precedence, tracked custom context,
-  and enforced strictness.
+  discovery, deterministic review controls, tracked custom context, and
+  enforced strictness.
 - Add dashboard-managed organization/team rules and context with authorization,
   audit history, and reset-to-inherited behavior.
 - The inspectable-feedback foundation now stores authorized finding-thread

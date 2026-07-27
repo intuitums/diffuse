@@ -6,19 +6,14 @@ Status: Accepted
 
 ## Context
 
-Greptile publicly documents a terminal review workflow with a selectable base,
-resume, inline diff, JSON, and agent-oriented output. Diffuse had separate
-operator modules for repository and learning administration but no unified
-developer command or local-branch review.
+Operators need a terminal review workflow with a selectable base, resume, inline
+diff, JSON, and agent-oriented output. Diffuse had separate operator modules for
+repository and learning administration but no unified developer command or
+local-branch review.
 
 A local review that silently drops repository context would not be equivalent
 to the SCM review engine. Automatically reading untracked files could also send
 secrets or scratch data to a configured model without deliberate consent.
-
-Public references:
-
-- <https://www.greptile.com/cli>
-- <https://www.greptile.com/changelog>
 
 ## Decision
 

@@ -6,19 +6,15 @@ Status: Accepted
 
 ## Context
 
-Greptile's public configuration reference exposes inclusion, collapse, and
-default-open behavior for summary, issues-table, confidence-score, and diagram
-sections, plus a footer visibility switch.
+Repository configuration needs to expose inclusion, collapse, and default-open
+behavior for summary, issues-table, confidence-score, and diagram sections, plus
+a footer visibility switch.
 
 Diffuse publication is retryable and may happen after repository configuration
 changes. Re-resolving presentation at publication time would make identical
 review runs render differently. Also, treating an issues-table preference as
 permission to discard fallback findings would lose validated feedback whenever
 GitHub rejects inline positions.
-
-Public reference:
-
-- <https://www.greptile.com/docs/code-review/greptile-config-reference>
 
 ## Decision
 
@@ -38,11 +34,11 @@ Public reference:
 
 ## Consequences
 
-Operators can reproduce the documented output controls without making review
+Operators can configure these output controls without making review
 semantics mutable or allowing a cosmetic setting to suppress required safety
 feedback. Retry output remains tied to the policy snapshot that produced the
 review.
 
 Managed PR/MR-description targeting and agent-fix visibility were added by ADR
 0035. Commit-message footer previews, manual diagram selection, and controls
-for non-review SCM surfaces remain future parity work.
+for non-review SCM surfaces remain future work.

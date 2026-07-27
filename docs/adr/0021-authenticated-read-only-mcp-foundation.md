@@ -2,24 +2,22 @@
 
 Date: 2026-07-23
 
-Status: Accepted; authentication boundary extended by ADR 0022
+Status: Accepted; authentication boundary extended by ADR 0022. The read-only
+constraint recorded here is superseded: ADR 0023 introduced write-scoped MCP
+tools including `create_custom_context`, and ADR 0027 added
+`update_custom_context` and `delete_custom_context`. The MCP server is no longer
+read-only; everything else in this decision still holds.
 
 ## Context
 
-Greptile publicly documents a bearer-authenticated Streamable HTTP MCP server
-with tools for pull requests, reviews, comments, search, and custom context.
-Diffuse had durable data for several of those outcomes but no authenticated
-developer protocol beyond signed SCM webhook ingress.
+Coding agents need a bearer-authenticated Streamable HTTP MCP server with tools
+for pull requests, reviews, comments, search, and custom context. Diffuse had
+durable data for several of those outcomes but no authenticated developer
+protocol beyond signed SCM webhook ingress.
 
 Advertising tools that infer missing pull-request state, mutate rules through
 an unrelated learned-rule path, or trigger reviews without authoritative SCM
-metadata would create a misleading and unsafe compatibility surface.
-
-Public references:
-
-- <https://www.greptile.com/docs/mcp/overview>
-- <https://www.greptile.com/docs/mcp/tools>
-- <https://www.greptile.com/changelog>
+metadata would create a misleading and unsafe tool surface.
 
 ## Decision
 
@@ -48,9 +46,9 @@ without a hosted control plane. The tool list does not claim unsupported write
 or PR-state behavior.
 
 ADR 0022 adds repository-scoped service tokens while retaining this
-pre-provisioned credential as a recovery path. At this ADR's acceptance,
-parity still required organization/team RBAC, OAuth discovery, pull-request
-state/listing, review trigger/re-run, finding resolution, custom-context
-mutation, code search, fix handoff, and analytics/report tools. ADRs 0023–0026
+pre-provisioned credential as a recovery path. At this ADR's acceptance, the
+capability ledger still required organization/team RBAC, OAuth discovery,
+pull-request state/listing, review trigger/re-run, finding resolution,
+custom-context mutation, code search, fix handoff, and analytics/report tools. ADRs 0023–0026
 subsequently establish working foundations for several of those surfaces; RBAC,
 OAuth discovery, verified mutation flows, and complete analytics remain.

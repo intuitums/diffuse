@@ -1,25 +1,25 @@
-# Diffuse feature-parity contract
-
-Last reviewed against Greptile's public product documentation: 2026-07-24.
+# Diffuse capability ledger
 
 ## Objective
 
-Diffuse must be a self-hostable code-intelligence and review platform with the
-full user-visible capability set of Greptile. "Parity" means an operator can
-achieve the same outcome inside their own infrastructure; it does not mean
-copying Greptile's implementation, branding, UI, prompts, or undocumented APIs.
+Diffuse must be a code-intelligence and review platform an operator can run
+entirely inside infrastructure they control, at the capability level teams
+expect from a hosted reviewer. Self-hosting is the architecture, not a
+downgraded tier: every outcome below must be achievable without source code
+leaving the operator's environment.
 
-This document is the acceptance checklist. A capability is not complete merely
-because a prompt mentions it: it needs a durable product path, tests, operator
-documentation, observability, and a safe failure mode.
+This document is the acceptance checklist and the honest status of each
+capability. A capability is not complete merely because a prompt mentions it:
+it needs a durable product path, tests, operator documentation, observability,
+and a safe failure mode.
 
 Status values:
 
-- `foundation`: a limited precursor exists, but the parity outcome is not met.
+- `foundation`: a limited precursor exists, but the required outcome is not met.
 - `planned`: no production-capable implementation exists yet.
 - `complete`: acceptance criteria and end-to-end verification are satisfied.
 
-## Parity matrix
+## Capability matrix
 
 | Area | Required Diffuse outcome | Status |
 | --- | --- | --- |
@@ -30,7 +30,7 @@ Status values:
 | Impact analysis | Given a change, surface callers, callees, contracts, tests, imports, related patterns, and affected code across the repository. | foundation |
 | Cross-repository context | Explicit related repositories, reusable repository clusters, access-control enforcement, and retrieval across shared libraries/SDKs. | foundation |
 | Code search and repository Q&A | Search active immutable indexes by path, symbol, text, semantics, and graph relationships; answer general repository questions with verifiable commit-pinned source citations and fail closed when evidence is insufficient. MCP and REST search/Q&A, token-safe cluster context, separate generation scopes, and claim-level citation validation work; UI, multi-hop/type-aware retrieval, quotas, and evals remain. | foundation |
-| Native review engine | Multi-turn agentic review grounded in diff, graph, repository, rules, memory, SCM metadata, and configured external context. Deterministic commit-attribution analysis now routes high-confidence Anthropic/OpenAI-generated changes to an opposing model family without an LLM classification call, persists the evidence/model plan, and keeps ambiguous Cursor/Copilot or mixed provenance on cross-family review. PR-Agent must not remain a required runtime. | foundation |
+| Native review engine | Multi-turn agentic review grounded in diff, graph, repository, rules, memory, SCM metadata, and configured external context. Deterministic commit-attribution analysis now routes high-confidence Anthropic/OpenAI-generated changes to an opposing model family without an LLM classification call, persists the evidence/model plan, and keeps ambiguous Cursor/Copilot or mixed provenance on cross-family review. | foundation |
 | Review output | PR summary, risk score, confidence, issues table, inline comments, severity, category, concrete fixes, optional sequence diagrams, reviewed-commit marker, review count, re-trigger controls, managed PR/MR-description output, optional summary comments, and optional fix guidance. GitHub and GitLab have immutable publication controls, human-preserving description regions, self-webhook loop suppression, idempotent exact-line findings, complete enabled-summary fallback, authorized comment re-triggers, and repository-authorized MCP plus durably idempotent REST re-triggers; GitLab UI re-trigger controls remain. | foundation |
 | Review quality controls | Strictness, category filters, file-change limits, ignored paths, model/turn selection, summary-only mode, status checks compatible with branch protection, and high-signal defaults. GitHub Checks and GitLab commit statuses share deterministic conclusions; exact-line status annotations remain GitHub-only. | foundation |
 | Trigger policy | Open/ready-for-review/manual/update triggers plus label, author, branch, keyword, draft, file, and repository filters. GitLab open/update/lifecycle and Developer-authorized top-level manual commands use API-authoritative metadata; the provider-native ready-for-review action remains GitHub-only. | foundation |
@@ -40,7 +40,7 @@ Status values:
 | Auto-approval | Conservatively approve clean, low-risk changes using configurable risk ceilings and strict author/branch/label/path/repository filters. GitHub and GitLab revalidate the exact head; GitLab also waits for approval/diff synchronization and pins the approval request to that SHA. Dashboard/org controls, scoped credentials, evals, and a kill switch remain. | foundation |
 | Team memory | Learn from human PR comments, replies, reactions, accepted/rejected findings, and commit outcomes without suppressing security or correctness issues. Authorized GitHub/GitLab finding-thread replies, 👍/👎, withdrawals, and commit outcomes are durable; top-level feedback and preference ranking remain. | foundation |
 | Suggested rules | Infer repeated team standards, deduplicate suggestions, and require an authorized human to approve/edit/reject learned rules. | foundation |
-| Cascading configuration | Version-controlled `.diffuse/config.json`, `.diffuse/rules.md`, and `.diffuse/files.json` at any directory with deterministic root-to-leaf inheritance. A tracked root `greptile.json` is strictly imported when no native root policy exists; triggers, filters, ignored paths, context/rules/files, output sections, description/summary/fix publication settings, status checks, and an enforced strictness floor migrate. Unsupported ignore semantics and unknown fields fail explicitly. | foundation |
+| Cascading configuration | Version-controlled `.diffuse/config.json`, `.diffuse/rules.md`, and `.diffuse/files.json` at any directory with deterministic root-to-leaf inheritance. Unknown fields and unsupported ignore semantics fail explicitly rather than being silently dropped. Importing third-party review configuration is not currently supported. | foundation |
 | Rule system | Structured rules with stable IDs, scope, severity, enable/disable, inherited-rule overrides, Markdown guidance, referenced files, and dashboard-managed org/team rules. | foundation |
 | Existing instruction discovery | Detect and index files such as `AGENTS.md`, `CLAUDE.md`, Cursor rules, contribution guides, schemas, API specifications, and architecture docs. | foundation |
 | Runtime validation | Generate targeted tests, execute the PR branch in an isolated sandbox, understand the repository stack, and attach reproducible evidence such as logs, traces, screenshots, scripts, and videos. | planned |
@@ -51,10 +51,10 @@ Status values:
 | External context | Permissioned connectors for issue trackers, documentation systems, and partner-maintained API/SDK guidance with source attribution. | planned |
 | Web application | Onboarding, repository/index status, review settings, rules/context, organizations/teams, members/roles, integrations, analytics, audit log, and operator settings. | planned |
 | Organizations and RBAC | Organization/team hierarchy, inheritance and reset-to-default behavior, invitations, member/admin roles, repository scopes, and least-privilege authorization. | planned |
-| Authentication | Local accounts, GitHub/GitLab OAuth, OIDC, SAML SSO, session management, service tokens, and optional SCIM provisioning. | foundation |
+| Authentication | Local accounts, GitHub/GitLab OAuth, OIDC, SAML SSO, session management, service tokens, and optional SCIM provisioning. Only GitHub OAuth sign-in and repository-scoped service tokens exist today; there is no local account store, no GitLab OAuth, and no OIDC, SAML, or SCIM implementation. | foundation |
 | Analytics | PRs reviewed, latency, merge time, addressed rate, severity/critical findings, reactions, review completion, cost/usage, filters, weekly reports, and export. The MCP foundation now reports exact authorized review/finding/engagement/token/context/approval metrics, author filtering, opened PRs reviewed versus unreviewed, authoritative mean/median merge time with completeness, repository and UTC daily breakdowns, reaction percentages, and linked open findings with explicit denominators. Team filters, historical policy-eligibility coverage, historical monetary pricing, UI, scheduled reports, and CSV/JSON export remain. | foundation |
 | Audit and governance | Immutable actor/action/resource audit events, data-retention controls, model/provider policy, repository allowlists, usage limits, and administrative export. | planned |
-| Self-hosting | Supported Docker Compose profile for small teams and Helm/Kubernetes profile for high availability and horizontal scaling. | foundation |
+| Self-hosting | Supported Docker Compose profile for small teams and Helm/Kubernetes profile for high availability and horizontal scaling. The Compose profile is supported; no Helm chart or Kubernetes manifest exists yet. | foundation |
 | Air-gapped operation | Offline images/artifacts, no required cloud control plane, local model and embedding endpoints, configurable SCM endpoints, and documented upgrade bundles. | planned |
 | Proprietary distribution | Authenticated digest-pinned OCI images and install manifests built from the private repository, signed artifacts and provenance, SBOMs, connected and offline entitlements, supported update windows, and final runtime images without the source checkout or build-only material. The foundation now packages one non-root executable without plain Python source, validates it in CI, builds multi-architecture private GHCR releases with SBOM/provenance attestations, signs the published digest with GitHub OIDC, and emits a digest-pinned customer Compose bundle. Registry customer access, entitlements, offline delivery, and support-window policy remain. | foundation |
 | Managed cloud | Provider-operated deployment of the same versioned PostgreSQL-backed engine, with subscriptions, entitlements, provisioning, regional placement, fleet operations, metering, tenant isolation, managed backups, and SLOs. A cloud control-plane database contains only cloud-owned state and rebuildable projections, not source-derived review data. | planned |
@@ -78,24 +78,9 @@ Status values:
    findings cannot be silently trained away.
 6. SCM permissions and tenant boundaries apply to every retrieval path,
    including cross-repository context.
-7. Diffuse is independently implemented from public behavior and open
-   standards. Greptile-specific trademarks and private implementation details
-   are out of scope.
+7. Diffuse is independently implemented against open standards and provider
+   APIs. Third-party trademarks, branding, prompts, and private implementation
+   details are out of scope, and no third-party product name belongs in
+   Diffuse's own contracts, identifiers, or documentation.
 8. Claims such as SOC 2, HIPAA, or GDPR compliance require an actual audit and
    operating program; code features alone do not justify them.
-
-## Public reference surface
-
-The checklist is derived from public Greptile documentation and changelog
-entries, principally:
-
-- <https://www.greptile.com/docs/code-review/key-features>
-- <https://www.greptile.com/docs/code-review/first-pr-review>
-- <https://www.greptile.com/docs/how-greptile-works/graph-based-codebase-context>
-- <https://www.greptile.com/docs/how-greptile-works/memory-and-learning>
-- <https://www.greptile.com/docs/code-review/greptile-config-reference>
-- <https://www.greptile.com/docs/code-review/auto-approve-prs>
-- <https://www.greptile.com/docs/code-review-bot/trigger-code-review>
-- <https://www.greptile.com/docs/system-architecture>
-- <https://www.greptile.com/docs/llms.txt>
-- <https://www.greptile.com/changelog>
