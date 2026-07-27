@@ -695,6 +695,11 @@ async def test_publish_falls_back_to_summary_when_inline_comments_are_rejected(
     assert payloads[1]["comments"] == []
     assert "GitHub could not attach the inline annotations" in payloads[1]["body"]
     assert "The changed line returns untrusted input." in payloads[1]["body"]
+    # The summary fallback anchors nothing, so the lineage activation path must
+    # be told which `new` findings lost their promised root thread.
+    assert published.finding_comments == ()
+    assert not published.inline_comments_attached
+    assert published.unattached_fingerprints == ("f" * 64,)
 
 
 @pytest.mark.anyio
@@ -710,13 +715,15 @@ async def test_publish_honors_summary_only_policy_without_inline_attempt(monkeyp
 
     report = _report().model_copy(update={"inline_comments_enabled": False})
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        await publish_github_review(
+        published = await publish_github_review(
             _event(),
             review_run_id=42,
             report=report,
             client=client,
         )
 
+    # Policy never promised an inline thread, so activation is not withheld.
+    assert published.unattached_fingerprints == ()
     assert len(payloads) == 1
     assert payloads[0]["comments"] == []
     assert "Repository policy requested summary-only review" in payloads[0]["body"]
