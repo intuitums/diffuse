@@ -81,8 +81,8 @@ def _local_git_repository(tmp_path: Path) -> Path:
     [
         ("git@github.com:owner/repo.git", ("github.com", "owner/repo")),
         (
-            "ssh://git@gitlab.example.com/group/sub/repo.git",
-            ("gitlab.example.com", "group/sub/repo"),
+            "ssh://git@git.example.com/group/sub/repo.git",
+            ("git.example.com", "group/sub/repo"),
         ),
         (
             "https://github.example.com/owner/repo.git",

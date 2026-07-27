@@ -15,8 +15,6 @@ from repository_policy.resolve import (
 )
 from service.github import normalize_manual_review_request
 from service.github_review import post_github_review_failure_notice
-from service.gitlab import fetch_gitlab_review_interaction, verify_gitlab_webhook
-from service.gitlab_review import post_gitlab_review_failure_notice
 from service.review_failure_notice import (
     TerminalReviewFailure,
     format_failure_notice,
@@ -36,24 +34,6 @@ def _github_event() -> PullRequestEvent:
             "repo_full_name": "owner/repo",
             "number": 7,
             "web_url": "https://github.com/owner/repo/pull/7",
-            "action": "opened",
-            "head_sha": "a" * 40,
-            "base_sha": "b" * 40,
-            "updated_at": "2026-07-23T15:30:00Z",
-            "delivery_id": "delivery-7",
-        }
-    )
-
-
-def _gitlab_event() -> PullRequestEvent:
-    return PullRequestEvent.from_payload(
-        {
-            "provider": "gitlab",
-            "scm_base_url": "https://gitlab.example.com",
-            "api_base_url": "https://gitlab.example.com/api/v4",
-            "repo_full_name": "owner/repo",
-            "number": 7,
-            "web_url": "https://gitlab.example.com/owner/repo/-/merge_requests/7",
             "action": "opened",
             "head_sha": "a" * 40,
             "base_sha": "b" * 40,
@@ -118,60 +98,6 @@ def test_github_ignores_its_own_failure_notice_as_a_manual_trigger():
     }
 
     assert normalize_manual_review_request(payload) is None
-
-
-@pytest.mark.anyio
-async def test_gitlab_ignores_its_own_failure_notice(monkeypatch):
-    """GitLab note ingestion drops the notice before any enrichment call."""
-    monkeypatch.setenv("GITLAB_WEB_URL", "https://gitlab.example.com")
-    monkeypatch.setenv("GITLAB_API_URL", "https://gitlab.example.com/api/v4")
-    monkeypatch.setenv("GITLAB_WEBHOOK_SECRET", "legacy-secret")
-    verified = verify_gitlab_webhook(
-        b"{}",
-        legacy_token="legacy-secret",
-        event_uuid="event-uuid-1",
-        instance_header="https://gitlab.example.com",
-    )
-    body = (
-        format_failure_notice(terminal_review_failure(4821, retries_exhausted=True))
-        + "\n@diffuse review"
-    )
-    payload = {
-        "object_kind": "note",
-        "event_type": "note",
-        "user": {"id": 8, "username": "reviewer", "name": "Reviewer"},
-        "project_id": 91,
-        "project": {
-            "id": 91,
-            "path_with_namespace": "group/repo",
-            "web_url": "https://gitlab.example.com/group/repo",
-            "default_branch": "main",
-        },
-        "object_attributes": {
-            "id": 401,
-            "internal": False,
-            "note": body,
-            "noteable_type": "MergeRequest",
-            "author_id": 8,
-            "created_at": "2026-07-23T18:30:00.000Z",
-            "system": False,
-            "action": "create",
-        },
-        "merge_request": {"iid": 17, "state": "opened", "target_project_id": 91},
-    }
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("GitLab must not be called for a Diffuse-authored note")
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        interaction = await fetch_gitlab_review_interaction(
-            payload,
-            verified=verified,
-            client=client,
-        )
-
-    assert interaction.feedback is None
-    assert interaction.conversation is None
 
 
 def test_credential_shaped_text_is_redacted():
@@ -254,72 +180,6 @@ async def test_github_second_terminal_pass_edits_the_existing_notice(monkeypatch
     # The notice is refreshed to the current job, not left stale.
     assert "9999" in edited[0]
     assert "review_workflow_failed" in edited[0]
-
-
-@pytest.mark.anyio
-async def test_gitlab_posts_exactly_one_failure_notice(monkeypatch):
-    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-    failure = terminal_review_failure(4821, retries_exhausted=False)
-    posted: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "GET":
-            return httpx.Response(200, json=[{"id": 1, "body": "unrelated"}])
-        posted.append(request.content.decode())
-        return httpx.Response(201, json={"id": 88})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        external_id = await post_gitlab_review_failure_notice(
-            _gitlab_event(),
-            failure=failure,
-            client=client,
-        )
-
-    assert external_id == "88"
-    assert len(posted) == 1
-    assert failure.marker in posted[0]
-
-
-@pytest.mark.anyio
-async def test_gitlab_second_terminal_pass_edits_the_existing_notice(monkeypatch):
-    """A later failing job must edit the one note, not append another."""
-    monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-    first = terminal_review_failure(4821, retries_exhausted=False)
-    second = terminal_review_failure(9999, retries_exhausted=True)
-    methods: list[str] = []
-    edited: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        methods.append(request.method)
-        if request.method == "GET":
-            return httpx.Response(
-                200,
-                json=[{"id": 88, "body": format_failure_notice(first)}],
-            )
-        edited.append(request.content.decode())
-        return httpx.Response(200, json={"id": 88})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        external_id = await post_gitlab_review_failure_notice(
-            _gitlab_event(),
-            failure=second,
-            client=client,
-        )
-
-    assert external_id == "88"
-    assert methods == ["GET", "PUT"]
-    assert "9999" in edited[0]
-    assert "review_workflow_exhausted" in edited[0]
-
-
-@pytest.mark.anyio
-async def test_failure_notice_publishers_reject_the_wrong_provider():
-    failure = terminal_review_failure(4821, retries_exhausted=True)
-
-    with pytest.raises(ValueError):
-        await post_github_review_failure_notice(_gitlab_event(), failure=failure)
-    with pytest.raises(ValueError):
-        await post_gitlab_review_failure_notice(_github_event(), failure=failure)
 
 
 def _snapshot(**trigger_overrides) -> RepositoryPolicySnapshot:

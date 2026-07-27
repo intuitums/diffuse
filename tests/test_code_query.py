@@ -26,18 +26,13 @@ def _plan() -> CrossRepositoryContextPlan:
 
 def _target(
     *,
-    remote: str = "github",
     plan: CrossRepositoryContextPlan | None = None,
 ) -> code_query.CodeQueryTarget:
     return code_query.CodeQueryTarget(
         repository_id=1,
         repository_name="owner/repo",
-        remote=remote,
-        remote_url=(
-            "https://gitlab.example.com"
-            if remote == "gitlab"
-            else "https://github.example.com"
-        ),
+        remote="github",
+        remote_url="https://github.example.com",
         default_branch="main",
         include_related=bool(plan and plan.related_snapshots),
         context_plan=plan or _plan(),
@@ -164,30 +159,6 @@ def test_search_returns_commit_pinned_encoded_source_links(monkeypatch):
             "source": "primary",
         }
     ]
-
-
-def test_gitlab_sources_use_commit_permalinks_and_gitlab_line_ranges(
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        code_query,
-        "retrieve_query_context_from_plan",
-        lambda *_args, **_kwargs: RetrievedContextBundle(
-            snapshot_id=11,
-            contexts=(_context(),),
-            context_plan=_plan(),
-        ),
-    )
-
-    result = code_query.search_codebase(
-        _target(remote="gitlab"),
-        query="authorize",
-    )
-
-    assert result["sources"][0]["sourceUrl"] == (
-        "https://gitlab.example.com/owner/repo/-/blob/"
-        f"{'a' * 40}/src/auth%20service.py#L10-20"
-    )
 
 
 def test_answer_drops_any_claim_with_an_invented_citation(monkeypatch):

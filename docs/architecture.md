@@ -25,7 +25,7 @@ Accepted architecture decisions are recorded under [`docs/adr`](adr/).
 ## Logical components
 
 ```text
-GitHub / GitLab / CLI / MCP / Web app
+GitHub / CLI / MCP / Web app
                   |
              API gateway
         +---------+----------+
@@ -103,36 +103,27 @@ decision.
 
 ### SCM adapters
 
-- One normalized interface for GitHub Cloud/Enterprise and GitLab
-  Cloud/Self-Managed.
+- One normalized interface for GitHub Cloud and GitHub Enterprise.
 - App installation and OAuth credentials are encrypted and never placed in job
   payloads or logs.
 - Normalized repositories, commits, diffs, checks, reviews, inline threads,
-  reactions, merge requests, and webhook events.
+  reactions, pull requests, and webhook events.
 - Every event has a provider delivery ID and an idempotency record.
-- The foundation verifies GitHub HMAC webhooks and GitLab Standard Webhooks
-  HMAC/timestamp envelopes, with explicit legacy-token fallback only when no
-  signature headers are present. GitLab instance headers are exact-origin
-  allowlisted before they can select an API endpoint.
-- GitLab MR webhooks are insufficient for safe review identity on their own.
-  Ingress enriches them from the target instance's merge-request and diff
-  version APIs, persists the base/head and fork source-project identity, and
-  returns a retryable failure while GitLab is still preparing those facts.
+- The foundation verifies GitHub HMAC webhooks before a delivery is parsed or
+  enqueued.
 
 ### Repository manager
 
-- The initial implementation registers explicit GitHub/GitLab HTTPS
-  repositories and maintains ID-addressed bare mirrors in a private shared
-  volume.
+- The initial implementation registers explicit GitHub HTTPS repositories and
+  maintains ID-addressed bare mirrors in a private shared volume.
 - CLI and REST onboarding allow only the configured primary SCM origin or an
   explicit exact-origin provider allowlist before askpass credentials can
   reach the host.
 - Git credentials reach subprocesses only through a non-interactive askpass
   environment; clone URLs, arguments, database rows, and job payloads remain
   credential-free.
-- Authenticated GitHub and GitLab default-branch pushes enqueue exact commits.
-  Workers fetch under a repository lock and index from ephemeral detached
-  worktrees.
+- Authenticated GitHub default-branch pushes enqueue exact commits. Workers
+  fetch under a repository lock and index from ephemeral detached worktrees.
 - Enforces repository/tenant authorization before fetch or retrieval.
 - Schedules initial indexing, push deltas, deletion, and integrity repair.
 - Emits immutable commit snapshots so a review and its citations are
@@ -259,14 +250,12 @@ durable; superseded and exhausted unpublished reviews discard them. Only new
 lineages receive new inline comments. The provider root-note and thread
 identities are stored, while addressed/reopened events create independently
 retryable thread operations. Hidden operation markers recover reply crash
-windows. GitHub GraphQL mutations and GitLab discussion mutations resolve or
-reopen the bot-owned thread. Status checks evaluate all active lineages rather
-than only findings emitted by the latest model invocation.
+windows. GitHub GraphQL mutations resolve or reopen the bot-owned thread.
+Status checks evaluate all active lineages rather than only findings emitted by
+the latest model invocation.
 
-Signed GitHub `pull_request_review_comment` and authenticated GitLab `Note
-Hook` events normalize explicit `@diffuse` questions from authorized
-repository members. GitLab authors are checked through the inherited project
-membership endpoint and must have Developer access or higher. Ingress queues a
+Signed GitHub `pull_request_review_comment` events normalize explicit
+`@diffuse` questions from authorized repository members. Ingress queues a
 question only when its root comment belongs to a stored Diffuse finding thread
 for that exact repository and pull request. Bots, Diffuse-authored markers,
 acknowledgements, unrelated roots, comments without the mention, and `[Human
@@ -282,7 +271,7 @@ published turns. Structured model references are retained only when their
 exact range exists in the finding or retrieved chunks. Generated output,
 usage, model, snapshot, and publication attempts are durable. A hidden
 per-question marker recovers the provider reply-create crash window before the
-same GitHub or GitLab thread is called again.
+same GitHub thread is called again.
 
 ### Native review engine
 
@@ -318,31 +307,22 @@ commit whose signature the provider verified—can reach the routing threshold.
 Git author names, author emails, and commit-message trailers are written by
 whoever produced the commit, so they are recorded as evidence but capped below
 it; otherwise the author of a change could choose which model reviews it.
-GitHub returns the actor and verification state with the commit list. GitLab
-returns neither, so for merge-request commits that name a recognized agent
-identity Diffuse makes one bounded additional request for GitLab's own
-signature verdict; without it GitLab provenance would be detectable but never
-routable. Commits with no recognized identity cost no extra request, and a
-failed or unavailable lookup leaves the commit unverified.
-Missing, stale, or forgeable metadata can only increase uncertainty: it never
-disables a review or selects a weaker trigger policy. The evidence, confidence,
-model plan, and routing reason are commit-pinned review-run state.
+GitHub returns the actor and verification state with the commit list. Missing,
+stale, or forgeable metadata can only increase uncertainty: it never disables a
+review or selects a weaker trigger policy. The evidence, confidence, model
+plan, and routing reason are commit-pinned review-run state.
 
 GitHub publication attaches eligible findings to exact diff lines and creates
-Checks annotations. GitLab publication uses the API-authoritative
-base/head/start version to attach each eligible finding to an exact added or
-removed line, posts a revision-pinned MR summary, and optionally updates a
-source-project commit status. Either provider can instead place the complete
-summary in one reserved PR/MR-description region while preserving text outside
-that region. The mutation revalidates the open exact head and retries by
-replacement rather than append; ingress ignores an edit only when stripping
-the managed region proves that human-authored text is unchanged. Invalid or
-temporarily unavailable positions fall back to complete finding details on an
-enabled summary surface. Hidden review/finding markers and managed-region
-markers recover remote-create crash windows. Top-level GitHub and GitLab
-comments whose line starts with `@diffuse` create distinct manual review events
-only after provider-native repository authorization and current metadata
-enrichment.
+Checks annotations. Publication can instead place the complete summary in one
+reserved PR-description region while preserving text outside that region. The
+mutation revalidates the open exact head and retries by replacement rather than
+append; ingress ignores an edit only when stripping the managed region proves
+that human-authored text is unchanged. Invalid or temporarily unavailable
+positions fall back to complete finding details on an enabled summary surface.
+Hidden review/finding markers and managed-region markers recover remote-create
+crash windows. Top-level GitHub comments whose line starts with `@diffuse`
+create distinct manual review events only after provider-native repository
+authorization and current metadata enrichment.
 
 #### Review readiness and footer identity
 
@@ -390,7 +370,7 @@ publication retries.
 
 Description targeting, top-level summary visibility, and agent-fix visibility
 use the same immutable report contract. If any reviewable scope requests a
-managed description, that target wins for the PR/MR. Any scope can
+managed description, that target wins for the PR. Any scope can
 conservatively suppress the summary comment or published fix guidance.
 Suppressing fix guidance never removes the durable suggested fix or MCP
 finding data.
@@ -442,26 +422,20 @@ payments, schemas/migrations, CI, and infrastructure—can never be
 auto-approved. Hard diff-size budgets also become critical rather than being
 silently truncated.
 
-Every requested decision is immutable and durable on the review run. Both
-publishers first verify that the PR/MR remains open, non-draft, and on the
+Every requested decision is immutable and durable on the review run. The
+publisher first verifies that the PR remains open, non-draft, and on the
 reviewed head. Eligible GitHub publication uses an exact `commit_id` and hidden
-idempotency marker. Eligible GitLab publication waits for
-`detailed_merge_status` and the matching diff version's `patch_id_sha` to show
-that approval reset processing is complete, identifies the token user, and
-posts `/approve` with the exact reviewed SHA. The response must include that
-user in `approved_by`; an exact-SHA duplicate is recovered from `/approvals`.
-A changed head or GitLab `409` cancels the action without retrying stale
+idempotency marker. A changed head cancels the action without retrying stale
 approval.
 
 ### Learning and memory
 
-- Signed/authenticated provider comment webhooks store authorized replies only
-  when their root maps to a Diffuse finding in the exact repository and pull
-  request.
+- Signed GitHub comment webhooks store authorized replies only when their root
+  maps to a Diffuse finding in the exact repository and pull request.
 - Workers periodically enqueue low-priority `sync_review_feedback` jobs. A sync
-  lists GitHub reactions or GitLab award emoji on the root finding note,
-  verifies each actor is a GitHub collaborator or GitLab Developer-or-higher
-  member, retains only 👍/👎, and appends observed/withdrawn transitions.
+  lists GitHub reactions on the root finding note, verifies each actor is a
+  GitHub collaborator, retains only 👍/👎, and appends observed/withdrawn
+  transitions.
 - Published addressed/reopened lineage transitions become commit-outcome
   signals in the same database transaction as review publication.
 - Store source IDs, delivery hashes, actor authority, category/severity/security
@@ -523,23 +497,21 @@ the API or review container is prohibited.
   descriptor under the token's repository claims before querying by internal
   ID. Public camelCase parameters and PR/comment search aliases stay at the MCP
   boundary; storage and worker APIs remain Diffuse-native. Explicit write scope
-  gates authoritative GitHub/GitLab re-runs and audited context creation/
-  update/deletion. Provider dispatch occurs only after repository-claim
-  resolution; each re-run re-fetches current provider state, and GitLab also
-  verifies the encoded project path, numeric project identity, and canonical
-  web URL before resolving the current MR. Operator-context updates compare the
-  caller's `expectedUpdatedAt`
-  with the locked row, keep identical retries as no-ops, and record safe hashed
-  deltas. Deletes preserve an audit tombstone and do not alter context snapshots
-  already attached to review runs. Learned rules remain on their separate
-  evidence-backed version/approval lifecycle.
+  gates authoritative GitHub re-runs and audited context creation/update/
+  deletion. Provider dispatch occurs only after repository-claim resolution,
+  and each re-run re-fetches current provider state. Operator-context updates
+  compare the caller's `expectedUpdatedAt` with the locked row, keep identical
+  retries as no-ops, and record safe hashed deltas. Deletes preserve an audit
+  tombstone and do not alter context snapshots already attached to review runs.
+  Learned rules remain on their separate evidence-backed version/approval
+  lifecycle.
 - The REST foundation is mounted under `/api/v1` before the MCP catch-all and
   uses the same shared bearer authenticator and repository-scoped PostgreSQL
   projections. `diffuse:api:read` gates repository/index, PR, review, finding,
   analytics, and code-search reads. Model-backed Q&A additionally requires
   `diffuse:api:generate`. A manual review request requires read and write
   scopes, resolves the repository grant before provider dispatch, re-fetches
-  the current open PR/MR head, and enters the same audited durable queue as
+  the current open PR head, and enters the same audited durable queue as
   MCP. Required idempotency keys are stored only as actor/operation-scoped
   hashes; a request fingerprint detects conflicting reuse, a bounded lease
   coordinates concurrent attempts, and the normalized provider event is
@@ -598,10 +570,11 @@ the API or review container is prohibited.
 
 ## Durable workflow model
 
-The initial implementation uses PostgreSQL jobs and attempts. GitHub and GitLab
-ingress record a provider/host-scoped delivery and queue an exact PR/MR or
-default-branch revision in one transaction. Workers claim with `FOR UPDATE SKIP
-LOCKED`, leases, bounded exponential retry, and terminal failed/dead states.
+The initial implementation uses PostgreSQL jobs and attempts. GitHub ingress
+records a provider/host-scoped delivery and queues an exact PR or
+default-branch revision in one transaction. Workers claim with `FOR UPDATE
+SKIP LOCKED`, leases, bounded exponential retry, and terminal failed/dead
+states.
 Repeated deliveries and revisions are deduplicated, newer revisions supersede
 older queued work, and jobs sharing one PR, review-thread, feedback-thread, or
 ref scope cannot run concurrently.
