@@ -12,7 +12,10 @@ from service.approval_publication import (
     PublishedApproval,
 )
 from service.auto_approval import AutoApprovalDecision
-from service.scm import PullRequestEvent
+from service.scm import (
+    PullRequestEvent,
+    scm_api_timeout_seconds,
+)
 
 MAX_APPROVAL_METADATA_BYTES = 1_000_000
 PENDING_MERGE_STATUSES = frozenset({"checking", "approvals_syncing"})
@@ -211,9 +214,7 @@ async def publish_gitlab_approval(
         raise ValueError("GitLab approval publisher received a non-GitLab event")
     if not decision.eligible:
         raise ValueError("An ineligible decision cannot publish an approval")
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     if client is None:
         async with httpx.AsyncClient(timeout=timeout) as owned_client:
             return await _publish_with_client(owned_client, event)

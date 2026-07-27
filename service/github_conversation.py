@@ -11,7 +11,10 @@ import httpx
 from service.conversation_models import ConversationReference
 from service.conversation_store import PublishedConversationReply
 from service.github import GITHUB_API_VERSION
-from service.scm import ReviewConversationEvent
+from service.scm import (
+    ReviewConversationEvent,
+    scm_api_timeout_seconds,
+)
 
 MAX_COMMENT_PAGES = 20
 MAX_CONVERSATION_REPLY_CHARS = 10_000
@@ -141,9 +144,7 @@ async def publish_github_conversation_reply(
         raise ValueError("GitHub conversation publisher received a non-GitHub event")
     if not answer.strip():
         raise ValueError("GitHub conversation answer cannot be empty")
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     if client is None:
         async with httpx.AsyncClient(timeout=timeout) as owned_client:
             return await _publish_with_client(

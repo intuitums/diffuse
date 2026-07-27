@@ -24,7 +24,10 @@ from service.review_models import (
     ReviewReport,
     SecurityClassification,
 )
-from service.scm import PullRequestEvent
+from service.scm import (
+    PullRequestEvent,
+    scm_api_timeout_seconds,
+)
 
 MAX_INLINE_COMMENTS = 25
 MAX_REVIEW_BODY_CHARS = 60_000
@@ -545,9 +548,7 @@ async def post_github_review_failure_notice(
         raise ValueError("GitHub failure notice received a non-GitHub event")
     if client is not None:
         return await _post_github_failure_notice(client, event, failure)
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     async with httpx.AsyncClient(timeout=timeout) as owned_client:
         return await _post_github_failure_notice(owned_client, event, failure)
 
@@ -646,9 +647,7 @@ async def publish_github_review(
         raise ValueError("Repository policy disabled publication for this review")
 
     marker = f"<!-- diffuse-review:{review_run_id}:{event.head_sha} -->"
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     if client is None:
         async with httpx.AsyncClient(timeout=timeout) as owned_client:
             return await _publish_with_client(

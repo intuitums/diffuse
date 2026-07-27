@@ -9,7 +9,10 @@ import httpx
 
 from service.feedback_models import ReviewReaction
 from service.github import GITHUB_API_VERSION
-from service.scm import FeedbackSyncEvent
+from service.scm import (
+    FeedbackSyncEvent,
+    scm_api_timeout_seconds,
+)
 
 MAX_REACTION_PAGES = 20
 
@@ -59,9 +62,7 @@ async def fetch_github_review_reactions(
 ) -> tuple[ReviewReaction, ...]:
     if event.provider != "github":
         raise ValueError("GitHub feedback reader received a non-GitHub event")
-    timeout = float(os.environ.get("SCM_API_TIMEOUT_SECONDS", "30"))
-    if timeout <= 0:
-        raise ValueError("SCM_API_TIMEOUT_SECONDS must be positive")
+    timeout = scm_api_timeout_seconds()
     if client is None:
         async with httpx.AsyncClient(timeout=timeout) as owned_client:
             return await _fetch_with_client(owned_client, event)
