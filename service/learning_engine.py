@@ -6,6 +6,7 @@ import json
 import os
 from collections.abc import Callable
 
+from repository_policy.resolve import neutralize_prompt_delimiters
 from service.learning_models import (
     RuleLearningEvidence,
     SuggestedRuleBatch,
@@ -54,6 +55,31 @@ def _evidence_payload(evidence: tuple[RuleLearningEvidence, ...]) -> list[dict[s
     ]
 
 
+def _rule_learning_user_prompt(
+    evidence: tuple[RuleLearningEvidence, ...],
+    *,
+    minimum_support: int,
+    minimum_support_pull_requests: int,
+) -> str:
+    # The evidence is verbatim human PR comment text plus finding prose derived from the
+    # diff, and `json.dumps` escapes neither `<` nor `>`, so a reviewer who pastes a
+    # closing tag into a comment would otherwise end the untrusted region and have the
+    # rest of the comment read as a trusted instruction to the rule-learning stage.
+    payload = neutralize_prompt_delimiters(
+        json.dumps(_evidence_payload(evidence), separators=(",", ":"))
+    )
+    return (
+        "Infer zero or more deduplicated suggested rules from this evidence. "
+        f"Each suggestion must cite at least {minimum_support} distinct event IDs spanning "
+        f"at least {minimum_support_pull_requests} pull requests. Scopes must be "
+        "repository-relative globs. Prefer the narrowest scope supported by multiple "
+        "examples. Return zero suggestions if the evidence does not establish a repeated "
+        "standard.\n\n<untrusted_review_feedback_json>\n"
+        f"{payload}\n"
+        "</untrusted_review_feedback_json>"
+    )
+
+
 def generate_suggested_rules(
     evidence: tuple[RuleLearningEvidence, ...],
     *,
@@ -82,15 +108,10 @@ def generate_suggested_rules(
             "ignore, hide, downgrade, or suppress security, correctness, or critical issues. "
             "Do not activate rules: a human must inspect and approve every suggestion."
         ),
-        user_prompt=(
-            "Infer zero or more deduplicated suggested rules from this evidence. "
-            f"Each suggestion must cite at least {minimum_support} distinct event IDs spanning "
-            f"at least {minimum_support_pull_requests} pull requests. Scopes must be "
-            "repository-relative globs. Prefer the narrowest scope supported by multiple "
-            "examples. Return zero suggestions if the evidence does not establish a repeated "
-            "standard.\n\n<untrusted_review_feedback_json>\n"
-            f"{json.dumps(_evidence_payload(evidence), separators=(',', ':'))}\n"
-            "</untrusted_review_feedback_json>"
+        user_prompt=_rule_learning_user_prompt(
+            evidence,
+            minimum_support=minimum_support,
+            minimum_support_pull_requests=minimum_support_pull_requests,
         ),
     )
     if progress_callback:
