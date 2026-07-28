@@ -6,6 +6,15 @@ services:
       POSTGRES_USER: diffuse
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: diffuse
+    # Mirrors deploy/compose.yaml; see the comments there. 64MB of /dev/shm is not
+    # enough to build the HNSW index on code_chunks for a large repository, and the
+    # capability set is the minimum the PostgreSQL entrypoint needs to initdb and
+    # step down from root.
+    shm_size: 1gb
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U diffuse -d diffuse"]
       interval: 5s
@@ -75,12 +84,12 @@ services:
       DIFFUSE_PUBLIC_URL: ${DIFFUSE_PUBLIC_URL:?Set DIFFUSE_PUBLIC_URL in .env}
     ports:
       - "127.0.0.1:8000:8000"
+    # REMOVED, mirroring deploy/compose.yaml: the read-only browser-sign-in secrets
+    # mount. Nothing reads a secret from that path - there is no `diffuse login`
+    # subcommand - and an unconditional bind mount of an undocumented host path gets
+    # created root-owned by Compose on first `up`. See deploy/compose.yaml.
     volumes:
       - repository_data:/var/lib/diffuse/repositories
-      # Read-only host secrets for browser sign-in. The directory may be absent
-      # or empty; sign-in simply stays disabled until the client secret is in
-      # place, and the secret never reaches .env or an image layer.
-      - ${DIFFUSE_SECRETS_DIR:-/srv/diffuse/secrets}:/srv/diffuse/secrets:ro
     tmpfs:
       - /tmp:size=256m,mode=1777
     logging:

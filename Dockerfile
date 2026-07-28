@@ -2,23 +2,40 @@
 
 FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS builder
 
+# PIP_NO_CACHE_DIR is deliberately NOT set here. Every pip invocation below runs
+# under `--mount=type=cache,target=/root/.cache/pip`, and the two directly
+# contradict each other: with the cache disabled the mount never accumulates
+# anything, so every build re-downloaded and re-built every wheel while looking
+# like it had a cache. The mount is a BuildKit cache, not a layer, so nothing it
+# holds reaches the image.
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /src
+
+# The base image ships /etc/apt/apt.conf.d/docker-clean, which deletes downloaded
+# .debs immediately after install. That defeats the apt cache mounts below exactly
+# the way PIP_NO_CACHE_DIR defeated the pip one, so keep the packages instead.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean \
+    && printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\n' \
+        > /etc/apt/apt.conf.d/keep-cache
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update \
     && apt-get install -y --no-install-recommends binutils
 
-COPY requirements.txt requirements.lock requirements-build.txt requirements-build.lock ./
+# Only the .lock files, on purpose. This is the most expensive layer in the build,
+# and copying requirements.txt / requirements-build.txt in alongside them meant a
+# comment edit in either range file invalidated a full dependency install that
+# never reads them -- the installs below are `--require-hashes` against the locks.
+COPY requirements.lock requirements-build.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --require-hashes -r requirements.lock \
     && python -m pip install --require-hashes -r requirements-build.lock \
     && python -m pip check
 
+COPY evals ./evals
 COPY indexer ./indexer
 COPY repository_policy ./repository_policy
 COPY retriever ./retriever
@@ -58,9 +75,11 @@ RUN pyinstaller \
         --copy-metadata tree-sitter-typescript \
         --add-data /src/service/git_askpass.sh:service \
         --add-data /src/sql:sql \
+        --add-data /src/evals:evals \
         /src/service/runtime.py \
     && test -x /build/diffuse/diffuse \
     && test -f /build/diffuse/_internal/sql/schema.sql \
+    && test -f /build/diffuse/_internal/evals/baseline.example.json \
     && test -x /build/diffuse/_internal/service/git_askpass.sh \
     && for dist in tree_sitter tree_sitter_c tree_sitter_cpp tree_sitter_go \
             tree_sitter_java tree_sitter_javascript tree_sitter_php \
@@ -74,8 +93,8 @@ RUN pyinstaller \
 
 FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS test-runner
 
+# See the builder stage: PIP_NO_CACHE_DIR would make the pip cache mount below inert.
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /src
@@ -115,7 +134,10 @@ ENV DIFFUSE_SQL_DIR=/opt/diffuse/_internal/sql \
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\n' \
+        > /etc/apt/apt.conf.d/keep-cache \
+    && apt-get update \
     && apt-get install -y --no-install-recommends adduser ca-certificates git \
     && addgroup --system diffuse \
     && adduser --system --ingroup diffuse --home /home/diffuse diffuse \

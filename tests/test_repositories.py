@@ -3,6 +3,10 @@ from datetime import UTC, datetime
 
 import pytest
 
+from service.cross_repository import (
+    DroppedContextRepository,
+    resolve_cross_repository_context,
+)
 from service.repositories import (
     RegisteredRepository,
     repository_clone_url,
@@ -320,3 +324,127 @@ def test_checkout_refuses_a_tree_that_expands_past_the_byte_ceiling(monkeypatch,
         pass
 
     assert not list(mirror_root.glob(".22-worktree-*"))
+
+
+class _CrossRepositoryCursor:
+    """Answer `resolve_cross_repository_context`'s queries by their shape.
+
+    Each query is recognised by a fragment unique to it, so the fake stays
+    readable and a query that changes shape fails loudly instead of silently
+    returning the wrong table's rows.
+    """
+
+    def __init__(self, *, primary, cluster_members, onboarded, snapshots):
+        self._primary = primary
+        self._cluster_members = cluster_members
+        self._onboarded = onboarded
+        self._snapshots = snapshots
+        self._rows = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def execute(self, query, parameters=None):
+        if "repository_cluster_members AS source" in query:
+            self._rows = list(self._cluster_members)
+        elif "clone_url IS NOT NULL" in query:
+            target = self._onboarded.get(parameters[2])
+            self._rows = [target] if target else []
+        elif "FROM index_snapshots" in query:
+            snapshot = self._snapshots.get(parameters[0])
+            self._rows = [snapshot] if snapshot else []
+        elif "FROM repositories" in query:
+            self._rows = [self._primary]
+        else:
+            raise AssertionError(f"Unexpected query: {query}")
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+class _CrossRepositoryConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self, **_kwargs):
+        return self._cursor
+
+
+def _cross_repository_connection(*, cluster_members=()):
+    """A host with owner/app onboarded beside an indexed owner/secrets."""
+    return _CrossRepositoryConnection(
+        _CrossRepositoryCursor(
+            primary={
+                "id": 1,
+                "scm_provider": "github",
+                "scm_base_url": "https://github.com",
+                "full_name": "owner/app",
+                "enabled": True,
+            },
+            cluster_members=cluster_members,
+            onboarded={
+                "owner/secrets": {
+                    "id": 2,
+                    "full_name": "owner/secrets",
+                    "enabled": True,
+                }
+            },
+            snapshots={2: {"id": 22, "commit_sha": "b" * 40}},
+        )
+    )
+
+
+def test_uncluster_explicit_context_repository_is_dropped_not_retrieved():
+    """`.diffuse` is committed to the repository under review, so `context.repos`
+    is attacker-controlled: merge access to one repository must not pull another
+    repository's indexed source into the review context."""
+    resolution = resolve_cross_repository_context(
+        _cross_repository_connection(),
+        primary_repository_id=1,
+        primary_snapshot_id=None,
+        explicit_repositories=("owner/secrets",),
+        model="text-embedding-3-small",
+        dimensions=1536,
+    )
+
+    assert resolution.plan.related_snapshots == ()
+    assert resolution.dropped_repositories == (
+        DroppedContextRepository(
+            repository_full_name="owner/secrets",
+            reason_code="not_cluster_member",
+        ),
+    )
+
+
+def test_clustered_explicit_context_repository_is_still_retrieved():
+    resolution = resolve_cross_repository_context(
+        _cross_repository_connection(
+            cluster_members=(
+                {
+                    "id": 2,
+                    "full_name": "owner/secrets",
+                    "enabled": True,
+                    "scm_provider": "github",
+                    "scm_base_url": "https://github.com",
+                    "cluster_ids": [7],
+                },
+            )
+        ),
+        primary_repository_id=1,
+        primary_snapshot_id=None,
+        explicit_repositories=("owner/secrets",),
+        model="text-embedding-3-small",
+        dimensions=1536,
+    )
+
+    assert resolution.dropped_repositories == ()
+    assert [
+        (item.repository_full_name, item.source, item.cluster_ids)
+        for item in resolution.plan.related_snapshots
+    ] == [("owner/secrets", "explicit+cluster", (7,))]

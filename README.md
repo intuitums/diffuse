@@ -148,10 +148,16 @@ docker compose run --rm migrate database migrate \
 consecutive files under `sql/migrations/`; editing any applied file or its
 recorded checksum prevents startup.
 
-The production image installs the same `diffuse` command used above. Install it
-into a local Python environment with `uv pip install -e .` (or an equivalent
-Python installer) to manage the self-hosted service and review a local branch
-using the same index, policy, learned rules, retrieval, and native verifier:
+The production image's `diffuse` entrypoint is a superset of the packaged CLI:
+alongside the subcommands below it takes `serve`, `worker`, and `healthcheck`,
+which is how Compose starts the API and worker. A `pip install` of this package
+maps `diffuse` to the CLI only, so `diffuse serve` outside the image exits with
+`invalid choice: 'serve'`.
+
+Install the CLI into a local Python environment with `uv pip install -e .` (or
+an equivalent Python installer) to manage the self-hosted service and review a
+local branch using the same index, policy, learned rules, retrieval, and native
+verifier:
 
 ```bash
 diffuse repository list
@@ -291,13 +297,20 @@ The current server advertises twenty tools:
 
 - repository discovery, repository-authorized `get_review_analytics`,
   commit-pinned `search_code`, citation-grounded `ask_codebase`,
-  `list_pull_requests` alongside its equivalent `list_merge_requests`, and
-  pull-request detail;
+  `list_pull_requests` alongside the identical `list_merge_requests`, and
+  `get_merge_request` for pull-request detail;
 - review list/detail plus an authoritative re-run trigger;
-- PR comment projection plus repository-filterable finding search;
+- `list_merge_request_comments` for PR comment projection plus
+  repository-filterable `search_review_comments`;
 - custom-context list/detail/search/create plus Diffuse-native optimistic
   update/delete; and
 - revision-safe `get_fix_handoff` and `get_fix_all_handoff` bundles.
+
+The `merge_request` names predate GitHub-only support (ADR 0041) and describe
+GitHub pull requests. `list_pull_requests` is the only one with a
+pull-request-named form; `get_merge_request` and `list_merge_request_comments`
+have none. Renaming them would break existing clients, so they stay as they are
+until a deliberate contract change.
 
 The pull-request, review, and comment tools accept repository descriptors using
 `name`, `remote`, `defaultBranch`, optional `remoteUrl`, and `prNumber`. Every

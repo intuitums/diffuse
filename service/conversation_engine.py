@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
+from repository_policy.resolve import neutralize_prompt_delimiters
 from retriever.retrieve import RetrievedContext, format_as_extra_instructions
 from service.conversation_models import (
     ConversationReference,
@@ -61,6 +62,44 @@ def _history_text(turns: tuple[ConversationTurn, ...]) -> str:
     return marker + rendered[-(MAX_CONVERSATION_HISTORY_CHARS - len(marker)) :]
 
 
+def _conversation_user_prompt(
+    event: ReviewConversationEvent,
+    finding: ReviewFinding,
+    contexts: list[RetrievedContext],
+    previous_turns: tuple[ConversationTurn, ...],
+) -> str:
+    # Every section here is authored by a commenter, by the diff, or by indexed
+    # repository files, so each gets the same delimiter neutralization the review
+    # prompts get: a forged closing tag would otherwise push the text after it outside
+    # the untrusted region, where it reads as a trusted operator instruction. The
+    # finding block is included because its prose is model output derived from that
+    # same untrusted diff, and its JSON framing is no boundary of its own.
+    question = neutralize_prompt_delimiters(event.question)
+    finding_json = neutralize_prompt_delimiters(finding.model_dump_json())
+    diff_hunk = neutralize_prompt_delimiters(event.diff_hunk or "")
+    history = neutralize_prompt_delimiters(_history_text(previous_turns))
+    context = neutralize_prompt_delimiters(format_as_extra_instructions(contexts))
+    return (
+        "<untrusted_human_question>\n"
+        f"{question}\n"
+        "</untrusted_human_question>\n\n"
+        "<diffuse_finding_json>\n"
+        f"{finding_json}\n"
+        "</diffuse_finding_json>\n\n"
+        "<untrusted_original_diff_hunk>\n"
+        f"{diff_hunk or 'No diff hunk was supplied by the SCM.'}\n"
+        "</untrusted_original_diff_hunk>\n\n"
+        "<untrusted_prior_thread_conversation>\n"
+        f"{history or 'No prior Diffuse conversation.'}\n"
+        "</untrusted_prior_thread_conversation>\n\n"
+        "<untrusted_retrieved_repository_context>\n"
+        f"{context or 'No compatible indexed context.'}\n"
+        "</untrusted_retrieved_repository_context>\n\n"
+        f"Review head: {event.head_sha}\n"
+        "Return a grounded answer and only directly supported references."
+    )
+
+
 def _grounded_references(
     references: list[ConversationReference],
     finding: ReviewFinding,
@@ -115,24 +154,11 @@ def generate_conversation_answer(
             "for exact ranges present in the supplied finding or retrieved context. Do not "
             "include a greeting, signature, severity decision, or hidden HTML marker."
         ),
-        user_prompt=(
-            "<untrusted_human_question>\n"
-            f"{event.question}\n"
-            "</untrusted_human_question>\n\n"
-            "<diffuse_finding_json>\n"
-            f"{finding.model_dump_json()}\n"
-            "</diffuse_finding_json>\n\n"
-            "<untrusted_original_diff_hunk>\n"
-            f"{event.diff_hunk or 'No diff hunk was supplied by the SCM.'}\n"
-            "</untrusted_original_diff_hunk>\n\n"
-            "<untrusted_prior_thread_conversation>\n"
-            f"{_history_text(previous_turns) or 'No prior Diffuse conversation.'}\n"
-            "</untrusted_prior_thread_conversation>\n\n"
-            "<untrusted_retrieved_repository_context>\n"
-            f"{format_as_extra_instructions(contexts) or 'No compatible indexed context.'}\n"
-            "</untrusted_retrieved_repository_context>\n\n"
-            f"Review head: {event.head_sha}\n"
-            "Return a grounded answer and only directly supported references."
+        user_prompt=_conversation_user_prompt(
+            event,
+            finding,
+            contexts,
+            previous_turns,
         ),
     )
     if progress_callback:

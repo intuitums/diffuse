@@ -39,9 +39,18 @@ DEFINITION_PATTERNS = {
         re.MULTILINE,
     ),
     ".go": re.compile(r"^(?:func(?:\s+\([^)]*\))?|type)\s+\w+", re.MULTILINE),
+    # A Java type may contain spaces (`Map<String, Object>`), but the class that spells
+    # the type must not: while it did, a space could be claimed by either the type or the
+    # `\s+` that follows it, so the engine enumerated every split of a whitespace run —
+    # cubic time, and one pushed `.java` file of blanks wedged the worker pool. Spaces are
+    # now matched only by the explicit ` +` separator, and every separator demands a type
+    # token after it, so each split is forced and matching is linear. The trailing
+    # alternative keeps constructors, which have no return type for the first branch to
+    # match; it is capitalized so it cannot swallow ordinary indented call statements.
     ".java": re.compile(
         r"^[ \t]*(?:(?:public|private|protected|static|final|abstract|synchronized)[ \t]+)*"
-        r"(?:class|interface|enum|record|[\w<>\[\], ?]+\s+)\w+(?:\s*\(|\s+)",
+        r"(?:(?:class|interface|enum|record|[\w<>\[\],?]+(?: +[\w<>\[\],?]+)*\s+)\w+(?:\s*\(|\s+)"
+        r"|[A-Z]\w*[ \t]*\()",
         re.MULTILINE,
     ),
     ".rb": re.compile(r"^(?:def|class|module)\s+[\w:!?=]+", re.MULTILINE),
@@ -207,7 +216,12 @@ def _extract_symbol(line: str, extension: str) -> str | None:
         match = re.search(patterns[extension], stripped)
         return match.group(1) if match else None
 
-    method_match = re.search(r"([A-Za-z_]\w*)\s*\(", stripped)
+    # `\b` and the possessive quantifiers keep this linear. Unanchored, `([A-Za-z_]\w*)`
+    # restarted inside every identifier and re-walked it looking for a `(` that a hostile
+    # line never contains — quadratic on the same `.java` path the definition patterns
+    # guard. A name never starts mid-identifier, and `\w`/`\s`/`(` are disjoint, so
+    # neither restriction can lose a match that the backtracking form would have found.
+    method_match = re.search(r"\b([A-Za-z_]\w*+)\s*+\(", stripped)
     if method_match:
         return method_match.group(1)
     type_match = re.search(r"\b(?:class|interface|enum|record)\s+([A-Za-z_]\w*)", stripped)

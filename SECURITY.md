@@ -40,14 +40,14 @@ they describe something an operator cannot simply configure away.
 This is the defining property of the threat model. Diffuse clones repositories,
 indexes their source, reads in-repository configuration (`.diffuse` and
 agent/editor instruction files), ingests webhook payloads, and
-feeds diffs, retrieved code, and pull-request and merge-request text to a
+feeds diffs, retrieved code, and pull-request text to a
 language model. **All of that content is attacker-influencable** — by an
 external contributor opening a pull request, by a compromised dependency
 vendored into a repository, or by anyone who can get a branch pushed.
 
 The following are explicitly **in scope**:
 
-- **Prompt injection.** Repository content, diffs, PR/MR titles and
+- **Prompt injection.** Repository content, diffs, pull-request titles and
   descriptions, commit messages, review threads, or in-repository configuration
   that steers the review model into leaking data it was given, taking an
   unintended action (publishing, approving, re-triggering), suppressing
@@ -66,12 +66,17 @@ The following are explicitly **in scope**:
   findings, analytics, or custom context across a repository-scoped token
   boundary; escalating a read scope to a generation or write scope; acting on a
   repository the token is not assigned to.
-- **Webhook authentication flaws.** Signature-verification bypass, replay
-  outside the bounded window, downgrade from Standard Webhooks signatures to the
-  legacy token, or forging an instance origin.
+- **Webhook authentication flaws.** The one webhook route, `POST
+  /webhook/github`, authenticates a delivery solely by an HMAC-SHA-256
+  `X-Hub-Signature-256` header, and deduplicates by a durable unique
+  `(provider, base URL, delivery id)` record. Signature-verification bypass,
+  replaying a delivery past that record, or forging an instance origin are all
+  in scope.
 - **OAuth and session flaws** in the browser sign-in path (`/auth/cli`,
   `/auth/github/callback`, `/setup`), including state fixation or reuse,
-  session-token exposure, and open redirects.
+  session-token exposure, and open redirects. These routes are mounted and
+  reachable even though no request authenticator consumes the session they
+  mint yet; they still spend the client secret and write identity rows.
 - **MCP and REST API flaws**, including DNS-rebinding protection bypass and
   authentication bypass.
 - **Database migration integrity** failures that allow unverified SQL to be

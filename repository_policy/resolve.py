@@ -32,7 +32,11 @@ PROMPT_STRUCTURAL_TAGS = (
     "untrusted_original_diff_hunk",
     "untrusted_prior_thread_conversation",
     "untrusted_human_question",
+    "untrusted_repository_sources_json",
+    "untrusted_candidates",
+    "untrusted_review_feedback_json",
     "diffuse_finding_json",
+    "diffuse_fix_handoff",
     "repository_review_policy_json",
     "diffuse_security_policy_json",
     "changed_paths_json",
@@ -280,6 +284,11 @@ def neutralize_prompt_delimiters(text: str) -> str:
     closing tags and the attacker's directive would sit outside the untrusted region as
     the model parses it. Opening and closing forms, any casing, any interior whitespace or
     attributes are all replaced, so no repository text can terminate its own block.
+
+    JSON-serialized sections need this just as much as prose ones: `json.dumps` escapes
+    neither `<` nor `>`, so a forged tag survives serialization intact. Applying this to
+    an already-rendered JSON document is safe because the replacement text contains no
+    character JSON has to escape.
     """
     return _STRUCTURAL_TAG_PATTERN.sub(NEUTRALIZED_DELIMITER, text)
 

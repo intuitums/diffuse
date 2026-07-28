@@ -344,32 +344,6 @@ def _commit_identities(
     )
 
 
-def commit_names_agent_identity(commit: CommitMetadata) -> bool:
-    """Whether an agent identity appears in this commit's author or committer.
-
-    SCM adapters use this to decide which commits are worth the extra request
-    that loads a provider-asserted signal such as a commit signature: an
-    assertion only raises the strength of an identity Diffuse already
-    recognises, so a commit naming none cannot benefit from one.
-    """
-
-    return any(
-        _identity_signal(
-            name=name,
-            email=email,
-            login=login,
-            actor_type=actor_type,
-            source=source,
-            commit_sha=commit.sha,
-            verified=False,
-        )
-        is not None
-        for name, email, login, actor_type, source, _verified in _commit_identities(
-            commit
-        )
-    )
-
-
 def _commit_signals(commit: CommitMetadata) -> tuple[ProvenanceSignal, ...]:
     signals: list[ProvenanceSignal] = []
     for name, email, login, actor_type, source, verified in _commit_identities(commit):
