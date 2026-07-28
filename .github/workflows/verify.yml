@@ -192,6 +192,13 @@ jobs:
       POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
       DIFFUSE_API_TOKEN: 0123456789abcdef0123456789abcdef
       DIFFUSE_PUBLIC_URL: http://localhost:8000
+      # Never used to call a provider: the worker boots against an empty queue and
+      # idles. It is here because the worker validates its embedding credential at
+      # startup -- a repository cannot be indexed without one, and a repository with
+      # no index cannot be reviewed -- so an unset key is now a refusal to start
+      # rather than a per-job failure. Without this the smoke test boots a worker
+      # that immediately exits, which is exactly what it exists to catch.
+      OPENAI_API_KEY: sk-ci-smoke-test-not-a-real-key
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -265,8 +272,11 @@ jobs:
       #
       # deploy/compose.yaml is used rather than docker-compose.yml on purpose: it is
       # the file customers run. deploy/env.example is used as shipped apart from the
-      # three secrets it ships empty and the image/secrets paths, so the customer env
-      # file is proven to boot rather than merely proven to parse.
+      # four values it ships empty that something now refuses to start without, and
+      # the image/secrets paths, so the customer env file is proven to boot rather
+      # than merely proven to parse. Keep that substitution list in step with what
+      # startup validation actually requires: a value missing here does not fail to
+      # parse, it boots a container that exits.
       - name: Boot the customer stack against the built image
         working-directory: deploy
         run: |
@@ -275,6 +285,7 @@ jobs:
               -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" \
               -e "s|^DIFFUSE_API_TOKEN=.*|DIFFUSE_API_TOKEN=${DIFFUSE_API_TOKEN}|" \
               -e "s|^DIFFUSE_PUBLIC_URL=.*|DIFFUSE_PUBLIC_URL=${DIFFUSE_PUBLIC_URL}|" \
+              -e "s|^OPENAI_API_KEY=.*|OPENAI_API_KEY=${OPENAI_API_KEY}|" \
               env.example > ci.env
 
           # --wait blocks on the healthchecks. migrate is gated on db, and app on
