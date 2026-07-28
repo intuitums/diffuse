@@ -61,9 +61,14 @@ diffuse --help
 pytest -m "not integration"
 ```
 
-750 tests, roughly 7-12 seconds, no database and no network. This is the suite
-to run constantly while you work. Anything not marked `integration` must pass
-without external services.
+Roughly 7-12 seconds, no database and no network. This is the suite to run
+constantly while you work. Anything not marked `integration` must pass without
+external services.
+
+The suite is hermetic against a local `.env`. `litellm` calls `load_dotenv()`
+on import, which would otherwise merge your `.env` into the test environment
+and fail tests you did not touch; `tests/conftest.py` disables that for the
+test process. You do not need to move `.env` aside.
 
 ## Run the linter
 
@@ -78,10 +83,9 @@ but keep formatting-only churn out of functional pull requests.
 
 ## Run the integration tests
 
-The 45 tests marked `integration` need a real PostgreSQL 17 with the `pgvector`
-extension available. `README.md` used to abbreviate this as
-`POSTGRES_TEST_DATABASE_URL=postgresql://... pytest -m integration`; here is
-the whole recipe.
+The tests marked `integration` need a real PostgreSQL 17 with the `pgvector`
+extension available. `README.md` points here rather than restating this; this
+is the whole recipe.
 
 ### 1. Start the database
 
@@ -135,7 +139,7 @@ a `diffuse-database-status-v1` document; a successful run ends with
 pytest -m integration
 ```
 
-45 tests, roughly 18 seconds. `tests/integration/conftest.py` copies
+Roughly 18 seconds. `tests/integration/conftest.py` copies
 `POSTGRES_TEST_DATABASE_URL` into `DATABASE_URL`, so application code under
 test connects to the same disposable database. If
 `POSTGRES_TEST_DATABASE_URL` is unset, every integration test is skipped rather
@@ -171,7 +175,7 @@ done. Do not commit it.
 **This is the rule most likely to bite you.**
 
 `sql/schema.sql` is the frozen version-1 migration (`0001_initial_schema`). Its
-SHA-256 is pinned in `BASELINE_SCHEMA_SHA256` at `service/database_migrations.py:14`
+SHA-256 is pinned in `BASELINE_SCHEMA_SHA256` in `service/database_migrations.py`
 and verified every time the migration catalog is loaded. Editing the file — even
 adding a comment or a trailing newline — is a hard failure at load time, not a
 test failure you can defer:

@@ -225,6 +225,10 @@ jobs:
           sed -i "s|^DIFFUSE_IMAGE=.*|DIFFUSE_IMAGE=${IMAGE}@${DIGEST}|" \
             release/diffuse/env.example
           cp docs/deployment.md release/diffuse/OPERATIONS.md
+          # The per-repository policy reference. README.md and OPERATIONS.md both
+          # send the reader here to change the trigger and status-check defaults,
+          # so omitting it ships two dangling references and no way to act on them.
+          cp docs/configuration.md release/diffuse/CONFIGURATION.md
           tar -C release -czf diffuse-self-host.tar.gz diffuse
           sha256sum diffuse-self-host.tar.gz > diffuse-self-host.tar.gz.sha256
 

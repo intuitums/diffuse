@@ -36,17 +36,60 @@ def _replace_process_arguments(arguments: Sequence[str]) -> None:
     sys.argv = [sys.argv[0], *arguments]
 
 
+# uvicorn accepts a narrower vocabulary than `logging` does: it has no NOTSET and
+# no WARN alias, and rejects anything outside this set. Mapping here keeps a
+# LOG_LEVEL that is valid for the worker from crash-looping the API container.
+_UVICORN_LOG_LEVELS = {
+    "CRITICAL": "critical",
+    "FATAL": "critical",
+    "ERROR": "error",
+    "WARNING": "warning",
+    "WARN": "warning",
+    "INFO": "info",
+    "DEBUG": "debug",
+    "NOTSET": "debug",
+}
+
+
+def _log_level() -> tuple[str, str]:
+    """Return the LOG_LEVEL as (logging name, uvicorn name)."""
+    name = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+    if name not in _UVICORN_LOG_LEVELS:
+        raise ValueError(
+            f"LOG_LEVEL must be one of {', '.join(sorted(_UVICORN_LOG_LEVELS))}; got {name!r}"
+        )
+    return name, _UVICORN_LOG_LEVELS[name]
+
+
 def _run_api(arguments: Sequence[str]) -> None:
     if arguments:
         raise ValueError("The serve command does not accept positional arguments")
+    import logging
+
     import uvicorn
 
     from service.webhook_server import app
+
+    # Both env files describe LOG_LEVEL as applying to "the worker and API", but
+    # only the worker configured logging. Diffuse's own loggers here fell through
+    # to logging.lastResort, which emits WARNING and above and discards INFO and
+    # DEBUG -- so every refused webhook delivery that deployment.md tells an
+    # operator to look for was reaching stderr only because it is a warning, and
+    # raising LOG_LEVEL to DEBUG did nothing at all.
+    logging_level, uvicorn_level = _log_level()
+    # `basicConfig` alone is not enough here. Importing the app pulls in a
+    # dependency that installs a RichHandler on the root logger, and
+    # `basicConfig` is documented to do nothing once the root logger has
+    # handlers -- so it silently leaves the level at INFO. Setting the level
+    # explicitly applies it whether or not something got there first.
+    logging.basicConfig(level=logging_level)
+    logging.getLogger().setLevel(logging_level)
 
     uvicorn.run(
         app,
         host=os.environ.get("DIFFUSE_BIND_HOST", DEFAULT_BIND_HOST),
         port=_bind_port(),
+        log_level=uvicorn_level,
     )
 
 

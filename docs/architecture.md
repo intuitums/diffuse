@@ -297,13 +297,19 @@ same GitHub thread is called again.
 
 ### Native review engine
 
-The review workflow is stateful and multi-turn:
+The review workflow is stateful and multi-turn. Steps 2 and 4 describe the
+target; the parenthetical notes record what ships today.
 
 1. Normalize PR metadata and diff into changed symbols and line ranges.
 2. Resolve applicable organization/team/repository/directory policy.
+   (Organization and team layers are planned; only the version-controlled
+   `.diffuse/` repository and directory layers exist today.)
 3. Build an impact set through graph traversal and hybrid retrieval.
 4. Run specialized passes for logic, security, performance, architecture,
-   tests/contracts, and configured rules.
+   tests/contracts, and configured rules. (The shipped pass set is exactly
+   `correctness`, `security`, `performance`, and `tests`; any other name is
+   rejected at startup. Dedicated architecture and contract passes are
+   planned.)
 5. Verify candidate findings against source context and deduplicate them.
 6. Assign category, severity, confidence, evidence, and suggested fix.
 7. Build the summary, risk score, issue table, optional diagrams, and status.

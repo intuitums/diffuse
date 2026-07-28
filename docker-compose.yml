@@ -32,6 +32,22 @@ services:
     stop_grace_period: 1m
 
   migrate:
+    # The ONLY service that declares `build:`. `app` and `worker` run the same
+    # image and reference the tag alone. When more than one service builds the
+    # same tag, BuildKit runs the builds concurrently and they race to export
+    # it: whichever loses fails the whole command with
+    # `image "docker.io/library/diffuse:local": already exists`, so a clean
+    # `docker compose up -d --build` exits 1 on the first run and only succeeds
+    # on the second. Building here rather than on `app` is deliberate: `migrate`
+    # is the service both others gate on, so the image exists before anything
+    # that needs it starts.
+    #
+    # Documented usage is `docker compose up -d --build`, which is silent. A
+    # bare `docker compose up -d` with no local image first prints three
+    # `pull access denied for diffuse` lines: Compose resolves the two
+    # image-only services before the build runs and tries the registry. It then
+    # builds here and starts normally, so the errors are cosmetic. Do not
+    # "fix" them by restoring `build:` on the other services.
     build: .
     image: ${DIFFUSE_IMAGE:-diffuse:local}
     restart: "no"
@@ -62,7 +78,8 @@ services:
         max-file: "5"
 
   app:
-    build: .
+    # No `build:` — see the comment on `migrate`. `depends_on` guarantees
+    # `migrate` has already built and run this exact tag.
     image: ${DIFFUSE_IMAGE:-diffuse:local}
     restart: unless-stopped
     init: true
@@ -100,7 +117,8 @@ services:
     stop_grace_period: 30s
 
   worker:
-    build: .
+    # No `build:` — see the comment on `migrate`. `depends_on` guarantees
+    # `migrate` has already built and run this exact tag.
     image: ${DIFFUSE_IMAGE:-diffuse:local}
     restart: unless-stopped
     init: true
