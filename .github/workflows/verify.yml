@@ -277,11 +277,30 @@ jobs:
               -e "s|^DIFFUSE_PUBLIC_URL=.*|DIFFUSE_PUBLIC_URL=${DIFFUSE_PUBLIC_URL}|" \
               env.example > ci.env
 
-          # --wait blocks on the healthchecks. migrate is gated on db, app and worker
-          # on migrate completing successfully, so a failure here means the release
+          # --wait blocks on the healthchecks. migrate is gated on db, and app on
+          # migrate completing successfully, so a failure here means the release
           # ordering itself is broken - not just that one container is unhappy.
+          # Scoped to db and app because --wait fails outright on a service with no
+          # healthcheck, and the worker deliberately has none: it drains a queue
+          # rather than serving a port, so process liveness would say nothing about
+          # whether it is making progress. See DEV-227.
           docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-            up --detach --wait --wait-timeout 240
+            up --detach --wait --wait-timeout 240 db app
+
+          # The worker still has to boot. It validates its entire configuration at
+          # startup now, so an exit here is a real packaging or configuration
+          # regression rather than a slow start.
+          docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
+            up --detach worker
+          sleep 10
+          worker_state="$(docker compose --env-file ci.env --file compose.yaml \
+            --project-name diffuse-ci ps --format '{{.State}}' worker)"
+          if [ "$worker_state" != "running" ]; then
+            echo "::error::worker is '${worker_state}', expected 'running'" >&2
+            docker compose --env-file ci.env --file compose.yaml \
+              --project-name diffuse-ci logs worker >&2
+            exit 1
+          fi
 
           # The exact check deploy/README.md tells a customer to run after `up -d`.
           curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8000/ready
