@@ -18,12 +18,19 @@ must leave a deployable, observable system.
   findings it computes true bugs, false positives/negatives, addressed
   findings, precision/recall/F1, median latency, tokens, and estimated cost.
   It does not yet run a review — `observed` is transcribed by hand into the
-  input file, so nothing measures review quality automatically. Build a harness
-  that invokes the review engine against fixtures, replace the committed
-  synthetic example (whose recorded run has 0% recall) with reviewed private PR
-  fixtures, package `evals/` so the documented command runs in the image, and
-  establish release gates.
-- Replace free-form environment access with validated configuration.
+  input file, so nothing measures review quality automatically. This is the
+  largest single gap in the product: every confidence threshold, severity
+  floor, and finding cap is an unmeasured constant. Build a harness that
+  invokes the review engine against fixtures, replace the committed synthetic
+  example (whose recorded run has 0% recall) with reviewed private PR fixtures,
+  and establish release gates. `evals/` is now packaged into the image and
+  verified in CI, but the documented relative path does not resolve there — the
+  in-image fixture is `/opt/diffuse/_internal/evals/baseline.example.json`.
+- Configuration validation is in place for the worker: `validate_worker_configuration`
+  resolves every hot-path variable at startup and names the one that fails, and
+  `validate_worker_credentials` separately refuses to start without a usable
+  embedding credential. Extend the same treatment to the API process, which
+  still reads its configuration ad hoc.
 
 Exit: every planned capability has an owner component, data boundary, and
 testable acceptance condition.

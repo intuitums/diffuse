@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Literal
 
 import litellm
+from litellm.exceptions import AuthenticationError, PermissionDeniedError
 from pydantic import BaseModel, ValidationError
 
 from repository_policy.resolve import ResolvedReviewPolicy, neutralize_prompt_delimiters
@@ -29,6 +30,7 @@ from service.review_models import (
     VerificationBatch,
 )
 from service.scm import normalize_base_url
+from service.workflow import NonRetryableError
 
 LOGGER = logging.getLogger(__name__)
 
@@ -120,6 +122,18 @@ def _positive_int(name: str, default: int) -> int:
     value = int(os.environ.get(name, str(default)))
     if value <= 0:
         raise ValueError(f"{name} must be positive")
+    return value
+
+
+def model_retries() -> int:
+    """In-call retries for one model request. Zero disables them.
+
+    Not `_positive_int`: zero is a legitimate setting here, and is how an
+    operator restores the previous fail-immediately behaviour.
+    """
+    value = int(os.environ.get("REVIEW_MODEL_RETRIES", "2"))
+    if value < 0:
+        raise ValueError("REVIEW_MODEL_RETRIES must not be negative")
     return value
 
 
@@ -235,6 +249,13 @@ def _call_structured[T: BaseModel](
             if timeout_seconds is not None
             else _positive_int("REVIEW_MODEL_TIMEOUT_SECONDS", 180)
         ),
+        # A review is up to REVIEW_PASSES x REVIEW_MAX_DIFF_CHUNKS calls plus a
+        # verifier, and the workflow's unit of retry is the whole review. Without
+        # this, one 429 in the last pass discards every pass that already
+        # succeeded, re-pays for them on the next attempt, and consumes one of
+        # only five attempts. LiteLLM retries transient statuses only -- an
+        # authentication or bad-request failure is raised immediately.
+        "num_retries": model_retries(),
     }
     if int(arguments["max_tokens"]) <= 0 or int(arguments["timeout"]) <= 0:
         raise ValueError("Structured model limits must be positive")
@@ -247,7 +268,16 @@ def _call_structured[T: BaseModel](
     if _supports_json_schema(model):
         arguments["response_format"] = response_model
 
-    response = litellm.completion(**arguments)
+    try:
+        response = litellm.completion(**arguments)
+    except (AuthenticationError, PermissionDeniedError) as error:
+        # Permanent, and every attempt re-runs the passes that already
+        # succeeded. NonRetryableError subclasses ValueError, which is what
+        # `run_once` classifies as terminal, so this dead-letters on the first
+        # attempt and reports the provider's reason instead of a fifth timeout.
+        raise NonRetryableError(
+            f"Model provider rejected the credential for {model!r}: {error}"
+        ) from error
     prompt_tokens = _usage_value(response, "prompt_tokens")
     completion_tokens = _usage_value(response, "completion_tokens")
     try:

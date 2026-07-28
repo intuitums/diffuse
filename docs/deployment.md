@@ -12,7 +12,7 @@ Provide:
 
 - a current Docker Engine with the Compose plugin;
 - a DNS name whose HTTPS traffic terminates at a reverse proxy;
-- outbound HTTPS access to the selected SCM and model provider;
+- outbound HTTPS access to GitHub and the configured model provider;
 - enough persistent disk for PostgreSQL and repository mirrors; and
 - host-level monitoring for disk, memory, container restarts, and backup age.
 
@@ -40,8 +40,8 @@ URL. Also set:
 - `DIFFUSE_PUBLIC_URL=https://diffuse.example.com`;
 - `DIFFUSE_MCP_ALLOWED_HOSTS=diffuse.example.com`;
 - the GitHub integration, including a high-entropy webhook secret;
-- the GitHub web/API origins and the narrowest possible additional instance
-  allowlist; and
+- the GitHub web/API origins and the narrowest possible
+  `GITHUB_ALLOWED_INSTANCES`; and
 - the model credentials or self-hosted model endpoint.
 
 Every configured origin ends up carrying a token or a clone credential, so
@@ -67,7 +67,12 @@ repository-scoped service token. Configuring OAuth today therefore places a
 GitHub client secret on the host and grants no access in return.
 
 Authenticate with `DIFFUSE_API_TOKEN` for bootstrap and recovery, and with
-`diffuse token add` service tokens for routine clients.
+`docker compose run --rm worker token add` service tokens for routine clients.
+
+There is no `diffuse` binary to install: every command ships inside the release
+image. Anywhere this document or the bundle's `README.md` shows
+`diffuse <command>`, the Compose form is
+`docker compose run --rm worker <command>`.
 
 Validate interpolation before starting anything:
 
@@ -75,8 +80,9 @@ Validate interpolation before starting anything:
 docker compose config --quiet
 ```
 
-Compose refuses to start without a database password, bootstrap token, and
-public URL.
+Compose refuses to start without `POSTGRES_PASSWORD`, `DIFFUSE_API_TOKEN`,
+`DIFFUSE_PUBLIC_URL`, and `DIFFUSE_IMAGE`. Release bundles pre-pin the last of
+these to the signed release digest.
 
 ## Start and expose the service
 
@@ -90,8 +96,9 @@ docker compose ps
 curl --fail http://127.0.0.1:8000/ready
 ```
 
-Maintainers working from the private source workspace instead use
-`docker compose up -d --build`.
+(Maintainers building from the private source workspace use
+`docker compose up -d --build` against the repository's own `docker-compose.yml`
+and `.env.example` instead. Neither file is part of this bundle.)
 
 The `migrate` container must finish successfully before `app` and `worker`
 start. Both the API and worker share the repository-mirror volume. The API
@@ -108,15 +115,56 @@ diffuse.example.com {
 ```
 
 Point the GitHub webhook at
-`https://diffuse.example.com/webhook/github`. Enable only the webhook event
-types described in the main README, and verify a signed `ping` or harmless test
-delivery before onboarding production repositories.
+`https://diffuse.example.com/webhook/github`. Enable exactly these four event
+types and no others:
+
+- `push`
+- `pull_request`
+- `issue_comment`
+- `pull_request_review_comment`
+
+Verify a signed `ping` or harmless test delivery before onboarding production
+repositories.
+
+## Onboard a repository
+
+Nothing is reviewed until the repository is registered. Diffuse does not
+discover repositories from the installation:
+
+```bash
+docker compose run --rm worker repository add \
+  --provider github \
+  --base-url https://github.com \
+  --repo owner/name \
+  --default-branch main
+
+docker compose run --rm worker repository list
+```
+
+`repository list` reports `mirror_state` and `last_error_code` per repository.
+The initial index must finish before the first review can run — a repository
+with no index cannot be reviewed.
+
+### Review triggers are conservative by default
+
+Two defaults surprise most first deployments, because they make a working
+installation look broken:
+
+- **`triggers.review_updates` is `false`.** A pull request is reviewed when it
+  opens, and *not* when further commits are pushed to it. Push a fix and
+  nothing happens.
+- **`triggers.status_check` is `false`.** No GitHub check is published, so
+  nothing appears in branch protection.
+
+Both are per-repository settings in version-controlled `.diffuse/config.json`.
+Turn them on before concluding that reviews are not working; see
+`CONFIGURATION.md` in this bundle for the full reference.
 
 ### When nothing appears to happen
 
 A webhook for a repository that has not been onboarded is refused with HTTP
 409, because Diffuse only reviews repositories an operator has registered with
-`diffuse repository add`. This is the most common reason a correctly configured
+`repository add` above. This is the most common reason a correctly configured
 webhook produces no reviews, and it is easy to misread as "the provider is not
 delivering at all".
 
@@ -130,11 +178,11 @@ docker compose exec db psql -U diffuse -d diffuse -c \
     ORDER BY last_seen_at DESC LIMIT 20;"
 ```
 
-Rows matching the provider and base URL being diagnosed mean that SCM *is*
-reaching Diffuse and being turned away — onboard the repository and the next
-delivery will be accepted. No matching rows alongside failures in that
-provider's webhook delivery page points at the ingress instead: TLS, DNS, the
-reverse proxy, or a signature-secret mismatch. Each refusal is also logged as a
+Rows matching the base URL being diagnosed mean GitHub *is* reaching Diffuse
+and being turned away — onboard the repository and the next delivery will be
+accepted. No matching rows alongside failures on GitHub's webhook delivery page
+points at the ingress instead: TLS, DNS, the reverse proxy, or a
+signature-secret mismatch. Each refusal is also logged as a
 warning, so `docker compose logs app` shows them as they arrive.
 
 ## Backups and restore drills
@@ -209,6 +257,35 @@ For every upgrade:
 Applied migration files are immutable. If verification reports checksum drift
 or an unversioned schema, stop and investigate rather than bypassing the gate.
 
+### Rolling back
+
+**Redeploying the previous image does not roll back an upgrade that ran a
+migration.** There are no down-migrations. Once the database records a version
+newer than the build, the older build refuses to run: it raises
+`MigrationDriftError` ("Database migration version is newer than this Diffuse
+build"), the API fails its healthcheck, the worker exits, and `/ready` returns
+503. This is deliberate — a build operating on a schema it does not understand
+is worse than a build that will not start — but it means the previous image is
+not a rollback path.
+
+The only supported reversal is restoring the pre-upgrade backup, which is why
+step 1 of every upgrade is a *verified* off-host backup and why the restore
+drill above is not optional. To roll back:
+
+1. stop the stack: `docker compose --env-file .env down`;
+2. restore the pre-upgrade dump into a fresh database, following "Backups and
+   restore drills" above — never over the live volume;
+3. point `.env` back at the previous `DIFFUSE_IMAGE` digest and the restored
+   database; and
+4. start the stack and require `database verify` plus a `/ready` response.
+
+Everything written after the backup is lost, which for Diffuse means reviews,
+findings, feedback, and learned-rule approvals in that window. Indexes and
+mirrors are rebuildable — reindex with `repository sync --all`.
+
+Because rollback costs a restore, prefer to test an upgrade against a copy of
+production first. The restore drill already produces exactly that copy.
+
 ### Upgrades that change the index format
 
 Some releases change `INDEX_FORMAT_VERSION` — a language-adapter schema change,
@@ -233,10 +310,11 @@ upgrade window accordingly. Watch `docker compose logs worker` for progress.
 
 - Exercise one test repository end to end before adding private production
   repositories.
-- Provision repository-scoped service tokens with `diffuse token add`, which
+- Provision repository-scoped service tokens with
+  `docker compose run --rm worker token add`, which
   mints a high-entropy credential and prints it once, and reserve
   `DIFFUSE_API_TOKEN` for bootstrap/recovery.
-- Keep the SCM instance allowlists narrow.
+- Keep `GITHUB_ALLOWED_INSTANCES` narrow.
 - Monitor `/ready`, PostgreSQL disk growth, Docker volume capacity, container
   restart counts, worker errors, and backup age.
 - Patch the host and install supported signed Diffuse releases regularly.
