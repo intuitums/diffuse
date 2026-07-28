@@ -8,6 +8,12 @@
 # Replaces ci.yml. Logic is ported unchanged except where noted; the container build now
 # uses buildx with a GitHub Actions cache, which is the one place repeat runs were paying
 # full price for an unchanged image.
+#
+# EVERY `uses:` IS PINNED TO A FULL COMMIT SHA, with the tag it resolved from in a
+# trailing comment. See the same note in release.yml for why, and for how to refresh
+# a pin. Pinning here as well as there is deliberate: this workflow runs on
+# `pull_request`, so an attacker who can move an upstream tag would otherwise get code
+# execution on every contributor's branch as well as on the default branch.
 name: Verify
 
 on:
@@ -57,8 +63,8 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
@@ -68,12 +74,60 @@ jobs:
             requirements.lock
             requirements-build.txt
             requirements-build.lock
+      # CHANGED: install requirements.lock FIRST, with --require-hashes, so the runtime
+      # dependency set under test is byte-for-byte the set the image ships. This job
+      # used to install requirements-dev.txt, which pulls in requirements.txt's version
+      # RANGES and resolves them fresh on every run; the image installs the locks. The
+      # two were never compared, so the tested dependency set was never the shipped one.
+      # requirements-dev.txt is still installed afterwards, but only adds test tooling:
+      # every runtime requirement it names is already satisfied at the locked version.
+      - name: Install the locked runtime dependencies
+        run: python -m pip install --require-hashes -r requirements.lock
       - name: Install development dependencies
         run: |
           python -m pip install -r requirements-dev.txt
           python -m pip install --no-deps -e .
       - name: Validate dependencies
         run: python -m pip check
+      # Guards the step above: if requirements-dev.txt (or a range in requirements.txt)
+      # ever drags a runtime dependency off its locked version, the suite would go back
+      # to testing something the image does not contain. Deterministic - it compares two
+      # local facts and never resolves anything - so it cannot fail for an unrelated
+      # upstream release.
+      - name: Confirm the tested dependency set is the shipped one
+        run: |
+          python - <<'PY'
+          import importlib.metadata as metadata
+          import re
+          import sys
+
+          drift, missing, checked = [], [], 0
+          with open("requirements.lock") as handle:
+              for line in handle:
+                  match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)", line)
+                  if not match:
+                      continue
+                  name, pinned = match.group(1), match.group(2)
+                  checked += 1
+                  try:
+                      installed = metadata.version(name)
+                  except metadata.PackageNotFoundError:
+                      missing.append(f"{name}=={pinned}")
+                      continue
+                  if installed != pinned:
+                      drift.append(f"{name}: locked {pinned}, installed {installed}")
+
+          print(f"checked {checked} locked requirements")
+          if missing:
+              print("NOT INSTALLED:\n  " + "\n  ".join(missing), file=sys.stderr)
+          if drift:
+              print("VERSION DRIFT:\n  " + "\n  ".join(drift), file=sys.stderr)
+          sys.exit(1 if (missing or drift) else 0)
+          PY
+      # NOTE: this runs in the merge gate, so a new advisory against any transitive
+      # dependency fails every open pull request until someone re-locks. That is a
+      # deliberate trade for a proprietary self-hosted product, but it is the reason a
+      # green branch can go red without a code change. Re-lock, do not skip.
       - name: Audit locked runtime dependencies
         run: python -m pip_audit -r requirements.lock --disable-pip
       - name: Lint
@@ -100,9 +154,16 @@ jobs:
           --health-retries 10
     env:
       POSTGRES_TEST_DATABASE_URL: postgresql://diffuse:integration-test@127.0.0.1:5432/diffuse_test
+      # Without this the job is decorative. `pytest -m integration` with
+      # POSTGRES_TEST_DATABASE_URL unset reported "40 skipped, 680 deselected" and
+      # exit 0 - a rename of the variable above, or a service container that never
+      # bound its port, was a green check. This makes tests/integration/conftest.py
+      # treat a missing database, and a run that executes zero integration tests, as
+      # errors rather than skips. See DEV-238.
+      DIFFUSE_REQUIRE_INTEGRATION_TESTS: "1"
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
@@ -110,6 +171,9 @@ jobs:
             requirements.txt
             requirements-dev.txt
             requirements.lock
+      # Same ordering as lint-and-unit: the shipped, locked set first.
+      - name: Install the locked runtime dependencies
+        run: python -m pip install --require-hashes -r requirements.lock
       - name: Install development dependencies
         run: |
           python -m pip install -r requirements-dev.txt
@@ -121,13 +185,15 @@ jobs:
 
   build-container:
     runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 30
+    # 30 -> 40: this job now boots the stack as well as building it, which adds a
+    # PostgreSQL image pull plus the healthcheck waits.
+    timeout-minutes: 40
     env:
       POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
       DIFFUSE_API_TOKEN: 0123456789abcdef0123456789abcdef
       DIFFUSE_PUBLIC_URL: http://localhost:8000
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Validate Compose configuration
         run: |
@@ -140,10 +206,10 @@ jobs:
       # ADDED: buildx + a GitHub Actions layer cache. The old step ran a bare `docker build`
       # on every run, so an unchanged Dockerfile still rebuilt every layer from scratch.
       - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
+        uses: useblacksmith/setup-docker-builder@6ff44f8e5255f9d8aa31ef22f7e57a2d926b7da0 # v1.11.0
 
       - name: Build production image
-        uses: useblacksmith/build-push-action@v2
+        uses: useblacksmith/build-push-action@fb9e3e6a9299c78462bfadd0d93352c316adc9b8 # v2.2.0
         with:
           context: .
           load: true
@@ -159,10 +225,19 @@ jobs:
             test -x /opt/diffuse/diffuse
             test -x /opt/diffuse/_internal/service/git_askpass.sh
             test -f /opt/diffuse/_internal/sql/schema.sql
+            test -f /opt/diffuse/_internal/evals/baseline.example.json
             ! find /opt/diffuse -type f \
               \( -name "*.py" -o -name "*.pyc" -o -name "*.pyo" \) \
               -print -quit | grep -q .
           '
+          # `diffuse evaluate` is documented but evals/ was not packaged, so the
+          # documented command had no file to point at inside the image. Run it with
+          # the DEFAULT thresholds only: the committed fixture records a 0%-recall
+          # run, so it correctly exits 1 under the thresholds in evals/README.md.
+          # Gating on that exit code here would only invite someone to weaken a
+          # quality gate to make a packaging check pass.
+          docker run --rm --entrypoint diffuse diffuse:test \
+            evaluate /opt/diffuse/_internal/evals/baseline.example.json
           # Parser distribution metadata must ship, or INDEX_FORMAT_VERSION
           # stops tracking grammar upgrades and stale indexes survive an
           # upgrade. See indexer/index_version.py.
@@ -174,3 +249,73 @@ jobs:
                 || { echo "missing parser metadata: ${dist}" >&2; exit 1; }
             done
           '
+
+      # ADDED: actually start the stack. Everything above this line is a parse check
+      # or a single `docker run`, so until now nothing in .github/ ever brought the
+      # image up. Two consequences, both of which shipped to customers unexercised:
+      #
+      #   * `read_only: true`, `cap_drop: [ALL]` and `no-new-privileges:true` on
+      #     migrate/app/worker were never applied to a running process. docker-compose.yml
+      #     says in a comment that the dev profile mirrors these "or a write-to-rootfs
+      #     bug ships undetected because it only fails on their machine" - that
+      #     mitigation had nothing enforcing it.
+      #   * the migration path was only covered by the editable source install, where
+      #     DIFFUSE_SQL_DIR is unset. The image sets it to /opt/diffuse/_internal/sql,
+      #     which is a different branch in service/database_migrations.py.
+      #
+      # deploy/compose.yaml is used rather than docker-compose.yml on purpose: it is
+      # the file customers run. deploy/env.example is used as shipped apart from the
+      # three secrets it ships empty and the image/secrets paths, so the customer env
+      # file is proven to boot rather than merely proven to parse.
+      - name: Boot the customer stack against the built image
+        working-directory: deploy
+        run: |
+          sed -e "s|^DIFFUSE_IMAGE=.*|DIFFUSE_IMAGE=diffuse:test|" \
+              -e "s|^DIFFUSE_ENV_FILE=.*|DIFFUSE_ENV_FILE=ci.env|" \
+              -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" \
+              -e "s|^DIFFUSE_API_TOKEN=.*|DIFFUSE_API_TOKEN=${DIFFUSE_API_TOKEN}|" \
+              -e "s|^DIFFUSE_PUBLIC_URL=.*|DIFFUSE_PUBLIC_URL=${DIFFUSE_PUBLIC_URL}|" \
+              env.example > ci.env
+
+          # --wait blocks on the healthchecks. migrate is gated on db, app and worker
+          # on migrate completing successfully, so a failure here means the release
+          # ordering itself is broken - not just that one container is unhappy.
+          docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
+            up --detach --wait --wait-timeout 240
+
+          # The exact check deploy/README.md tells a customer to run after `up -d`.
+          curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8000/ready
+
+          # docs/deployment.md requires this on every upgrade. It compares the applied
+          # migration history against the SQL packaged in the image, which is the path
+          # DIFFUSE_SQL_DIR selects and the source install never takes.
+          docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
+            run --rm --no-deps migrate database verify
+
+          # Prove the hardening is in effect rather than merely parsed. A writable
+          # rootfs here means read_only: true silently stopped applying.
+          docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
+            exec -T app /bin/sh -c '
+              if touch /opt/diffuse/rootfs-canary 2>/dev/null; then
+                echo "app rootfs is writable: read_only: true is not in effect" >&2
+                exit 1
+              fi
+            '
+
+      - name: Collect stack logs
+        if: always()
+        working-directory: deploy
+        run: |
+          test -f ci.env || exit 0
+          docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
+            logs --no-color --timestamps || true
+
+      - name: Tear down the stack
+        if: always()
+        working-directory: deploy
+        run: |
+          if [ -f ci.env ]; then
+            docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
+              down --volumes --remove-orphans || true
+          fi
+          rm -f ci.env

@@ -30,13 +30,17 @@ COMPOSE_SUPPLIED = frozenset(
     }
 )
 
-# Only meaningful in the customer bundle: digest pinning and secret placement.
+# Only meaningful in the customer bundle: digest pinning and env-file placement.
+#
+# DIFFUSE_SECRETS_DIR used to be here. It configured one thing -- a read-only bind
+# mount for the browser sign-in client secret -- and that mount is gone from both
+# Compose files because nothing reads a secret from it: there is no `diffuse login`
+# subcommand, so the flow cannot be completed. Put both back together, or not at all.
 CUSTOMER_ONLY = frozenset(
     {
         "DIFFUSE_IMAGE",
         "POSTGRES_IMAGE",
         "DIFFUSE_ENV_FILE",
-        "DIFFUSE_SECRETS_DIR",
     }
 )
 

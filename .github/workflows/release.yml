@@ -16,6 +16,22 @@
 #   * cosign signing of the DIGEST, not a tag
 #   * SBOM and provenance mode=max
 #   * the digest-pinned customer bundle and its sha256
+#
+# EVERY `uses:` IS PINNED TO A FULL COMMIT SHA, with the tag it resolved from in a
+# trailing comment. Do not "tidy" these back into tags. A version tag is a mutable
+# pointer the action's owner can move at any time; `publish` holds `id-token: write`
+# and runs third-party actions BEFORE `cosign sign`, so a retagged upstream action
+# would get code execution in the exact job that mints the Fulcio certificate - and
+# the signature it produced would verify cleanly against the identity regexp we
+# publish to customers. Refresh a pin by resolving the tag with
+# `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` and updating both the SHA and
+# the comment together.
+#
+# DISTRIBUTION. The bundle used to exist only as an Actions artifact with a 30-day
+# retention, which is not a distribution channel: it needs repository access to
+# fetch, and on day 31 the only thing binding a release to its pinned
+# DIFFUSE_IMAGE digest is deleted. It now goes to two durable places, see
+# `distribute` below.
 name: Release
 
 on:
@@ -33,6 +49,11 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/intuitumxyz/diffuse
+  # The customer bundle is published as an OCI artifact next to the image, in the
+  # same registry, so it is retrievable with the same credential a customer is
+  # already issued for the image and WITHOUT read access to this private source
+  # repository - which is what deploy/README.md promises.
+  BUNDLE_ARTIFACT: ghcr.io/intuitumxyz/diffuse-self-host
 
 jobs:
   # Split out so a bad tag fails in seconds instead of after two image builds.
@@ -42,7 +63,7 @@ jobs:
     outputs:
       created: ${{ steps.build-time.outputs.created }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0   # the ancestry check below needs full history
 
@@ -85,10 +106,10 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Sign in to the private registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -96,11 +117,11 @@ jobs:
 
       # Blacksmith's builder: layer caching is automatic via the runner's sticky disk, so
       # there are deliberately no cache-from/cache-to directives. Adding them bypasses it.
-      - uses: useblacksmith/setup-docker-builder@v1
+      - uses: useblacksmith/setup-docker-builder@6ff44f8e5255f9d8aa31ef22f7e57a2d926b7da0 # v1.11.0
 
       - name: Build and push by digest
         id: build
-        uses: useblacksmith/build-push-action@v2
+        uses: useblacksmith/build-push-action@fb9e3e6a9299c78462bfadd0d93352c316adc9b8 # v2.2.0
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -118,7 +139,7 @@ jobs:
           touch "/tmp/digests/${GITHUB_SHA}-$(echo '${{ steps.build.outputs.digest }}' | sed 's|sha256:||')"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: digest-${{ strategy.job-index }}
           path: /tmp/digests/*
@@ -129,15 +150,22 @@ jobs:
     needs: [validate-tag, build]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
     permissions:
       contents: read
       id-token: write   # keyless cosign signing
       packages: write
+      # Deliberately NOT contents: write. Creating the GitHub Release needs it, and
+      # this is the job that holds id-token: write. Keeping the two capabilities in
+      # separate jobs means no single compromised step can both mint a Diffuse
+      # release identity and write to the repository. See `distribute`.
     steps:
-      - uses: actions/checkout@v6   # needed for deploy/ and docs/ in the bundle
+      # Needed for deploy/ and docs/ in the bundle.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Download digests
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           path: /tmp/digests
           pattern: digest-*
@@ -145,7 +173,7 @@ jobs:
 
       - name: Generate image metadata
         id: metadata
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
           tags: |
@@ -154,13 +182,13 @@ jobs:
             type=sha,prefix=sha-
 
       - name: Sign in to the private registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: useblacksmith/setup-docker-builder@v1
+      - uses: useblacksmith/setup-docker-builder@6ff44f8e5255f9d8aa31ef22f7e57a2d926b7da0 # v1.11.0
 
       # Assemble the per-arch digests into one tagged multi-arch manifest.
       - name: Create multi-arch manifest
@@ -180,7 +208,7 @@ jobs:
           echo "Manifest digest: $digest"
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v4.1.2
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       # Signs the DIGEST, not a tag. Tags are mutable; the digest is what deploy.sh verifies.
       - name: Sign the published digest
@@ -200,12 +228,139 @@ jobs:
           tar -C release -czf diffuse-self-host.tar.gz diffuse
           sha256sum diffuse-self-host.tar.gz > diffuse-self-host.tar.gz.sha256
 
-      - name: Retain customer deployment bundle
-        uses: actions/upload-artifact@v7
+      # Job-to-job handoff ONLY - not a distribution channel. `distribute` republishes
+      # this to the two places customers and operators can actually fetch it from, so
+      # the retention here is deliberately one day.
+      - name: Hand the bundle to the distribute job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: diffuse-self-host-${{ github.run_id }}
           path: |
             diffuse-self-host.tar.gz
             diffuse-self-host.tar.gz.sha256
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
+
+  # Where the customer bundle actually becomes retrievable. Split out of `publish`
+  # for permission separation: this job needs `contents: write` to cut a Release,
+  # and GitHub has no narrower scope for that, so it must not also hold
+  # `id-token: write`. It holds neither an OIDC identity nor any signing key.
+  #
+  # Two channels, because they serve different readers:
+  #
+  #   1. OCI artifact at $BUNDLE_ARTIFACT. This is the CUSTOMER channel. A GitHub
+  #      Release on a private repository requires repository read - i.e. read access
+  #      to the proprietary source - which is precisely what deploy/README.md says
+  #      customers do not get. A registry artifact is fetchable with the same GHCR
+  #      credential they are already issued for the image, is immutable, and never
+  #      expires. Grant customers read on the diffuse-self-host package alongside
+  #      the diffuse package.
+  #
+  #   2. GitHub Release on this repository. This is the OPERATOR/support channel and
+  #      the human-readable record: it is what makes `vX.Y.Z -> pinned digest ->
+  #      bundle sha256` durably greppable years later, without needing a registry
+  #      client. docs/deployment.md's "obtain the new signed bundle" upgrade step
+  #      resolves here for staff and to `oras pull` for customers.
+  distribute:
+    needs: [publish]
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 20
+    permissions:
+      contents: write   # the only reason this job exists as a separate job
+      packages: write   # push the bundle artifact next to the image
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      DIGEST: ${{ needs.publish.outputs.digest }}
+    steps:
+      - name: Collect the bundle
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: diffuse-self-host-${{ github.run_id }}
+
+      # Refuse to publish a bundle that is not bound to a resolved manifest digest.
+      # Without this an upstream failure would ship a bundle whose env.example still
+      # said `replace-with-release-digest`.
+      - name: Require a resolved digest
+        run: |
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "publish did not produce a manifest digest (got '${DIGEST}')" >&2
+            exit 1
+          fi
+          sha256sum --check diffuse-self-host.tar.gz.sha256
+
+      # Installed from the vendor tarball rather than an action, pinned by version AND
+      # by the sha256 the ORAS project publishes in oras_<version>_checksums.txt. One
+      # fewer third-party action in a job that can write to this repository.
+      - name: Install ORAS
+        env:
+          ORAS_VERSION: "1.3.3"
+          ORAS_SHA256: 9ce999f8d2de03fc03968b29d743077a58783e545e5eaa53917ca177352d0e59
+        run: |
+          curl --fail --silent --show-error --location \
+            --output oras.tar.gz \
+            "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          echo "${ORAS_SHA256}  oras.tar.gz" | sha256sum --check --strict
+          mkdir -p "${RUNNER_TEMP}/oras"
+          tar -C "${RUNNER_TEMP}/oras" -xzf oras.tar.gz oras
+          rm oras.tar.gz
+          echo "${RUNNER_TEMP}/oras" >> "$GITHUB_PATH"
+
+      # CHANNEL 1 - customers. Annotations carry the image digest the bundle pins, so
+      # the binding survives even if the tarball is unpacked and the env.example edited.
+      - name: Publish the bundle as an OCI artifact
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" \
+            | oras login ghcr.io --username "$REGISTRY_USER" --password-stdin
+          oras push \
+            --artifact-type application/vnd.diffuse.self-host.bundle.v1 \
+            --annotation "org.opencontainers.image.version=${RELEASE_TAG}" \
+            --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --annotation "xyz.intuitum.diffuse.image=${IMAGE}@${DIGEST}" \
+            "${BUNDLE_ARTIFACT}:${RELEASE_TAG}" \
+            diffuse-self-host.tar.gz:application/gzip \
+            diffuse-self-host.tar.gz.sha256:text/plain
+
+      # CHANNEL 2 - operators and support. Idempotent so a re-run of a release tag
+      # repairs a partial publish instead of failing on "release already exists";
+      # `concurrency: cancel-in-progress: false` means a re-run is a real scenario.
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "Private release. The image is signed with cosign; verify it before running it."
+            echo
+            echo '```'
+            echo "DIFFUSE_IMAGE=${IMAGE}@${DIGEST}"
+            echo '```'
+            echo
+            echo "Self-host bundle sha256:"
+            echo
+            echo '```'
+            cat diffuse-self-host.tar.gz.sha256
+            echo '```'
+            echo
+            echo "Customers fetch the same bundle from the registry, which needs no"
+            echo "access to this repository:"
+            echo
+            echo '```'
+            echo "oras pull ${BUNDLE_ARTIFACT}:${RELEASE_TAG}"
+            echo '```'
+          } > release-notes.md
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+              diffuse-self-host.tar.gz diffuse-self-host.tar.gz.sha256
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --notes-file release-notes.md
+          else
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_TAG" \
+              --notes-file release-notes.md \
+              --verify-tag \
+              diffuse-self-host.tar.gz diffuse-self-host.tar.gz.sha256
+          fi
