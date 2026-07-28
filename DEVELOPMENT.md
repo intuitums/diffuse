@@ -61,7 +61,7 @@ diffuse --help
 pytest -m "not integration"
 ```
 
-483 tests, roughly 8-12 seconds, no database and no network. This is the suite
+750 tests, roughly 7-12 seconds, no database and no network. This is the suite
 to run constantly while you work. Anything not marked `integration` must pass
 without external services.
 
@@ -78,7 +78,7 @@ but keep formatting-only churn out of functional pull requests.
 
 ## Run the integration tests
 
-The 43 tests marked `integration` need a real PostgreSQL 17 with the `pgvector`
+The 45 tests marked `integration` need a real PostgreSQL 17 with the `pgvector`
 extension available. `README.md` used to abbreviate this as
 `POSTGRES_TEST_DATABASE_URL=postgresql://... pytest -m integration`; here is
 the whole recipe.
@@ -135,7 +135,7 @@ a `diffuse-database-status-v1` document; a successful run ends with
 pytest -m integration
 ```
 
-43 tests, roughly 18 seconds. `tests/integration/conftest.py` copies
+45 tests, roughly 18 seconds. `tests/integration/conftest.py` copies
 `POSTGRES_TEST_DATABASE_URL` into `DATABASE_URL`, so application code under
 test connects to the same disposable database. If
 `POSTGRES_TEST_DATABASE_URL` is unset, every integration test is skipped rather
@@ -178,12 +178,13 @@ test failure you can defer:
 
 ```
 $ diffuse database status
-usage: diffuse [-h] {review,repository,cluster,learning,token,database} ...
-diffuse: error: sql/schema.sql is the frozen version-1 migration and was edited;
-add a numbered migration instead
+diffuse: error: sql/schema.sql is the frozen version-1 migration and was edited; add a numbered migration instead
 ```
 
-It also breaks three tests in `tests/test_database_migrations.py`.
+The catalog is loaded after the database connection, so a command that cannot
+reach PostgreSQL reports the connection failure first and hides the drift. In
+the unit suite it surfaces as exactly one failure,
+`tests/test_database_migrations.py::test_frozen_baseline_catalog_is_packaged_and_contract_is_parseable`.
 
 To change the schema, add a new file under `sql/migrations/`:
 

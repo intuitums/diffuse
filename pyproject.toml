@@ -29,6 +29,13 @@ dependencies = {file = ["requirements.txt"]}
 [tool.setuptools.data-files]
 "share/diffuse/sql" = ["sql/schema.sql"]
 "share/diffuse/sql/migrations" = ["sql/migrations/*.sql", "sql/migrations/README.md"]
+# `evals/` holds no Python, so it is data, not a package -- adding "evals*" to
+# packages.find above would silently match nothing. `diffuse evaluate` takes an
+# explicit path argument and has no search path of its own, so shipping the files
+# is the whole fix; the Dockerfile puts the same directory at
+# /opt/diffuse/_internal/evals so the documented command has something to point at
+# inside the image. See docs/roadmap.md.
+"share/diffuse/evals" = ["evals/baseline.example.json", "evals/README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

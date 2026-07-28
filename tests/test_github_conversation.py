@@ -1,4 +1,5 @@
 import json
+import re
 
 import httpx
 import pytest
@@ -111,6 +112,57 @@ def test_conversation_reply_always_retains_one_trusted_recovery_marker():
     assert "&lt;!-- diffuse-conversation:1201 -->" in body
     assert "<code>service/&lt;unsafe-`path-0&gt;.py:42-43</code>" in body
     assert "@\u200breviewer" in body
+
+
+@pytest.mark.parametrize(
+    "fence",
+    [
+        "```suggestion",
+        "~~~suggestion",
+        "````suggestion",
+        "```SUGGESTION",
+        "```  suggestion",
+        "  ```suggestion",
+        "- ```suggestion",
+        "> ```suggestion",
+    ],
+)
+def test_conversation_reply_cannot_emit_a_committable_suggestion_block(fence: str):
+    """A published answer must never become a one-click "Commit suggestion" button.
+
+    The answer is model output derived from the untrusted question, diff hunk, and
+    indexed repository context, so prompt injection decides its text. GitHub renders a
+    fenced block whose info string is `suggestion` as a committable patch on the
+    reviewed line, which turns an injected answer into attacker-authored code a
+    maintainer commits under their own name — an escalation from a misleading reply to
+    a repository write. Escaping `@` and the recovery marker did not touch the fence.
+    """
+    body = format_conversation_reply(
+        _event(),
+        f"Apply this fix:\n\n{fence}\nADMIN_TOKEN = attacker_supplied_value\n```",
+        (),
+    )
+
+    # GitHub only builds the commit button when the info string is exactly `suggestion`.
+    assert not re.search(
+        r"(?:`{3,}|~{3,})[ \t]*suggestion[ \t]*(?:\r?\n|$)",
+        body,
+        re.IGNORECASE,
+    )
+    # Neutralizing the info string rather than the fence keeps legitimate code blocks in
+    # replies rendering as code blocks.
+    assert "```" in body or "~~~" in body
+    assert "ADMIN_TOKEN" in body
+
+
+def test_conversation_reply_keeps_ordinary_code_fences_intact():
+    body = format_conversation_reply(
+        _event(),
+        "Scope the lookup:\n\n```python\nreturn lookup(account, tenant)\n```",
+        (),
+    )
+
+    assert "```python\nreturn lookup(account, tenant)\n```" in body
 
 
 @pytest.mark.anyio

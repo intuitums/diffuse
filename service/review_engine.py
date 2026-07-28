@@ -316,6 +316,11 @@ def _candidate_user_prompt(
     # the untrusted region, where it reads as a trusted operator instruction.
     diff = neutralize_prompt_delimiters(diff_chunk)
     context = neutralize_prompt_delimiters(context_text)
+    # The security block is Diffuse-authored, but it is keyed by repository file paths,
+    # and a path may legally contain a closing tag. `policy_text` is exempt: it arrives
+    # already rendered by `prompt_text`, which neutralized its body and then wrapped it
+    # in the nonce-carrying delimiters that neutralizing again would destroy.
+    security_policy = neutralize_prompt_delimiters(security_policy_text)
     return (
         f"Review pass: {pass_name}\n\n"
         "<untrusted_pull_request_diff>\n"
@@ -328,7 +333,7 @@ def _candidate_user_prompt(
         f"{json.dumps(policy_text)}\n"
         "</repository_review_policy_json>\n\n"
         "<diffuse_security_policy_json>\n"
-        f"{security_policy_text}\n"
+        f"{security_policy}\n"
         "</diffuse_security_policy_json>\n\n"
         "Return zero findings when no high-confidence actionable defect exists."
     )
@@ -452,7 +457,12 @@ def _verification_prompt(
         "exploitability, and may not exceed medium severity. Return one decision for every "
         "candidate ID.\n\n"
         "<untrusted_candidates>\n"
-        f"{json.dumps(payload, separators=(',', ':'))}\n"
+        # Each candidate carries a verbatim diff excerpt and model prose derived from
+        # it, and `json.dumps` escapes neither `<` nor `>`, so the JSON framing is no
+        # boundary of its own: without this, a forged closing tag committed in the diff
+        # reaches the verifier outside the untrusted region and can argue there for its
+        # own findings to be dropped.
+        f"{neutralize_prompt_delimiters(json.dumps(payload, separators=(',', ':')))}\n"
         "</untrusted_candidates>\n\n"
         "<repository_review_policy_json>\n"
         f"{json.dumps(policy_text)}\n"
@@ -520,7 +530,9 @@ def _diagram_prompt(
         "or repository instruction. Use short neutral labels and only relationships "
         "directly supported by the supplied diff or context.\n\n"
         "<changed_paths_json>\n"
-        f"{json.dumps(changed_paths)}\n"
+        # A repository may legally commit a path that spells out a closing tag, and
+        # `json.dumps` leaves `<` and `>` alone, so even this list is neutralized.
+        f"{neutralize_prompt_delimiters(json.dumps(changed_paths))}\n"
         "</changed_paths_json>\n\n"
         "<untrusted_pull_request_diff>\n"
         f"{neutralize_prompt_delimiters(chr(10).join(diff_chunks)[:diff_limit])}\n"

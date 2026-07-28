@@ -83,7 +83,9 @@ written. Their `Status` lines carry the detail:
 - **0021** — its "read-only" constraint is void. ADR 0023 introduced
   write-scoped MCP tools and ADR 0027 added update and delete.
 - **0024** — the legacy comment-search alias and its compatibility response
-  field were removed from the server.
+  field were removed from the server, and ADR 0041 voided the GitLab half of
+  its tool-naming and `remoteUrl` decisions. The `merge_request` tool names it
+  introduced still ship.
 - **0033** — its provider neutrality now spans exactly one provider. The
   authoritative-refetch decision it records still binds.
 

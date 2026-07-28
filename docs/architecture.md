@@ -46,6 +46,10 @@ GitHub / CLI / MCP / Web app
            model and embedding gateway
 ```
 
+> **Target, not current state.** The web app, the runtime validator and its
+> sandbox, and the cache and object store are not implemented. Everything else
+> in the diagram exists in some form; the sections below say how much.
+
 ## Deployment and ownership boundary
 
 Diffuse uses one PostgreSQL-backed data plane in two operating models:
@@ -90,13 +94,23 @@ decision.
 
 ### Control plane
 
-- Web UI and versioned REST API. The v1 REST foundation already exposes
-  repository/index state, PRs, reviews, findings, analytics, and code
-  search/Q&A plus idempotent repository onboarding, reindexing, and review
-  requests; settings, identity, and broader administrative mutations remain.
+> **Target, not current state.** Only the versioned REST API and scoped
+> service-token authentication exist. There is no web UI, no organization,
+> team, or role model, and no OIDC, SAML, or SCIM implementation — none of
+> those three appears anywhere in the source.
+
+- The v1 REST foundation exposes repository/index state, PRs, reviews,
+  findings, analytics, and code search/Q&A plus idempotent repository
+  onboarding, reindexing, and review requests. A web UI, settings, identity,
+  and broader administrative mutations remain.
+- Scoped service tokens and the bootstrap credential are the authenticated
+  principals. The GitHub OAuth browser endpoints are mounted but no
+  authenticator consumes the session they mint, so OAuth grants no access yet;
+  OIDC and SAML will be added.
 - Organizations, teams, users, roles, repositories, integrations, policies,
-  rules, model settings, audit events, analytics, and operational state.
-- OAuth/OIDC/SAML and scoped service-token authentication.
+  rules, model settings, audit events, analytics, and operational state will be
+  the control plane's resources. Repositories, policies, rules, model settings,
+  and audit events are durable today; the tenancy model above them is not.
 - In managed cloud, a separate provider-operated control plane owns
   subscriptions, entitlements, provisioning, deployment registry, and fleet
   operations without owning source-derived data-plane state.
@@ -104,8 +118,11 @@ decision.
 ### SCM adapters
 
 - One normalized interface for GitHub Cloud and GitHub Enterprise.
-- App installation and OAuth credentials are encrypted and never placed in job
-  payloads or logs.
+- SCM credentials are never placed in clone URLs, subprocess arguments,
+  database rows, job payloads, or logs; they reach Git only through a
+  non-interactive askpass environment. Encryption at rest is a target: the
+  installation reads one process-level `GITHUB_TOKEN`, there are no
+  per-installation credentials, and nothing in the codebase encrypts them.
 - Normalized repositories, commits, diffs, checks, reviews, inline threads,
   reactions, pull requests, and webhook events.
 - Every event has a provider delivery ID and an idempotency record.
@@ -124,8 +141,13 @@ decision.
   credential-free.
 - Authenticated GitHub default-branch pushes enqueue exact commits. Workers
   fetch under a repository lock and index from ephemeral detached worktrees.
-- Enforces repository/tenant authorization before fetch or retrieval.
-- Schedules initial indexing, push deltas, deletion, and integrity repair.
+- Enforces the repository's enabled/onboarded state and, for token-authenticated
+  callers, the token's repository claims before fetch or retrieval. There is no
+  tenant boundary to enforce yet; see the cross-repository note below.
+- Schedules initial indexing and push deltas. Deletion on revoked access and
+  integrity repair are not scheduled: `workflow_jobs.job_type` admits exactly
+  `review_pull_request`, `answer_review_comment`, `sync_review_feedback`,
+  `generate_suggested_rules`, and `index_repository`.
 - Emits immutable commit snapshots so a review and its citations are
   reproducible.
 
@@ -463,12 +485,19 @@ approval.
 
 ### Runtime validator
 
-- Creates an isolated, short-lived sandbox from the reviewed commit.
-- Uses repository-provided setup metadata and a constrained agent to generate
-  targeted tests.
-- Executes with resource, network, filesystem, and time limits.
-- Redacts secrets and treats repository code as untrusted.
-- Stores commands, generated tests, exit codes, logs, traces, screenshots, and
+> **Target, not current state.** No sandbox exists in any form. Diffuse never
+> executes pull-request code today: the review path reads source, queries the
+> index, and calls model and SCM APIs. `docs/capabilities.md` records runtime
+> validation as `planned`.
+
+The runtime validator will:
+
+- create an isolated, short-lived sandbox from the reviewed commit;
+- use repository-provided setup metadata and a constrained agent to generate
+  targeted tests;
+- execute with resource, network, filesystem, and time limits;
+- redact secrets and treat repository code as untrusted; and
+- store commands, generated tests, exit codes, logs, traces, screenshots, and
   recordings as immutable evidence objects.
 
 Production backends may use Firecracker, Kubernetes Jobs with a hardened
@@ -577,11 +606,13 @@ SKIP LOCKED`, leases, bounded exponential retry, and terminal failed/dead
 states.
 Repeated deliveries and revisions are deduplicated, newer revisions supersede
 older queued work, and jobs sharing one PR, review-thread, feedback-thread, or
-ref scope cannot run concurrently.
+ref scope cannot run concurrently. A newer commit both supersedes the queued
+job and cancels work already running: the worker re-checks for a newer job at
+every heartbeat, marks the review run `superseded`, cancels any pending
+auto-approval, and concludes the GitHub check as `cancelled`.
 
 The complete workflow contract still requires:
 
-- cancellation and supersession when a newer commit arrives;
 - per-tenant/repository concurrency and provider rate limits;
 - resumable multi-stage indexing/review/sandbox workflows; and
 - an operator UI/API for inspection and replay.
@@ -593,11 +624,17 @@ contract remains portable.
 ## Core data model
 
 > **Target, not current state.** This is the intended full data model. Most of
-> the tables named in this section do not exist yet — of them, only `users`,
-> `repositories`, and `index_snapshots` are real. `sql/schema.sql` plus the
-> applied files in `sql/migrations/` are the only authoritative description of
-> the current schema, and `diffuse database status` prints what is actually
-> applied.
+> it is built: 33 of the 52 tables named below already exist, out of 45 tables
+> created across `sql/schema.sql` and `sql/migrations/`. Those two are the only
+> authoritative description of the current schema, and `diffuse database status`
+> prints what is actually applied.
+>
+> The shipped schema also contains tables this section does not name:
+> `code_symbols` and `code_relationships` (the snapshot-scoped graph),
+> `repository_refs`, `pull_request_lifecycle_events`, `review_publications`,
+> `scm_webhook_deliveries`, `scm_webhook_rejections`, `api_idempotency_keys`,
+> `api_token_repositories`, `oauth_states`, `sessions`, and
+> `user_installations`.
 >
 > Absent today: `organizations`, `teams`, `memberships`, `roles`,
 > `scm_connections`, `repository_access`, `commits`, `index_jobs`, the separate

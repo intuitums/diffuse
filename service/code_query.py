@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from indexer.embed import embedding_dimensions, embedding_model
 from indexer.store import active_snapshot_id_for_repository
+from repository_policy.resolve import neutralize_prompt_delimiters
 from retriever.context_models import CrossRepositoryContextPlan
 from retriever.retrieve import (
     RetrievedContext,
@@ -458,6 +459,23 @@ def _ground_claims(
     return tuple(grounded)
 
 
+def _answer_user_prompt(question: str, sources: tuple[_CodeSource, ...]) -> str:
+    # The question is asked by whoever holds the MCP token and the evidence is verbatim
+    # repository source, so both are neutralized. Wrapping the evidence in JSON protects
+    # nothing on its own: `json.dumps` escapes neither `<` nor `>`, so an indexed file
+    # holding a closing tag would end the untrusted region and leave the rest of that
+    # file reading as a trusted operator instruction.
+    return (
+        "<untrusted_human_question>\n"
+        f"{neutralize_prompt_delimiters(question)}\n"
+        "</untrusted_human_question>\n\n"
+        "<untrusted_repository_sources_json>\n"
+        f"{neutralize_prompt_delimiters(_evidence_json(sources))}\n"
+        "</untrusted_repository_sources_json>\n\n"
+        "Answer using only the supplied immutable source excerpts."
+    )
+
+
 def _citation_json(
     target: CodeQueryTarget,
     citation: CodeQueryCitation,
@@ -532,15 +550,7 @@ def ask_codebase(
                 "insufficient_evidence true and return no claims when the evidence cannot "
                 "answer the question reliably."
             ),
-            user_prompt=(
-                "<untrusted_human_question>\n"
-                f"{question}\n"
-                "</untrusted_human_question>\n\n"
-                "<untrusted_repository_sources_json>\n"
-                f"{_evidence_json(evidence_sources)}\n"
-                "</untrusted_repository_sources_json>\n\n"
-                "Answer using only the supplied immutable source excerpts."
-            ),
+            user_prompt=_answer_user_prompt(question, evidence_sources),
         )
         model_reported_insufficient = response.insufficient_evidence
         if not response.insufficient_evidence:

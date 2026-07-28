@@ -3,8 +3,9 @@
 ## Cursor Cloud specific instructions
 
 Diffuse is a self-hostable code-review platform. Standard setup/run/test commands live in
-`README.md`, `docker-compose.yml`, `.github/workflows/ci.yml`, and `pyproject.toml`. This
-section only records the non-obvious, environment-specific things a cloud agent needs.
+`README.md`, `DEVELOPMENT.md`, `docker-compose.yml`, `.github/workflows/verify.yml`, and
+`pyproject.toml`. This section only records the non-obvious, environment-specific things a
+cloud agent needs.
 
 ### Services (run natively, not via Docker)
 
@@ -34,9 +35,9 @@ locally, move `.env` aside first, for example:
 
 ```bash
 mv .env .env.bak
-.venv/bin/python -m pytest -m "not integration"        # 483 pass
+.venv/bin/python -m pytest -m "not integration"        # 750 pass
 POSTGRES_TEST_DATABASE_URL=postgresql://diffuse:diffuse-dev@127.0.0.1:5432/diffuse_test \
-  .venv/bin/python -m pytest -m integration            # 43 pass (migrate test DB first)
+  .venv/bin/python -m pytest -m integration            # 45 pass (migrate test DB first)
 mv .env.bak .env
 ```
 

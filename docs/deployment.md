@@ -44,48 +44,30 @@ URL. Also set:
   allowlist; and
 - the model credentials or self-hosted model endpoint.
 
-Every configured origin ends up carrying a token, a clone credential, or the
-OAuth client-secret exchange, so `http://` is refused for anything other than
-loopback. `DIFFUSE_ALLOW_PLAINTEXT_ORIGINS=1` lifts that for a lab instance and
-should never be set in production.
+Every configured origin ends up carrying a token or a clone credential, so
+`http://` is refused for anything other than loopback.
+`DIFFUSE_ALLOW_PLAINTEXT_ORIGINS=1` lifts that for a lab instance and should
+never be set in production.
 
 Do not commit `.env`, copy it into an image, or place its values on command
 lines. Back it up separately in an encrypted secret manager.
 
-### Browser sign-in (optional)
+### Browser sign-in is not usable yet
 
-`diffuse login` signs in through GitHub. Diffuse is the confidential OAuth
-client, so the GitHub App client secret is read from a file rather than the
-environment and never belongs in `.env`:
+Leave `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET_FILE`, and
+`GITHUB_APP_SLUG` unset, and do not create a secrets directory for them.
 
-```bash
-sudo install -d -m 0711 /srv/diffuse/secrets
-sudo install -m 600 /dev/stdin /srv/diffuse/secrets/app-client-secret
-sudo chown "$(docker compose run --rm --no-deps --entrypoint id app -u)" \
-    /srv/diffuse/secrets/app-client-secret
-```
+The server half of GitHub browser sign-in is mounted — `/auth/cli`,
+`/auth/github/callback`, and `/setup` exist and will mint a session — but
+nothing consumes the result. There is no `diffuse login` command; the CLI's
+subcommands are `review`, `repository`, `cluster`, `learning`, `token`,
+`database`, `evaluate`, and `model`. No request authenticator reads a session:
+the API, MCP, and REST surfaces accept only `DIFFUSE_API_TOKEN` or a
+repository-scoped service token. Configuring OAuth today therefore places a
+GitHub client secret on the host and grants no access in return.
 
-Paste the client secret on stdin, then end with Ctrl-D.
-
-Both permissions matter, and they grant the narrowest access that works. The
-container runs as an unprivileged user, so the `chown` is what lets it read the
-file at all. The directory is `0711` — traversable but **not** listable — rather
-than `0700`, because a root-owned `0700` directory blocks that user from
-reaching the file even when the file itself is chowned to them. Sibling secrets
-in the same directory, such as an `app-private-key.pem`, stay unreadable to the
-container because they keep their own `0600` root ownership. If the directory
-already exists at `0700`, `sudo chmod 0711` it.
-
-Compose mounts the directory read-only; override the host path with
-`DIFFUSE_SECRETS_DIR` if you keep secrets elsewhere.
-
-Then set `GITHUB_OAUTH_CLIENT_ID` and, to offer an install link after sign-in,
-`GITHUB_APP_SLUG`. In the GitHub App set the callback URL to
-`https://diffuse.example.com/auth/github/callback` and the setup URL to
-`https://diffuse.example.com/setup`. Sign-in stays disabled and returns 503
-until the client id and a readable secret are both present; Diffuse logs a
-warning if the secret file is group- or world-readable and refuses to read it
-at all if it is group- or world-writable.
+Authenticate with `DIFFUSE_API_TOKEN` for bootstrap and recovery, and with
+`diffuse token add` service tokens for routine clients.
 
 Validate interpolation before starting anything:
 
@@ -173,12 +155,25 @@ docker compose exec -T db \
 
 Copy backups off-host, encrypt them, apply a retention policy, and alert on a
 missed backup. A backup is not trusted until it has been restored into a
-disposable PostgreSQL 17 + pgvector database and these commands succeed:
+disposable PostgreSQL 17 + pgvector database and verified there:
 
 ```bash
-DATABASE_URL=postgresql://... diffuse database verify
-POSTGRES_TEST_DATABASE_URL=postgresql://... pytest -m integration
+docker compose run --rm \
+  -e DATABASE_URL=postgresql://diffuse:...@restore-host:5432/diffuse_restore \
+  migrate database verify
 ```
+
+`database verify` re-reads the applied migration ledger, compares every applied
+version's SHA-256 against the packaged catalog, and confirms the version-1
+baseline contract — tables, columns, and the `vector` extension. It exits
+non-zero on checksum drift, a missing ledger, or a schema that does not match
+the release. That is the whole trustworthiness check a restored dump can be
+given from the runtime image, which ships no Python interpreter and no test
+suite.
+
+Rehearse the cutover as well: point a disposable stack at the restored database
+and require `curl --fail http://127.0.0.1:8000/ready` to return `200`, which is
+the same readiness gate the live `app` container uses.
 
 Never test a restore over the live database. Record the exact restore procedure
 for the server's backup system and rehearse it before the first production
@@ -189,15 +184,26 @@ upgrade.
 For every upgrade:
 
 1. read the migration notes and take a verified off-host backup;
-2. obtain the new signed bundle, verify its image signature, and pull its
-   digest without stopping the existing stack;
-3. run `docker compose --env-file .env up -d`; the one-shot migrator gates
+2. retrieve the new bundle with
+   `oras pull ghcr.io/intuitumxyz/diffuse-self-host:vX.Y.Z`, check it with
+   `sha256sum --check diffuse-self-host.tar.gz.sha256`, and unpack it beside —
+   not over — the running deployment. The registry is the customer channel: it
+   needs only the GHCR credential already issued for the `diffuse` image. The
+   same two files are also attached to the tagged GitHub Release, but that page
+   requires read access to the private source repository, so it is the
+   staff and support channel rather than the customer one;
+3. copy the new `compose.yaml` into place and carry your existing `.env`
+   forward, taking only the new release's `DIFFUSE_IMAGE` digest from its
+   `env.example`;
+4. verify the image signature and pull the digest without stopping the existing
+   stack, following the verification commands in the bundle's `README.md`;
+5. run `docker compose --env-file .env up -d`; the one-shot migrator gates
    application startup;
-4. require `docker compose run --rm migrate database verify` and a
-   successful `/ready` response; and
-5. inspect `docker compose logs migrate app worker` for restarts or failed
+6. require `docker compose run --rm migrate database verify` and a successful
+   `/ready` response;
+7. inspect `docker compose logs migrate app worker` for restarts or failed
    jobs; and
-6. if the release notes say the index format changed, reindex every repository
+8. if the release notes say the index format changed, reindex every repository
    (see below).
 
 Applied migration files are immutable. If verification reports checksum drift

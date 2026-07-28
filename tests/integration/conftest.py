@@ -15,15 +15,42 @@ import pathlib
 
 import pytest
 
+# Skipping is the right default for a laptop with no PostgreSQL, and the wrong one
+# for CI: `pytest -m integration` with the variable unset exits 0 having asserted
+# nothing, so a renamed variable or a service container that never bound its port
+# reports success. Anywhere the suite is *expected* to run, set this and a missing
+# database becomes an error instead of a green skip. See DEV-238.
+REQUIRE_VARIABLE = "DIFFUSE_REQUIRE_INTEGRATION_TESTS"
+DATABASE_VARIABLE = "POSTGRES_TEST_DATABASE_URL"
+
+_FALSEY = frozenset({"", "0", "false", "no", "off"})
+
+
+def _integration_tests_are_required() -> bool:
+    return os.environ.get(REQUIRE_VARIABLE, "").strip().lower() not in _FALSEY
+
 
 def pytest_configure() -> None:
     """Point application connections at the disposable integration database."""
-    database_url = os.environ.get("POSTGRES_TEST_DATABASE_URL")
+    database_url = os.environ.get(DATABASE_VARIABLE)
     if database_url:
         os.environ["DATABASE_URL"] = database_url
+        return
+    if _integration_tests_are_required():
+        raise pytest.UsageError(
+            f"{REQUIRE_VARIABLE} is set, so the PostgreSQL integration suite must "
+            f"actually run, but {DATABASE_VARIABLE} is unset or empty. Either point "
+            "it at a disposable database or unset the requirement."
+        )
 
 
 _HERE = pathlib.Path(__file__).parent
+
+# Node ids of everything collected from this directory, and of everything from it
+# that reached its call phase. A skipped test never reaches `call`, so comparing
+# the two is what distinguishes "the suite ran" from "the suite was skipped".
+_collected: set[str] = set()
+_executed: set[str] = set()
 
 
 def pytest_collection_modifyitems(items) -> None:
@@ -34,11 +61,37 @@ def pytest_collection_modifyitems(items) -> None:
     would tag the whole unit suite as integration -- and `-m "not integration"`
     would then deselect all of it and report success having run nothing.
     """
-    configured = bool(os.environ.get("POSTGRES_TEST_DATABASE_URL"))
-    skip = pytest.mark.skip(reason="POSTGRES_TEST_DATABASE_URL is not configured")
+    configured = bool(os.environ.get(DATABASE_VARIABLE))
+    skip = pytest.mark.skip(reason=f"{DATABASE_VARIABLE} is not configured")
     for item in items:
         if _HERE not in pathlib.Path(str(item.fspath)).parents:
             continue
+        _collected.add(item.nodeid)
         item.add_marker(pytest.mark.integration)
         if not configured:
             item.add_marker(skip)
+
+
+def pytest_runtest_logreport(report) -> None:
+    """Record which integration tests got as far as executing their body."""
+    if report.when == "call" and report.nodeid in _collected:
+        _executed.add(report.nodeid)
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    """Refuse to exit 0 having run no integration test when one was required.
+
+    `pytest_configure` catches the unset-variable case. This catches every other
+    way the count reaches zero -- a `-m` expression that stopped matching, a
+    directory rename that emptied collection, a conftest-level skip added later --
+    which is the failure mode that makes this job's green meaningless.
+    """
+    if not _integration_tests_are_required():
+        return
+    if exitstatus != 0 or _executed:
+        return
+    session.exitstatus = 1
+    print(
+        f"\nERROR: {REQUIRE_VARIABLE} is set but 0 of {len(_collected)} collected "
+        "integration tests executed. A pass here would assert nothing."
+    )
