@@ -1,4 +1,14 @@
-name: Release private image
+# Release — tag-driven publish of a signed, immutable multi-arch image plus the
+# customer self-host bundle.
+#
+# Naming convention shared with intuitumxyz/leo: verify.yml gates changes, release.yml
+# publishes them. Display name shortened from "Release private image" to "Release" so the
+# checks list reads consistently across repos.
+#
+# Logic ported unchanged from the previous release.yml except for the build cache, noted
+# below. The tag-ancestry check, cosign signing, SBOM/provenance and digest-pinned bundle
+# are all deliberate and load-bearing - do not simplify them away.
+name: Release
 
 on:
   push:
@@ -10,23 +20,27 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
+  # Never cancel a release mid-publish: a half-pushed multi-arch manifest is worse than
+  # a queued one.
   cancel-in-progress: false
 
 jobs:
-  image:
+  publish-image:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
-      id-token: write
-      packages: write
+      id-token: write   # keyless cosign signing
+      packages: write   # push to ghcr
     env:
       IMAGE: ghcr.io/intuitumxyz/diffuse
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # tag-ancestry check below needs full history
 
+      # A tag that does not descend from main would publish an image built from code that
+      # was never reviewed on the default branch.
       - name: Validate release tag
         env:
           RELEASE_COMMIT: ${{ github.sha }}
@@ -65,6 +79,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ADDED cache-from/cache-to. This job measured 28m20s, and the arm64 leg builds under
+      # QEMU emulation, which is the bulk of it. A layer cache does not remove emulation
+      # cost but does remove it for layers that have not changed between releases.
       - name: Build and publish immutable image
         id: build
         uses: docker/build-push-action@v7
@@ -80,10 +97,13 @@ jobs:
             DIFFUSE_CREATED=${{ steps.build-time.outputs.created }}
           sbom: true
           provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v4.1.2
 
+      # Signs the DIGEST, not a tag. Tags are mutable; the digest is what deploy.sh verifies.
       - name: Sign the published digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
