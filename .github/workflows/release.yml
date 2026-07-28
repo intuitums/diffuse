@@ -2,12 +2,20 @@
 # customer self-host bundle.
 #
 # Naming convention shared with intuitumxyz/leo: verify.yml gates changes, release.yml
-# publishes them. Display name shortened from "Release private image" to "Release" so the
-# checks list reads consistently across repos.
+# publishes them.
 #
-# Logic ported unchanged from the previous release.yml except for the build cache, noted
-# below. The tag-ancestry check, cosign signing, SBOM/provenance and digest-pinned bundle
-# are all deliberate and load-bearing - do not simplify them away.
+# STRUCTURE CHANGED for Blacksmith. The previous single job built linux/amd64 and
+# linux/arm64 together on one amd64 runner, so the arm64 leg ran under QEMU emulation -
+# that is where most of the measured 28m20s went. Blacksmith has native arm64 runners, so
+# each architecture now builds on its own machine in parallel and the two are merged into
+# one manifest afterwards. This is the pattern Blacksmith's docs prescribe; they note a
+# future `platforms` input will do it natively, at which point this collapses back.
+#
+# UNCHANGED and load-bearing - do not simplify these away:
+#   * semver validation and the check that the tag descends from main
+#   * cosign signing of the DIGEST, not a tag
+#   * SBOM and provenance mode=max
+#   * the digest-pinned customer bundle and its sha256
 name: Release
 
 on:
@@ -20,24 +28,23 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  # Never cancel a release mid-publish: a half-pushed multi-arch manifest is worse than
-  # a queued one.
+  # Never cancel a release mid-publish: a half-pushed manifest is worse than a queued one.
   cancel-in-progress: false
 
+env:
+  IMAGE: ghcr.io/intuitumxyz/diffuse
+
 jobs:
-  publish-image:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      id-token: write   # keyless cosign signing
-      packages: write   # push to ghcr
-    env:
-      IMAGE: ghcr.io/intuitumxyz/diffuse
+  # Split out so a bad tag fails in seconds instead of after two image builds.
+  validate-tag:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    outputs:
+      created: ${{ steps.build-time.outputs.created }}
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0   # tag-ancestry check below needs full history
+          fetch-depth: 0   # the ancestry check below needs full history
 
       # A tag that does not descend from main would publish an image built from code that
       # was never reviewed on the default branch.
@@ -55,9 +62,86 @@ jobs:
             exit 1
           fi
 
+      # Shared by both arch builds so the two images carry an identical created label.
       - name: Record build time
         id: build-time
         run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+  # One native runner per architecture, in parallel. Each pushes by digest only - no tags -
+  # and the manifest is assembled in `publish`.
+  build:
+    needs: validate-tag
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: blacksmith-8vcpu-ubuntu-2404
+          - platform: linux/arm64
+            runner: blacksmith-8vcpu-ubuntu-2404-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Sign in to the private registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Blacksmith's builder: layer caching is automatic via the runner's sticky disk, so
+      # there are deliberately no cache-from/cache-to directives. Adding them bypasses it.
+      - uses: useblacksmith/setup-docker-builder@v1
+
+      - name: Build and push by digest
+        id: build
+        uses: useblacksmith/build-push-action@v2
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            DIFFUSE_VERSION=${{ github.ref_name }}
+            DIFFUSE_REVISION=${{ github.sha }}
+            DIFFUSE_CREATED=${{ needs.validate-tag.outputs.created }}
+          sbom: true
+          provenance: mode=max
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${GITHUB_SHA}-$(echo '${{ steps.build.outputs.digest }}' | sed 's|sha256:||')"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [validate-tag, build]
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write   # keyless cosign signing
+      packages: write
+    steps:
+      - uses: actions/checkout@v6   # needed for deploy/ and docs/ in the bundle
+
+      - name: Download digests
+        uses: actions/download-artifact@v6
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
 
       - name: Generate image metadata
         id: metadata
@@ -69,10 +153,6 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
 
-      - uses: docker/setup-qemu-action@v4
-      - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
-
       - name: Sign in to the private registry
         uses: docker/login-action@v4
         with:
@@ -80,24 +160,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ADDED cache-from/cache-to. This job measured 28m20s, and the arm64 leg builds under
-      # QEMU emulation, which is the bulk of it. A layer cache does not remove emulation
-      # cost but does remove it for layers that have not changed between releases.
-      - name: Build and publish immutable image
-        id: build
-        uses: useblacksmith/build-push-action@v2
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          build-args: |
-            DIFFUSE_VERSION=${{ github.ref_name }}
-            DIFFUSE_REVISION=${{ github.sha }}
-            DIFFUSE_CREATED=${{ steps.build-time.outputs.created }}
-          sbom: true
-          provenance: mode=max
+      - uses: useblacksmith/setup-docker-builder@v1
+
+      # Assemble the per-arch digests into one tagged multi-arch manifest.
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< '${{ steps.metadata.outputs.json }}') \
+            $(for f in *; do echo "${IMAGE}@sha256:${f##*-}"; done)
+
+      # Re-read the manifest digest: this is what gets signed and pinned into the bundle.
+      - name: Resolve manifest digest
+        id: manifest
+        run: |
+          version=$(jq -r '.tags[0]' <<< '${{ steps.metadata.outputs.json }}')
+          digest=$(docker buildx imagetools inspect "$version" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Manifest digest: $digest"
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v4.1.2
@@ -105,12 +185,12 @@ jobs:
       # Signs the DIGEST, not a tag. Tags are mutable; the digest is what deploy.sh verifies.
       - name: Sign the published digest
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
       - name: Build customer deployment bundle
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
         run: |
           mkdir -p release/diffuse
           cp deploy/README.md deploy/compose.yaml deploy/env.example release/diffuse/
