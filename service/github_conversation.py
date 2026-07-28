@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 from urllib.parse import quote
 
 import httpx
@@ -18,9 +19,27 @@ from service.scm import (
 
 MAX_COMMENT_PAGES = 20
 MAX_CONVERSATION_REPLY_CHARS = 10_000
+# GitHub turns a fenced block whose info string is `suggestion` into a one-click "Commit
+# suggestion" button on the reviewed line. Answers are model output derived from the
+# untrusted question, diff, and repository context, so a successful injection would end
+# with attacker-authored code a maintainer can commit under their own name in one click.
+_SUGGESTION_FENCE_PATTERN = re.compile(
+    r"(?:`{3,}|~{3,})[ \t]*suggestion\b",
+    re.IGNORECASE,
+)
 
 
 def _safe_markdown(value: str) -> str:
+    # Only the `suggestion` info string is broken, not the fence itself: replies
+    # legitimately quote code, and neutralizing the whole fence would mangle every one of
+    # them. A zero-width space leaves the word readable and the block rendering as a
+    # plain code block, and matches how `@` is already defused below. The fence is matched
+    # anywhere rather than anchored to the line start, because GitHub still renders the
+    # button when the opener is nested in a list item or a blockquote.
+    value = _SUGGESTION_FENCE_PATTERN.sub(
+        lambda match: f"{match.group(0)}\u200b",
+        value,
+    )
     return value.replace(
         "<!-- diffuse-conversation:",
         "&lt;!-- diffuse-conversation:",

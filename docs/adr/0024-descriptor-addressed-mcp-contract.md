@@ -2,7 +2,7 @@
 
 Date: 2026-07-23
 
-Status: Accepted; amended after the legacy comment-search alias and its compatibility response field were removed from the server. `search_review_comments` and `diffuseGenerated` are the only names Diffuse exposes.
+Status: Accepted; amended twice. First, the legacy comment-search alias and its compatibility response field were removed from the server: `search_review_comments` and `diffuseGenerated` are the only names Diffuse exposes. Second, ADR 0041 made GitHub the only supported provider, which voids the GitLab half of two decisions below. `McpRemote` is now `Literal["github"]` and an omitted `remoteUrl` can only default to the public GitHub origin. The dual `list_merge_requests`/`list_pull_requests` naming survives for compatibility but no longer has a GitLab rationale, and `get_merge_request` and `list_merge_request_comments` still have no pull-request-named equivalent. Renaming them is unresolved.
 
 ## Context
 

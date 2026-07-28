@@ -31,6 +31,36 @@ documentation, not the application source.
    curl --fail http://127.0.0.1:8000/ready
    ```
 
+## Obtaining this bundle and later ones
+
+Every release publishes this bundle as an OCI artifact in the same private
+registry as the image, so it needs the credential you already have and no access
+to the Diffuse source repository:
+
+```bash
+oras pull ghcr.io/intuitumxyz/diffuse-self-host:vX.Y.Z
+sha256sum --check diffuse-self-host.tar.gz.sha256
+tar -xzf diffuse-self-host.tar.gz
+```
+
+Ask Diffuse for read access to the `diffuse-self-host` package alongside the
+`diffuse` package. Artifacts are immutable and are not garbage collected, so an
+older release stays retrievable at its own tag; the `DIFFUSE_IMAGE` digest each
+bundle pins is also recorded in the artifact's
+`xyz.intuitum.diffuse.image` annotation:
+
+```bash
+oras manifest fetch --pretty ghcr.io/intuitumxyz/diffuse-self-host:vX.Y.Z
+```
+
+Upgrade by pulling the new bundle, re-running the signature verification above
+against its `DIFFUSE_IMAGE`, and following `OPERATIONS.md`. Carry your existing
+`.env` values across rather than editing the new `env.example` in place — note in
+particular that `POSTGRES_PASSWORD` cannot be changed by editing the file once the
+database volume exists.
+
+## Support
+
 Read `OPERATIONS.md`, included alongside this file in the release bundle, before
 onboarding production repositories. (It is not present in the source
 repository — the release build generates it from `docs/deployment.md`.) Back up

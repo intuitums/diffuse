@@ -709,7 +709,37 @@ def mark_review_failed(
         )
 
 
-def mark_review_superseded(conn, review_run_id: int) -> None:
+def mark_review_superseded(conn, review_run_id: int, *, worker_id: str) -> bool:
+    """Retire a review run, but only for the worker that still holds its lease.
+
+    A review run is keyed by `workflow_job_id` and is reused across retries of that
+    job, so a worker whose lease expired mid-generation can wake up and supersede the
+    run a *different* worker is now legitimately generating into -- destroying that
+    worker's findings via `discard_unpublished_finding_lineage` and closing the check
+    run as cancelled. Claiming the job back does not help: the stale worker already
+    holds the review-run id.
+
+    The lease predicate is therefore evaluated in the same statement as the write,
+    matching how `complete_workflow_job` and `supersede_workflow_job` already guard.
+    Checking ownership before calling would leave the race window open while looking
+    fixed. Returns whether this worker still owned the run.
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT 1
+            FROM review_runs AS review
+            JOIN workflow_jobs AS job ON job.id = review.workflow_job_id
+            WHERE review.id = %s
+              AND job.leased_by = %s
+              AND job.lease_expires_at > now()
+            FOR UPDATE OF review
+            """,
+            (review_run_id, worker_id),
+        )
+        if cursor.fetchone() is None:
+            return False
+
     discard_unpublished_finding_lineage(conn, review_run_id)
     with conn.cursor() as cursor:
         cursor.execute(
@@ -722,6 +752,7 @@ def mark_review_superseded(conn, review_run_id: int) -> None:
             """,
             (review_run_id,),
         )
+    return True
 
 
 def mark_review_terminal_failed(

@@ -7,6 +7,7 @@ from typing import Literal
 
 import psycopg2.extras
 
+from repository_policy.resolve import neutralize_prompt_delimiters
 from service.custom_context_store import custom_context_json
 from service.learning_store import load_learned_rule_audit
 from service.scm import (
@@ -1396,11 +1397,18 @@ def _get_mcp_agent_handoff(
             "verifyWithRelevantTests": True,
         },
     }
-    prompt_payload = json.dumps(
-        handoff,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
+    # Finding titles, bodies, evidence, and suggested fixes are all derived from
+    # repository-authored diff text, and json.dumps does not escape "<" or ">".
+    # Without neutralization a finding body carrying a closing tag pushes the
+    # text after it outside the untrusted region of a prompt that is handed to a
+    # coding agent holding write access to the operator's checkout.
+    prompt_payload = neutralize_prompt_delimiters(
+        json.dumps(
+            handoff,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
     )
     handoff["prompt"] = (
         "Address the Diffuse review finding data below in the matching local "

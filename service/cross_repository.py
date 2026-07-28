@@ -16,9 +16,38 @@ from retriever.context_models import (
 MAX_RELATED_REPOSITORIES = 7
 CLUSTER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,99}$")
 
+# Why an explicit `.diffuse` context repository can be refused. Lowercase reason
+# codes, like trigger skip reasons and workflow error codes, so the value is
+# stable enough for an operator to filter an audit trail on.
+NOT_CLUSTER_MEMBER_REASON = "not_cluster_member"
+CONTEXT_REPOSITORY_DROP_REASONS = frozenset({NOT_CLUSTER_MEMBER_REASON})
+
 
 class CrossRepositoryContextError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class DroppedContextRepository:
+    """One explicit context repository the resolver refused to expose."""
+
+    repository_full_name: str
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        if (
+            not 1 <= len(self.repository_full_name) <= 255
+            or self.reason_code not in CONTEXT_REPOSITORY_DROP_REASONS
+        ):
+            raise ValueError("Dropped context repository identity is invalid")
+
+
+@dataclass(frozen=True)
+class CrossRepositoryContextResolution:
+    """The plan that survived authorization, plus what it refused and why."""
+
+    plan: CrossRepositoryContextPlan
+    dropped_repositories: tuple[DroppedContextRepository, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -365,6 +394,37 @@ def resolve_cross_repository_context_plan(
     model: str,
     dimensions: int,
 ) -> CrossRepositoryContextPlan:
+    """Resolve the plan alone, for callers that cannot act on a refusal."""
+    return resolve_cross_repository_context(
+        conn,
+        primary_repository_id=primary_repository_id,
+        primary_snapshot_id=primary_snapshot_id,
+        explicit_repositories=explicit_repositories,
+        model=model,
+        dimensions=dimensions,
+    ).plan
+
+
+def resolve_cross_repository_context(
+    conn,
+    *,
+    primary_repository_id: int,
+    primary_snapshot_id: int | None,
+    explicit_repositories: tuple[str, ...],
+    model: str,
+    dimensions: int,
+) -> CrossRepositoryContextResolution:
+    """Plan cross-repository retrieval under the operator authorization boundary.
+
+    ``explicit_repositories`` comes from ``context.repos`` in a ``.diffuse``
+    file that is committed to the repository under review, so it is attacker
+    controlled by anyone with merge access there. An entry is therefore a
+    *request* to narrow retrieval, never a grant: it is honoured only when an
+    operator has already placed that repository in a cluster with the primary
+    one, which is the same boundary the REST and MCP surfaces enforce. Entries
+    the operator never clustered are dropped and reported, not fatal -- a
+    misconfigured ``.diffuse`` must not stop the review it belongs to.
+    """
     if len(explicit_repositories) > MAX_RELATED_REPOSITORIES:
         raise CrossRepositoryContextError(
             f"At most {MAX_RELATED_REPOSITORIES} explicit context repositories are allowed"
@@ -447,6 +507,7 @@ def resolve_cross_repository_context_plan(
 
         selected: list[RepositoryContextSnapshot] = []
         selected_names: set[str] = set()
+        dropped: list[DroppedContextRepository] = []
         for repository_name in explicit_repositories:
             repository_identity = repository_name.casefold()
             if repository_identity == primary["full_name"].casefold():
@@ -474,6 +535,19 @@ def resolve_cross_repository_context_plan(
                     f"Explicit context repository is not enabled on the same SCM host: "
                     f"{repository_name}"
                 )
+            cluster = cluster_targets.get(repository_identity)
+            if cluster is None:
+                # Naming an onboarded repository is not authorization to read
+                # its indexed source. Without this, merge access to any low
+                # value repository would pull a high-value repository's chunks
+                # into the review context.
+                dropped.append(
+                    DroppedContextRepository(
+                        repository_full_name=target["full_name"],
+                        reason_code=NOT_CLUSTER_MEMBER_REASON,
+                    )
+                )
+                continue
             active = _active_snapshot(
                 cursor,
                 repository_id=int(target["id"]),
@@ -485,19 +559,14 @@ def resolve_cross_repository_context_plan(
                     f"Explicit context repository has no compatible active snapshot: "
                     f"{repository_name}"
                 )
-            cluster = cluster_targets.get(repository_identity)
             selected.append(
                 RepositoryContextSnapshot(
                     repository_id=int(target["id"]),
                     repository_full_name=target["full_name"],
                     snapshot_id=int(active["id"]),
                     commit_sha=active["commit_sha"],
-                    source="explicit+cluster" if cluster else "explicit",
-                    cluster_ids=(
-                        tuple(int(value) for value in cluster["cluster_ids"])
-                        if cluster
-                        else ()
-                    ),
+                    source="explicit+cluster",
+                    cluster_ids=tuple(int(value) for value in cluster["cluster_ids"]),
                 )
             )
             selected_names.add(repository_identity)
@@ -530,10 +599,62 @@ def resolve_cross_repository_context_plan(
             f"Explicit configuration and clusters expose more than "
             f"{MAX_RELATED_REPOSITORIES} related repositories"
         )
-    return CrossRepositoryContextPlan(
-        primary_repository_id=primary_repository_id,
-        primary_repository_full_name=primary["full_name"],
-        primary_snapshot_id=primary_snapshot_id,
-        primary_commit_sha=primary_commit_sha,
-        related_snapshots=tuple(selected),
+    return CrossRepositoryContextResolution(
+        plan=CrossRepositoryContextPlan(
+            primary_repository_id=primary_repository_id,
+            primary_repository_full_name=primary["full_name"],
+            primary_snapshot_id=primary_snapshot_id,
+            primary_commit_sha=primary_commit_sha,
+            related_snapshots=tuple(selected),
+        ),
+        dropped_repositories=tuple(dropped),
     )
+
+
+def record_dropped_context_repositories(
+    conn,
+    *,
+    primary_repository_id: int,
+    actor_label: str,
+    dropped: tuple[DroppedContextRepository, ...],
+) -> None:
+    """Record every explicit context repository the resolver refused.
+
+    Dropping is deliberately not fatal, so without a durable row the refusal
+    would survive only as a log line on whichever worker happened to run the
+    review -- and a ``.diffuse`` reaching for a repository it was never granted
+    is exactly the thing an operator needs to be able to find later.
+    ``audit_events`` is where this repository already keeps operator-visible
+    decisions, so the refusal lands beside the cluster changes it is about.
+    """
+    if not dropped:
+        return
+    actor_label = _actor(actor_label)
+    with conn.cursor() as cursor:
+        psycopg2.extras.execute_values(
+            cursor,
+            """
+            INSERT INTO audit_events (
+                actor_kind,
+                actor_label,
+                action,
+                resource_kind,
+                resource_id,
+                repository_id,
+                details
+            )
+            VALUES %s
+            """,
+            [
+                (
+                    "system",
+                    actor_label,
+                    "review.context_repository_dropped",
+                    "repository",
+                    item.repository_full_name,
+                    primary_repository_id,
+                    psycopg2.extras.Json({"reason": item.reason_code}),
+                )
+                for item in dropped
+            ],
+        )

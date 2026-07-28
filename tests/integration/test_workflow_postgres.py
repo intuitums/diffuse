@@ -1424,7 +1424,11 @@ def test_finding_lineage_addresses_and_reopens_one_durable_thread():
             report([abandoned_finding]),
             touched_paths=frozenset({"service/new.py"}),
         )
-        mark_review_superseded(connection, fourth_run.id)
+        assert mark_review_superseded(
+            connection,
+            fourth_run.id,
+            worker_id="lineage-worker-4",
+        )
         assert supersede_workflow_job(
             connection,
             fourth_job.id,
@@ -2829,7 +2833,11 @@ def test_suggested_rules_are_evidence_bound_moderated_and_review_snapshotted():
             list(custom_context.applies_to),
             custom_context.metadata,
         )
-        mark_review_superseded(connection, next_run.id)
+        assert mark_review_superseded(
+            connection,
+            next_run.id,
+            worker_id="suggested-rule-review-worker-2",
+        )
         assert supersede_workflow_job(
             connection,
             next_job.id,
