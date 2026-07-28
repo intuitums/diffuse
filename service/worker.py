@@ -13,7 +13,7 @@ from functools import partial
 
 import anyio
 
-from indexer.embed import embedding_dimensions, embedding_model
+from indexer.embed import embedding_batch_size, embedding_dimensions, embedding_model
 from indexer.index_repo import index_repo
 from indexer.store import get_conn
 from repository_policy.models import RepositoryPolicySnapshot, validate_repo_path
@@ -33,6 +33,7 @@ from retriever.retrieve import (
     compatible_snapshot_id,
     max_context_chars,
     max_context_chunks,
+    minimum_similarity,
     retrieve_context_from_plan,
     retrieve_context_from_snapshot,
 )
@@ -73,7 +74,10 @@ from service.conversation_store import (
     mark_conversation_published,
     mark_conversation_ready,
 )
-from service.cross_repository import resolve_cross_repository_context_plan
+from service.cross_repository import (
+    record_dropped_context_repositories,
+    resolve_cross_repository_context,
+)
 from service.custom_context_store import load_active_custom_contexts
 from service.database_migrations import verify_database_current
 from service.diff_parser import parse_unified_diff
@@ -129,9 +133,16 @@ from service.learning_store import (
     schedule_due_rule_learning_jobs,
 )
 from service.repositories import get_repository, update_mirror_state
-from service.repository_mirror import RepositoryMirror, RepositoryMirrorError
+from service.repository_mirror import (
+    RepositoryMirror,
+    RepositoryMirrorError,
+    max_repository_bytes,
+)
 from service.review_engine import (
     PROMPT_VERSION,
+    _model_api_base,
+    _positive_int,
+    _supports_json_schema,
     generate_review,
     minimum_review_confidence,
     review_model,
@@ -169,10 +180,14 @@ from service.scm import (
     PullRequestEvent,
     PushEvent,
     ReviewConversationEvent,
+    normalize_base_url,
+    scm_api_timeout_seconds,
 )
 from service.workflow import (
     NonRetryableError,
+    StrandedReviewJob,
     WorkflowJob,
+    claim_stranded_review_jobs,
     claim_workflow_job,
     complete_workflow_job,
     fail_workflow_job,
@@ -184,6 +199,14 @@ from service.workflow import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+# How long a terminal review job is left alone before the reconciler finalizes
+# it, and how many it finalizes per pass. Constants rather than settings: they
+# only have to stay clear of `run_once`, which finalizes its own failures within
+# seconds, so there is nothing here an operator would need to tune.
+STRANDED_REVIEW_GRACE_SECONDS = 300
+STRANDED_REVIEW_BATCH_SIZE = 20
+STRANDED_REVIEW_INTERVAL_SECONDS = 300.0
 
 
 class ReviewSupersededError(RuntimeError):
@@ -297,6 +320,78 @@ def _schedule_rule_learning() -> int:
             evaluation_interval_seconds=interval_seconds,
             limit=batch_size,
         )
+
+
+def _reconcile_stranded_reviews() -> tuple[StrandedReviewJob, ...]:
+    """Finalize the review lineage of jobs that died outside `run_once`.
+
+    Claiming and marking share one transaction so the review runs stay locked
+    throughout: a newer job that adopts one of them via `begin_review_run` waits,
+    then wins, instead of having its in-flight run marked failed underneath it.
+    """
+    with closing(get_conn()) as conn, conn:
+        jobs = claim_stranded_review_jobs(
+            conn,
+            grace_seconds=STRANDED_REVIEW_GRACE_SECONDS,
+            limit=STRANDED_REVIEW_BATCH_SIZE,
+        )
+        for job in jobs:
+            mark_review_terminal_failed(
+                conn,
+                job.id,
+                error_code=terminal_review_failure(
+                    job.id,
+                    retries_exhausted=job.retries_exhausted,
+                ).error_code,
+            )
+        return jobs
+
+
+async def _finalize_stranded_reviews() -> int:
+    """Unblock pull requests whose required check outlived its review job.
+
+    Deliberately quieter than `run_once`'s handler: the status check carries the
+    explanation, and this pass cannot tell whether that handler already posted
+    the terminal-failure comment for the same job, so it does not post a second.
+    """
+    jobs = await anyio.to_thread.run_sync(_reconcile_stranded_reviews)
+    for stranded in jobs:
+        failure = terminal_review_failure(
+            stranded.id,
+            retries_exhausted=stranded.retries_exhausted,
+        )
+        try:
+            event = PullRequestEvent.from_payload(stranded.payload)
+        except Exception:
+            LOGGER.exception(
+                "Failed to decode a stranded review payload job=%s",
+                stranded.id,
+            )
+            continue
+        LOGGER.error(
+            "Reconciled a stranded review job=%s repo=%s number=%s head=%s error_code=%s",
+            stranded.id,
+            event.repo_full_name,
+            event.number,
+            event.head_sha,
+            failure.error_code,
+        )
+        try:
+            handle = await anyio.to_thread.run_sync(
+                partial(_get_native_check_for_job, stranded.id)
+            )
+            await _complete_native_check(
+                event,
+                handle,
+                conclusion="failure",
+                message=failure.summary,
+            )
+        except Exception:
+            LOGGER.exception(
+                "Failed to finalize a stranded review check job=%s",
+                stranded.id,
+            )
+    return len(jobs)
 
 
 def _heartbeat_and_check_current(job_id: int, worker_id: str) -> bool:
@@ -430,9 +525,10 @@ def _load_cross_repository_context_plan(
     repository_id: int,
     snapshot_id: int | None,
     policy: ResolvedReviewPolicy,
+    worker_id: str,
 ) -> CrossRepositoryContextPlan:
-    with closing(get_conn()) as conn:
-        return resolve_cross_repository_context_plan(
+    with closing(get_conn()) as conn, conn:
+        resolution = resolve_cross_repository_context(
             conn,
             primary_repository_id=repository_id,
             primary_snapshot_id=snapshot_id,
@@ -440,6 +536,21 @@ def _load_cross_repository_context_plan(
             model=embedding_model(),
             dimensions=embedding_dimensions(),
         )
+        record_dropped_context_repositories(
+            conn,
+            primary_repository_id=repository_id,
+            actor_label=worker_id,
+            dropped=resolution.dropped_repositories,
+        )
+    for item in resolution.dropped_repositories:
+        LOGGER.warning(
+            "Dropped an unauthorized cross-repository context entry "
+            "repository_id=%s context_repository=%s reason=%s",
+            repository_id,
+            item.repository_full_name,
+            item.reason_code,
+        )
+    return resolution.plan
 
 
 def _load_review_policy(
@@ -603,7 +714,15 @@ def _generate_and_persist_review(
             )
     except ReviewSupersededError:
         with closing(get_conn()) as conn, conn:
-            mark_review_superseded(conn, review_run_id)
+            if not mark_review_superseded(conn, review_run_id, worker_id=worker_id):
+                # The lease is already gone, so another worker owns this review run
+                # now. Superseding it here would delete the findings that worker is
+                # generating; let it finish instead.
+                LOGGER.warning(
+                    "Not superseding review run %s: lease no longer held by %s",
+                    review_run_id,
+                    worker_id,
+                )
         raise
     except Exception:
         with closing(get_conn()) as conn, conn:
@@ -702,9 +821,9 @@ def _mark_native_auto_approval_cancelled(
         )
 
 
-def _mark_native_review_superseded(review_run_id: int) -> None:
+def _mark_native_review_superseded(review_run_id: int, worker_id: str) -> bool:
     with closing(get_conn()) as conn, conn:
-        mark_review_superseded(conn, review_run_id)
+        return mark_review_superseded(conn, review_run_id, worker_id=worker_id)
 
 
 def _mark_native_review_terminal_failed(
@@ -1014,11 +1133,16 @@ def _generate_and_persist_conversation(
 async def _publish_native_thread_operations(
     event: PullRequestEvent,
     review_run_id: int,
+    job: WorkflowJob,
+    worker_id: str,
 ) -> None:
     operations = await anyio.to_thread.run_sync(
         partial(_begin_native_thread_operations, review_run_id)
     )
     for operation in operations:
+        # One provider round trip per unresolved finding, so the lease has to be
+        # renewed inside the loop rather than only around it.
+        await _extend_publication_lease(job, worker_id)
         try:
             if event.provider == "github":
                 result = await apply_github_thread_operation(event, operation)
@@ -1214,6 +1338,23 @@ async def _complete_existing_job_check(
     )
 
 
+async def _extend_publication_lease(job: WorkflowJob, worker_id: str) -> None:
+    """Renew the lease between publication steps.
+
+    Publication is a chain of provider round trips -- a review body, then one
+    thread operation per finding, then the status check -- with no heartbeat of
+    its own, so a large pull request can outlive the lease part-way through and
+    have its job swept out from under it. A lost lease is only logged: the sweep
+    has already requeued the job, and abandoning a half-published review would
+    leave the pull request worse off than finishing it.
+    """
+    if not await anyio.to_thread.run_sync(partial(_heartbeat_lease, job.id, worker_id)):
+        LOGGER.warning(
+            "Workflow lease was lost during review publication job=%s",
+            job.id,
+        )
+
+
 async def _post_terminal_failure_notice(
     job: WorkflowJob,
     event: PullRequestEvent,
@@ -1356,6 +1497,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
             job.repository_id,
             snapshot_id,
             policy,
+            worker_id,
         )
     )
     decision = _trigger_decision(event, diff_text, policy)
@@ -1427,15 +1569,19 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
         if not await anyio.to_thread.run_sync(
             partial(_heartbeat_and_check_current, job.id, worker_id)
         ):
-            await _complete_native_check(
-                event,
-                check_run,
-                conclusion="cancelled",
-                message="A newer pull-request event superseded this review.",
-            )
-            await anyio.to_thread.run_sync(
-                partial(_mark_native_review_superseded, review_run.id)
-            )
+            # Retire the run first: losing the lease is indistinguishable here from a
+            # genuine supersession, and only the store can tell them apart atomically.
+            # A worker that no longer owns the run must not cancel the check either --
+            # the worker that does own it is still going to complete it.
+            if await anyio.to_thread.run_sync(
+                partial(_mark_native_review_superseded, review_run.id, worker_id)
+            ):
+                await _complete_native_check(
+                    event,
+                    check_run,
+                    conclusion="cancelled",
+                    message="A newer pull-request event superseded this review.",
+                )
             await anyio.to_thread.run_sync(partial(_supersede, job.id, worker_id))
             return
 
@@ -1524,13 +1670,15 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
         else ReviewContinuity()
     )
     if not await anyio.to_thread.run_sync(partial(_heartbeat_and_check_current, job.id, worker_id)):
-        await anyio.to_thread.run_sync(partial(_mark_native_review_superseded, review_run.id))
-        await _complete_native_check(
-            event,
-            check_run,
-            conclusion="cancelled",
-            message="A newer pull-request event superseded this review.",
-        )
+        if await anyio.to_thread.run_sync(
+            partial(_mark_native_review_superseded, review_run.id, worker_id)
+        ):
+            await _complete_native_check(
+                event,
+                check_run,
+                conclusion="cancelled",
+                message="A newer pull-request event superseded this review.",
+            )
         await anyio.to_thread.run_sync(partial(_supersede, job.id, worker_id))
         return
 
@@ -1570,8 +1718,14 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
                     published,
                 )
             )
+        await _extend_publication_lease(job, worker_id)
         try:
-            await _publish_native_thread_operations(event, review_run.id)
+            await _publish_native_thread_operations(
+                event,
+                review_run.id,
+                job,
+                worker_id,
+            )
         except Exception:
             if check_run is not None:
                 await anyio.to_thread.run_sync(
@@ -1579,6 +1733,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
                 )
             raise
     if check_run is not None:
+        await _extend_publication_lease(job, worker_id)
         conclusion = review_check_conclusion(
             report,
             policy.triggers.blocking_severities,
@@ -2038,8 +2193,20 @@ async def run_forever(worker_id: str, poll_seconds: float) -> None:
         raise ValueError("RULE_LEARNING_SCHEDULER_SECONDS must be positive")
     next_feedback_schedule = 0.0
     next_learning_schedule = 0.0
+    next_stranded_reconcile = 0.0
     while True:
         now = time.monotonic()
+        if now >= next_stranded_reconcile:
+            try:
+                reconciled = await _finalize_stranded_reviews()
+                if reconciled:
+                    LOGGER.info(
+                        "Reconciled stranded review jobs count=%s",
+                        reconciled,
+                    )
+            except Exception:
+                LOGGER.exception("Failed to reconcile stranded review jobs")
+            next_stranded_reconcile = now + STRANDED_REVIEW_INTERVAL_SECONDS
         if now >= next_feedback_schedule:
             try:
                 scheduled = await anyio.to_thread.run_sync(
@@ -2071,6 +2238,114 @@ async def run_forever(worker_id: str, poll_seconds: float) -> None:
             await anyio.sleep(poll_seconds)
 
 
+def _probe_int(name: str) -> None:
+    """Parse a plain integer variable the way the hot path parses it."""
+    value = os.environ.get(name)
+    if value is not None:
+        int(value)
+
+
+def _probe_positive_int(name: str) -> None:
+    """Parse a variable the hot path requires to be a positive integer.
+
+    The default handed to the shared parser is a placeholder, not the
+    production default: an unset variable is valid by construction, so the
+    probe only has to agree with production about what a *set* value may be.
+    Repeating the real defaults here would create a second copy to drift.
+    """
+    _positive_int(name, 1)
+
+
+def _probe_base_url(name: str, default: str) -> None:
+    normalize_base_url(os.environ.get(name, default), field_name=name)
+
+
+# Every configuration value the worker reads once a job has been claimed, in one
+# place. `run_once` classifies ValueError as non-retryable -- deliberately, since
+# NonRetryableError subclasses it -- so a bare env-parsing ValueError raised
+# mid-job is indistinguishable from a deterministic fault: the job dead-letters
+# on its first attempt and posts a terminal-failure comment, and it does that for
+# every pull request in the fleet until the variable is fixed. Fixing it recovers
+# nothing, because the jobs are already terminal. Resolving all of them here
+# means one malformed value stops the worker at startup instead.
+_CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
+    ("WORKFLOW_LEASE_SECONDS", _lease_seconds),
+    ("EMBEDDING_MODEL", embedding_model),
+    ("EMBEDDING_DIMENSIONS", embedding_dimensions),
+    ("EMBEDDING_BATCH_SIZE", embedding_batch_size),
+    ("MAX_CONTEXT_CHUNKS", max_context_chunks),
+    ("MAX_CONTEXT_CHARS", max_context_chars),
+    ("MIN_CONTEXT_SIMILARITY", minimum_similarity),
+    ("REVIEW_MODEL", review_model),
+    ("REVIEW_VERIFIER_MODEL", review_verifier_model),
+    ("REVIEW_PASSES", review_passes),
+    ("MIN_REVIEW_CONFIDENCE", minimum_review_confidence),
+    ("REVIEW_PROVENANCE_MIN_CONFIDENCE", review_provenance_minimum_confidence),
+    ("REVIEW_STRUCTURED_OUTPUT_MODE", lambda: _supports_json_schema(review_model())),
+    ("REVIEW_API_BASE", lambda: _model_api_base(review_model())),
+    ("REVIEW_MAX_OUTPUT_TOKENS", partial(_probe_positive_int, "REVIEW_MAX_OUTPUT_TOKENS")),
+    (
+        "REVIEW_MODEL_TIMEOUT_SECONDS",
+        partial(_probe_positive_int, "REVIEW_MODEL_TIMEOUT_SECONDS"),
+    ),
+    (
+        "REVIEW_DIFF_CHARS_PER_CALL",
+        partial(_probe_positive_int, "REVIEW_DIFF_CHARS_PER_CALL"),
+    ),
+    ("REVIEW_MAX_DIFF_CHUNKS", partial(_probe_positive_int, "REVIEW_MAX_DIFF_CHUNKS")),
+    ("REVIEW_DIAGRAM_DIFF_CHARS", partial(_probe_positive_int, "REVIEW_DIAGRAM_DIFF_CHARS")),
+    (
+        "REVIEW_DIAGRAM_CONTEXT_CHARS",
+        partial(_probe_positive_int, "REVIEW_DIAGRAM_CONTEXT_CHARS"),
+    ),
+    (
+        "REVIEW_DIAGRAM_MAX_OUTPUT_TOKENS",
+        partial(_probe_positive_int, "REVIEW_DIAGRAM_MAX_OUTPUT_TOKENS"),
+    ),
+    ("SCM_API_TIMEOUT_SECONDS", scm_api_timeout_seconds),
+    ("DIFFUSE_MAX_REPOSITORY_BYTES", max_repository_bytes),
+    ("RULE_LEARNING_MODEL", rule_learning_model),
+    (
+        "RULE_LEARNING_MAX_OUTPUT_TOKENS",
+        partial(_probe_positive_int, "RULE_LEARNING_MAX_OUTPUT_TOKENS"),
+    ),
+    (
+        "RULE_LEARNING_MODEL_TIMEOUT_SECONDS",
+        partial(_probe_positive_int, "RULE_LEARNING_MODEL_TIMEOUT_SECONDS"),
+    ),
+    ("SUGGESTED_RULE_MIN_SUPPORT", partial(_probe_int, "SUGGESTED_RULE_MIN_SUPPORT")),
+    (
+        "SUGGESTED_RULE_MIN_SUPPORT_PULL_REQUESTS",
+        partial(_probe_int, "SUGGESTED_RULE_MIN_SUPPORT_PULL_REQUESTS"),
+    ),
+    # Scheduler settings. Not on a claimed job's path, but they are read by the
+    # same process on a timer, and a startup failure beats a log line every pass.
+    ("FEEDBACK_SYNC_INTERVAL_SECONDS", partial(_probe_int, "FEEDBACK_SYNC_INTERVAL_SECONDS")),
+    ("FEEDBACK_SYNC_BATCH_SIZE", partial(_probe_int, "FEEDBACK_SYNC_BATCH_SIZE")),
+    ("RULE_LEARNING_MIN_EVIDENCE", partial(_probe_int, "RULE_LEARNING_MIN_EVIDENCE")),
+    (
+        "RULE_LEARNING_MIN_PULL_REQUESTS",
+        partial(_probe_int, "RULE_LEARNING_MIN_PULL_REQUESTS"),
+    ),
+    (
+        "RULE_LEARNING_EVALUATION_INTERVAL_SECONDS",
+        partial(_probe_int, "RULE_LEARNING_EVALUATION_INTERVAL_SECONDS"),
+    ),
+    ("RULE_LEARNING_BATCH_SIZE", partial(_probe_int, "RULE_LEARNING_BATCH_SIZE")),
+    ("GITHUB_API_URL", partial(_probe_base_url, "GITHUB_API_URL", "https://api.github.com")),
+    ("GITHUB_WEB_URL", partial(_probe_base_url, "GITHUB_WEB_URL", "https://github.com")),
+)
+
+
+def validate_worker_configuration() -> None:
+    """Resolve every hot-path configuration value, naming the one that fails."""
+    for name, resolve in _CONFIGURATION_PROBES:
+        try:
+            resolve()
+        except ValueError as error:
+            raise ValueError(f"{name} is invalid: {error}") from error
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
@@ -2082,15 +2357,14 @@ def main() -> None:
     args = parser.parse_args()
     if args.poll_seconds <= 0:
         parser.error("--poll-seconds must be positive")
+    # The worker id is also the audit actor for anything the worker records, and
+    # that column is bounded. Checking it here keeps an over-long WORKER_ID from
+    # surfacing as a mid-review ValueError, which is the very hazard below.
+    if not 1 <= len(args.worker_id.strip()) <= 255:
+        parser.error("--worker-id must contain 1 to 255 characters")
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    # Resolve the retrieval budgets once, here, so a malformed MAX_CONTEXT_CHUNKS
-    # or MAX_CONTEXT_CHARS stops the worker at startup. They are otherwise read
-    # lazily per review, where run_once classifies ValueError as non-retryable --
-    # so one typo would dead-letter every review job in turn instead of failing
-    # once, loudly, before any work is claimed.
     try:
-        max_context_chunks()
-        max_context_chars()
+        validate_worker_configuration()
     except ValueError as error:
         parser.error(str(error))
     with closing(get_conn()) as conn:

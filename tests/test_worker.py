@@ -13,7 +13,7 @@ from repository_policy.models import (
 from repository_policy.resolve import resolve_review_policy
 from retriever.context_models import CrossRepositoryContextPlan
 from retriever.retrieve import RetrievedContextBundle
-from service import worker
+from service import review_store, worker
 from service.approval_store import AutoApprovalHandle
 from service.auto_approval import AutoApprovalDecision, AutoApprovalRisk
 from service.check_store import CheckRunHandle
@@ -21,6 +21,10 @@ from service.conversation_store import (
     ConversationPublication,
     ConversationWork,
     PublishedConversationReply,
+)
+from service.cross_repository import (
+    CrossRepositoryContextResolution,
+    DroppedContextRepository,
 )
 from service.feedback_models import ReactionSyncResult, ReviewReaction
 from service.feedback_store import FeedbackSyncTarget
@@ -48,7 +52,7 @@ from service.scm import (
     PushEvent,
     ReviewConversationEvent,
 )
-from service.workflow import NonRetryableError, WorkflowJob
+from service.workflow import NonRetryableError, StrandedReviewJob, WorkflowJob
 
 
 @pytest.fixture(autouse=True)
@@ -353,6 +357,7 @@ async def test_worker_checks_revision_before_review_and_completes(monkeypatch):
         "_heartbeat_and_check_current",
         lambda *_args: next(current_checks),
     )
+    monkeypatch.setattr(worker, "_heartbeat_lease", lambda *_args: True)
     monkeypatch.setattr(
         worker,
         "_begin_native_review",
@@ -520,6 +525,7 @@ async def test_worker_auto_approves_only_after_clean_review_publication(
         "_heartbeat_and_check_current",
         lambda *_args: True,
     )
+    monkeypatch.setattr(worker, "_heartbeat_lease", lambda *_args: True)
     monkeypatch.setattr(
         worker,
         "_begin_native_review",
@@ -657,6 +663,7 @@ async def test_worker_publishes_exact_review_status_check(monkeypatch):
         "_heartbeat_and_check_current",
         lambda *_args: next(current_checks),
     )
+    monkeypatch.setattr(worker, "_heartbeat_lease", lambda *_args: True)
     monkeypatch.setattr(
         worker,
         "_begin_native_review",
@@ -850,6 +857,7 @@ async def test_worker_persists_trigger_skip_without_retrieval_or_publication(mon
         "_heartbeat_and_check_current",
         lambda *_args: next(current_checks),
     )
+    monkeypatch.setattr(worker, "_heartbeat_lease", lambda *_args: True)
     monkeypatch.setattr(
         worker,
         "_begin_native_review",
@@ -1436,3 +1444,226 @@ async def test_non_retryable_failure_check_does_not_claim_exhausted_retries(
     message = finalize.await_args.kwargs["message"]
     assert "exhausting" not in message
     assert "retrying cannot resolve" in message
+
+
+def test_hot_path_configuration_is_validated_before_any_job_is_claimed(monkeypatch):
+    """A malformed value must stop the worker, not dead-letter the whole fleet.
+
+    `run_once` classifies ValueError as non-retryable because NonRetryableError
+    subclasses it, so a bare env-parsing ValueError raised mid-job fails that
+    review permanently on its first attempt -- and does so for every pull
+    request until someone notices. Fixing the variable then recovers nothing.
+    """
+    monkeypatch.setenv("REVIEW_PASSES", "correctness,perf")
+
+    with pytest.raises(ValueError, match="REVIEW_PASSES is invalid"):
+        worker.validate_worker_configuration()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("REVIEW_PASSES", "correctness,perf"),
+        ("MIN_REVIEW_CONFIDENCE", "1.5"),
+        ("REVIEW_MODEL", "   "),
+        ("REVIEW_PROVENANCE_MIN_CONFIDENCE", "high"),
+        ("REVIEW_STRUCTURED_OUTPUT_MODE", "strict"),
+        ("REVIEW_MAX_OUTPUT_TOKENS", "0"),
+        ("REVIEW_MODEL_TIMEOUT_SECONDS", "none"),
+        ("REVIEW_DIFF_CHARS_PER_CALL", "-1"),
+        ("REVIEW_MAX_DIFF_CHUNKS", "many"),
+        ("DIFFUSE_MAX_REPOSITORY_BYTES", "0"),
+        ("MAX_CONTEXT_CHUNKS", "0"),
+        ("MIN_CONTEXT_SIMILARITY", "2"),
+        ("WORKFLOW_LEASE_SECONDS", "30"),
+        ("EMBEDDING_DIMENSIONS", "wide"),
+        ("SCM_API_TIMEOUT_SECONDS", "0"),
+    ],
+)
+def test_every_hot_path_variable_fails_startup_by_name(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=name):
+        worker.validate_worker_configuration()
+
+
+def test_startup_configuration_check_accepts_the_shipped_defaults(monkeypatch):
+    for name, _probe in worker._CONFIGURATION_PROBES:
+        monkeypatch.delenv(name, raising=False)
+
+    worker.validate_worker_configuration()
+
+
+def test_unauthorized_context_repositories_are_recorded_against_the_worker(monkeypatch):
+    """Dropping is not fatal, so the refusal has to survive the review."""
+    recorded = {}
+    dropped = (
+        DroppedContextRepository(
+            repository_full_name="owner/secrets",
+            reason_code="not_cluster_member",
+        ),
+    )
+
+    monkeypatch.setattr(worker, "get_conn", lambda: _FakeConnection())
+    monkeypatch.setattr(
+        worker,
+        "resolve_cross_repository_context",
+        lambda *_args, **_kwargs: CrossRepositoryContextResolution(
+            plan=_context_plan(),
+            dropped_repositories=dropped,
+        ),
+    )
+    monkeypatch.setattr(
+        worker,
+        "record_dropped_context_repositories",
+        lambda _conn, **kwargs: recorded.update(kwargs),
+    )
+
+    plan = worker._load_cross_repository_context_plan(
+        2,
+        7,
+        SimpleNamespace(context_repositories=("owner/secrets",)),
+        "worker-1",
+    )
+
+    assert plan == _context_plan()
+    assert recorded == {
+        "primary_repository_id": 2,
+        "actor_label": "worker-1",
+        "dropped": dropped,
+    }
+
+
+class _FakeConnection:
+    """A connection whose commit and close are both no-ops."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def close(self):
+        return None
+
+
+@pytest.mark.anyio
+async def test_stranded_review_reconciler_completes_the_blocking_check(monkeypatch):
+    """A job the lease sweep declared dead leaves the merge gate hanging.
+
+    Nothing else reads `dead` outside `run_once`'s in-process handler, which
+    never runs for a swept job, so without this pass the review run stays
+    `generating` and the required check stays `in_progress` forever.
+    """
+    event = _event()
+    stranded = StrandedReviewJob(
+        id=11,
+        repository_id=2,
+        payload=event.to_payload(),
+        retries_exhausted=True,
+    )
+    handle = CheckRunHandle(
+        id=91,
+        status="in_progress",
+        external_key="check-key",
+        external_id="4242",
+        external_url=None,
+        conclusion=None,
+    )
+    completed = AsyncMock()
+
+    monkeypatch.setattr(
+        worker,
+        "_reconcile_stranded_reviews",
+        lambda: (stranded,),
+    )
+    monkeypatch.setattr(
+        worker,
+        "_get_native_check_for_job",
+        lambda _job_id: handle,
+    )
+    monkeypatch.setattr(worker, "_complete_native_check", completed)
+
+    assert await worker._finalize_stranded_reviews() == 1
+
+    completed.assert_awaited_once_with(
+        event,
+        handle,
+        conclusion="failure",
+        message=(
+            "Diffuse could not complete this review after exhausting "
+            "its retry policy."
+        ),
+    )
+
+
+class _ScriptedCursor:
+    """Records every statement and replays a scripted result for the first fetch."""
+
+    def __init__(self, statements, lease_row):
+        self._statements = statements
+        self._lease_row = lease_row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def execute(self, sql, parameters=None):
+        self._statements.append((" ".join(sql.split()), parameters))
+
+    def fetchone(self):
+        return self._lease_row
+
+
+class _ScriptedConnection:
+    def __init__(self, lease_row):
+        self.statements: list[tuple[str, object]] = []
+        self._lease_row = lease_row
+
+    def cursor(self):
+        return _ScriptedCursor(self.statements, self._lease_row)
+
+
+def test_supersede_is_a_no_op_once_the_lease_has_moved_on(monkeypatch):
+    """A stale worker must not retire the run another worker now owns.
+
+    `review_runs` is keyed by `workflow_job_id` and reused across retries, so a
+    worker that stalled past its lease still holds the review-run id. Without the
+    lease predicate it would mark that run superseded and call
+    `discard_unpublished_finding_lineage`, deleting the findings the worker which
+    legitimately re-claimed the job is generating right now.
+    """
+    discarded: list[int] = []
+    monkeypatch.setattr(
+        review_store,
+        "discard_unpublished_finding_lineage",
+        lambda _conn, run_id: discarded.append(run_id),
+    )
+    connection = _ScriptedConnection(lease_row=None)
+
+    assert review_store.mark_review_superseded(connection, 42, worker_id="stale") is False
+    assert discarded == [], "a worker without the lease deleted another worker's findings"
+    assert not any(
+        statement.startswith("UPDATE review_runs")
+        for statement, _ in connection.statements
+    )
+
+
+def test_supersede_proceeds_for_the_worker_still_holding_the_lease(monkeypatch):
+    """The guard must not break the legitimate supersession path."""
+    discarded: list[int] = []
+    monkeypatch.setattr(
+        review_store,
+        "discard_unpublished_finding_lineage",
+        lambda _conn, run_id: discarded.append(run_id),
+    )
+    connection = _ScriptedConnection(lease_row=(1,))
+
+    assert review_store.mark_review_superseded(connection, 42, worker_id="owner") is True
+    assert discarded == [42]
+    assert any(
+        statement.startswith("UPDATE review_runs")
+        for statement, _ in connection.statements
+    )

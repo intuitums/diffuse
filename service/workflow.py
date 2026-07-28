@@ -38,6 +38,11 @@ class RepositoryNotOnboardedError(LookupError):
 REPOSITORY_NOT_ONBOARDED_REASON = "repository_not_onboarded"
 WEBHOOK_REJECTION_REASONS = frozenset({REPOSITORY_NOT_ONBOARDED_REASON})
 
+# Statuses a job can never leave on its own. `cancelled` and `superseded` are
+# deliberately absent: those are decisions Diffuse made about a revision that no
+# longer matters, not failures, so re-enqueueing them would undo the decision.
+TERMINAL_JOB_STATUSES = frozenset({"dead", "failed"})
+
 
 class DeliveryConflictError(RuntimeError):
     pass
@@ -55,6 +60,16 @@ class EnqueueResult:
     @property
     def accepted(self) -> bool:
         return self.state == "queued"
+
+
+@dataclass(frozen=True)
+class StrandedReviewJob:
+    """A terminal review job whose durable review state was never finished."""
+
+    id: int
+    repository_id: int
+    payload: dict[str, Any]
+    retries_exhausted: bool
 
 
 @dataclass(frozen=True)
@@ -83,6 +98,33 @@ def _validated_error_code(error_code: str) -> str:
     if not ERROR_CODE_PATTERN.fullmatch(error_code):
         raise ValueError("error_code must contain only lowercase letters, digits, and underscores")
     return error_code
+
+
+def _retire_terminal_job(cursor, existing_job) -> bool:
+    """Free a failed job's idempotency key so its revision can be enqueued again.
+
+    ``workflow_jobs.idempotency_key`` is globally UNIQUE and has no TTL, so a
+    job that reached `dead` or `failed` would otherwise pin its revision
+    forever: neither a re-push of that commit nor an operator-requested index
+    could ever produce another job for it, and the repository would go on
+    serving a stale index with nothing to show for it. Renaming the key instead
+    of deleting the row keeps the failed attempt history intact and inspectable,
+    and the job id makes the retired key unique by construction.
+
+    Returns whether the caller should now treat the revision as un-enqueued.
+    """
+    if not existing_job or existing_job[1] not in TERMINAL_JOB_STATUSES:
+        return False
+    cursor.execute(
+        """
+        UPDATE workflow_jobs
+        SET idempotency_key = idempotency_key || '#retired-' || id,
+            updated_at = now()
+        WHERE id = %s
+        """,
+        (int(existing_job[0]),),
+    )
+    return True
 
 
 def _record_pull_request_lifecycle(
@@ -423,6 +465,8 @@ def enqueue_review_event(
             (event.idempotency_key,),
         )
         existing_job = cursor.fetchone()
+        if _retire_terminal_job(cursor, existing_job):
+            existing_job = None
         if existing_job:
             job_id = int(existing_job[0])
             cursor.execute(
@@ -611,6 +655,8 @@ def enqueue_review_conversation_event(
             (event.idempotency_key,),
         )
         existing_job = cursor.fetchone()
+        if _retire_terminal_job(cursor, existing_job):
+            existing_job = None
         if existing_job:
             job_id = int(existing_job[0])
             cursor.execute(
@@ -1013,6 +1059,8 @@ def enqueue_repository_index_event(
             (event.idempotency_key,),
         )
         existing_job = cursor.fetchone()
+        if _retire_terminal_job(cursor, existing_job):
+            existing_job = None
         if existing_job:
             job_id = int(existing_job[0])
             cursor.execute(
@@ -1081,11 +1129,15 @@ def claim_workflow_job(
     worker_id: str,
     *,
     lease_seconds: int = 900,
+    base_delay_seconds: int = 30,
+    max_delay_seconds: int = 1800,
 ) -> WorkflowJob | None:
     if not worker_id.strip():
         raise ValueError("worker_id is required")
     if lease_seconds <= 0:
         raise ValueError("lease_seconds must be positive")
+    if base_delay_seconds <= 0 or max_delay_seconds <= 0:
+        raise ValueError("Retry delays must be positive")
 
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
         cursor.execute(
@@ -1103,13 +1155,29 @@ def claim_workflow_job(
             """
         )
         cursor.execute(
+            # The exponential backoff `fail_workflow_job` applies, one attempt
+            # later. A job that kills its worker -- an out-of-memory diff, a
+            # hang -- expires its lease instead of reporting a failure, so with
+            # `available_at = now()` it becomes claimable again immediately and
+            # burns every remaining attempt as fast as workers can pick it up.
+            # The *first* expiry is exempt because its usual cause is a deploy
+            # or a restart rather than the job itself, and that work should
+            # resume at once; a repeat expiry is the poison-job signal.
             """
             UPDATE workflow_jobs
             SET status = CASE
                     WHEN attempt_count >= max_attempts THEN 'dead'
                     ELSE 'queued'
                 END,
-                available_at = now(),
+                available_at = now() + (
+                    CASE
+                        WHEN attempt_count > 1 THEN LEAST(
+                            %s,
+                            %s * power(2, attempt_count - 2)
+                        )
+                        ELSE 0
+                    END * interval '1 second'
+                ),
                 leased_by = NULL,
                 lease_expires_at = NULL,
                 last_error_code = 'lease_expired',
@@ -1120,7 +1188,8 @@ def claim_workflow_job(
                 updated_at = now()
             WHERE status = 'running'
               AND lease_expires_at < now()
-            """
+            """,
+            (max_delay_seconds, base_delay_seconds),
         )
         cursor.execute(
             """
@@ -1203,6 +1272,69 @@ def claim_workflow_job(
             attempt_count=int(row["attempt_count"]),
             max_attempts=int(row["max_attempts"]),
         )
+
+
+def claim_stranded_review_jobs(
+    conn,
+    *,
+    grace_seconds: int = 300,
+    limit: int = 20,
+) -> tuple[StrandedReviewJob, ...]:
+    """Find terminal review jobs that left durable review state unfinished.
+
+    `claim_workflow_job`'s lease sweep can move a job straight to `dead` without
+    any worker observing the failure, and `run_once`'s in-process handler -- the
+    only other reader of `dead` -- never runs for those. Their review run stays
+    `generating` and their check run stays `in_progress` forever, so a required
+    check blocks the pull request with no explanation and no way out.
+
+    Both the job and the review run it stranded are locked, so the caller can
+    finalize them in this transaction without racing a newer job that adopts the
+    same review run. The grace period keeps the sweep clear of `run_once`, which
+    finalizes its own failures moments after a job reaches a terminal status.
+    """
+    if grace_seconds < 0:
+        raise ValueError("grace_seconds cannot be negative")
+    if not 1 <= limit <= 100:
+        raise ValueError("Stranded review batch limit must be between 1 and 100")
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+        cursor.execute(
+            """
+            SELECT
+                job.id,
+                job.repository_id,
+                job.status,
+                job.payload
+            FROM workflow_jobs AS job
+            JOIN review_runs AS review ON review.workflow_job_id = job.id
+            WHERE job.job_type = 'review_pull_request'
+              AND job.status IN ('dead', 'failed')
+              AND job.completed_at < now() - (%s * interval '1 second')
+              AND (
+                  review.status IN ('generating', 'ready', 'publishing')
+                  OR EXISTS (
+                      SELECT 1
+                      FROM review_check_runs AS check_run
+                      WHERE check_run.review_run_id = review.id
+                        AND check_run.status NOT IN ('completed', 'failed')
+                  )
+              )
+            ORDER BY job.completed_at, job.id
+            FOR UPDATE OF job, review SKIP LOCKED
+            LIMIT %s
+            """,
+            (grace_seconds, limit),
+        )
+        rows = cursor.fetchall()
+    return tuple(
+        StrandedReviewJob(
+            id=int(row["id"]),
+            repository_id=int(row["repository_id"]),
+            payload=dict(row["payload"]),
+            retries_exhausted=row["status"] == "dead",
+        )
+        for row in rows
+    )
 
 
 def heartbeat_workflow_job(
