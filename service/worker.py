@@ -13,7 +13,12 @@ from functools import partial
 
 import anyio
 
-from indexer.embed import embedding_batch_size, embedding_dimensions, embedding_model
+from indexer.embed import (
+    embedding_batch_size,
+    embedding_dimensions,
+    embedding_model,
+    verify_embedding_credential,
+)
 from indexer.index_repo import index_repo
 from indexer.store import get_conn
 from repository_policy.models import RepositoryPolicySnapshot, validate_repo_path
@@ -145,6 +150,7 @@ from service.review_engine import (
     _supports_json_schema,
     generate_review,
     minimum_review_confidence,
+    model_retries,
     review_model,
     review_passes,
     review_provenance_minimum_confidence,
@@ -196,6 +202,7 @@ from service.workflow import (
     supersede_workflow_job,
     workflow_job_is_current,
     workflow_job_is_latest,
+    workflow_queue_depth,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -2180,6 +2187,40 @@ async def run_once(worker_id: str) -> bool:
     return True
 
 
+def _heartbeat_seconds() -> float:
+    """Interval between worker heartbeat lines. Zero disables them."""
+    value = float(os.environ.get("WORKER_HEARTBEAT_SECONDS", "300"))
+    if value < 0:
+        raise ValueError("WORKER_HEARTBEAT_SECONDS must not be negative")
+    return value
+
+
+def _log_heartbeat(worker_id: str, processed: int) -> None:
+    """Emit one liveness-and-progress line, never raising into the run loop.
+
+    A heartbeat that can kill the worker it exists to observe would be worse
+    than no heartbeat, so a database failure here is logged and swallowed --
+    and the log line it produces is itself the signal that something is wrong.
+    """
+    try:
+        with closing(get_conn()) as conn:
+            depth = workflow_queue_depth(conn)
+    except Exception:
+        LOGGER.exception("Worker heartbeat could not read queue depth worker_id=%s", worker_id)
+        return
+    LOGGER.info(
+        "Worker heartbeat worker_id=%s processed=%s queued=%s running=%s "
+        "retrying=%s dead=%s failed=%s",
+        worker_id,
+        processed,
+        depth.queued,
+        depth.running,
+        depth.retrying,
+        depth.dead,
+        depth.failed,
+    )
+
+
 async def run_forever(worker_id: str, poll_seconds: float) -> None:
     scheduler_seconds = float(
         os.environ.get("FEEDBACK_SYNC_SCHEDULER_SECONDS", "60")
@@ -2191,11 +2232,23 @@ async def run_forever(worker_id: str, poll_seconds: float) -> None:
     )
     if learning_scheduler_seconds <= 0:
         raise ValueError("RULE_LEARNING_SCHEDULER_SECONDS must be positive")
+    heartbeat_seconds = _heartbeat_seconds()
     next_feedback_schedule = 0.0
     next_learning_schedule = 0.0
     next_stranded_reconcile = 0.0
+    # An idle worker used to emit nothing at all, so `docker compose logs worker`
+    # was empty whether it was healthy, wedged, or had lost the database. The
+    # worker has no container healthcheck on purpose -- process liveness says
+    # nothing about progress -- which makes this the only signal that separates
+    # the three, so it reports queue depth and work done rather than just "alive".
+    next_heartbeat = 0.0
+    processed_since_heartbeat = 0
     while True:
         now = time.monotonic()
+        if heartbeat_seconds and now >= next_heartbeat:
+            _log_heartbeat(worker_id, processed_since_heartbeat)
+            processed_since_heartbeat = 0
+            next_heartbeat = now + heartbeat_seconds
         if now >= next_stranded_reconcile:
             try:
                 reconciled = await _finalize_stranded_reviews()
@@ -2234,7 +2287,9 @@ async def run_forever(worker_id: str, poll_seconds: float) -> None:
                 LOGGER.exception("Failed to schedule suggested-rule generation")
             next_learning_schedule = now + learning_scheduler_seconds
         claimed = await run_once(worker_id)
-        if not claimed:
+        if claimed:
+            processed_since_heartbeat += 1
+        else:
             await anyio.sleep(poll_seconds)
 
 
@@ -2288,6 +2343,8 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
         "REVIEW_MODEL_TIMEOUT_SECONDS",
         partial(_probe_positive_int, "REVIEW_MODEL_TIMEOUT_SECONDS"),
     ),
+    ("REVIEW_MODEL_RETRIES", model_retries),
+    ("WORKER_HEARTBEAT_SECONDS", _heartbeat_seconds),
     (
         "REVIEW_DIFF_CHARS_PER_CALL",
         partial(_probe_positive_int, "REVIEW_DIFF_CHARS_PER_CALL"),
@@ -2346,6 +2403,20 @@ def validate_worker_configuration() -> None:
             raise ValueError(f"{name} is invalid: {error}") from error
 
 
+def validate_worker_credentials() -> None:
+    """Check that configured providers have a usable credential.
+
+    Deliberately separate from `validate_worker_configuration`, which asks only
+    whether the configuration *parses*. Presence of a secret is a different
+    question with a different answer per environment -- the unit suite and the
+    packaging smoke test both run with no provider keys at all and must keep
+    validating configuration. Folding this into the probe list also placed a
+    credential failure ahead of every later variable, masking the parse error
+    the probe list exists to name.
+    """
+    verify_embedding_credential()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
@@ -2365,6 +2436,7 @@ def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     try:
         validate_worker_configuration()
+        validate_worker_credentials()
     except ValueError as error:
         parser.error(str(error))
     with closing(get_conn()) as conn:

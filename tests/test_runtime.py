@@ -148,3 +148,70 @@ def test_keyboard_interrupt_is_not_swallowed(monkeypatch):
     # A shutdown signal must propagate, not become an exit-4 "internal error".
     with pytest.raises(KeyboardInterrupt):
         runtime.main(["worker"])
+
+
+def test_api_configures_logging_from_log_level(monkeypatch):
+    """LOG_LEVEL was documented for the API but only ever applied to the worker.
+
+    Nothing called basicConfig on this path, so Diffuse's own loggers fell
+    through to logging.lastResort, which drops INFO and DEBUG entirely.
+    """
+    import logging
+
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    run = MagicMock()
+    monkeypatch.setattr("uvicorn.run", run)
+    root = logging.getLogger()
+    original_level = root.level
+    try:
+        runtime._run_api([])
+        # uvicorn's own access log, and Diffuse's loggers, both have to follow
+        # LOG_LEVEL; neither of these was wired up.
+        assert run.call_args.kwargs["log_level"] == "debug"
+        assert root.level == logging.DEBUG
+    finally:
+        root.setLevel(original_level)
+
+
+def test_api_log_level_survives_a_preinstalled_root_handler(monkeypatch):
+    """Regression: basicConfig does nothing when the root logger has handlers.
+
+    Importing the app pulls in a dependency that installs a RichHandler, so
+    configuring the level with basicConfig alone left it at INFO no matter what
+    LOG_LEVEL said.
+    """
+    import logging
+
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    monkeypatch.setattr("uvicorn.run", MagicMock())
+    root = logging.getLogger()
+    original_level, original_handlers = root.level, list(root.handlers)
+    root.addHandler(logging.NullHandler())
+    try:
+        runtime._run_api([])
+        assert root.level == logging.DEBUG
+    finally:
+        root.setLevel(original_level)
+        root.handlers = original_handlers
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("WARN", "warning"), ("warning", "warning"), ("  info  ", "info"), ("NOTSET", "debug")],
+)
+def test_log_level_is_translated_into_uvicorn_vocabulary(monkeypatch, configured, expected):
+    """uvicorn has no WARN alias and no NOTSET, and rejects what it does not know.
+
+    A LOG_LEVEL that is perfectly valid for the worker would otherwise crash-loop
+    the API container.
+    """
+    monkeypatch.setenv("LOG_LEVEL", configured)
+
+    assert runtime._log_level()[1] == expected
+
+
+def test_unknown_log_level_is_rejected_by_name(monkeypatch):
+    monkeypatch.setenv("LOG_LEVEL", "chatty")
+
+    with pytest.raises(ValueError, match="LOG_LEVEL"):
+        runtime._log_level()

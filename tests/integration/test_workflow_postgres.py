@@ -100,6 +100,7 @@ from service.workflow import (
     supersede_workflow_job,
     workflow_job_is_current,
     workflow_job_is_latest,
+    workflow_queue_depth,
 )
 
 
@@ -2954,3 +2955,93 @@ def test_concurrent_workers_claim_independent_jobs_in_one_repository():
                 "DELETE FROM scm_webhook_deliveries WHERE delivery_id = ANY(%s)",
                 (["concurrent-delivery-1", "concurrent-delivery-2"],),
             )
+
+
+def _queue_depth_event(*, delivery: str, head: str, updated_at: str) -> PullRequestEvent:
+    """A pull request in its own repository, so nothing here shares a scope key."""
+    return PullRequestEvent.from_payload(
+        {
+            "provider": "github",
+            "scm_base_url": "https://github.com",
+            "api_base_url": "https://api.github.com",
+            "repo_full_name": "workflow/queue-depth",
+            "number": 991,
+            "web_url": "https://github.com/workflow/queue-depth/pull/991",
+            "action": "synchronize",
+            "head_sha": head,
+            "base_sha": "b" * 40,
+            "updated_at": updated_at,
+            "delivery_id": delivery,
+        }
+    )
+
+
+def test_queue_depth_separates_backoff_from_throughput():
+    """Queue depth is the worker heartbeat's only progress signal.
+
+    A queue that is deep because jobs keep failing needs the opposite response
+    from a queue that is deep because there is a lot of work, so `retrying` --
+    queued jobs deferred by backoff rather than waiting on a free worker -- is
+    counted separately.
+
+    Nothing here is committed. The integration database is shared and never
+    truncated, and every other test in this module is re-runnable against a
+    dirty one; committing would break that in three separate ways. Absolute
+    counts would only hold on a freshly migrated database. A committed delivery
+    row makes the second run's `enqueue_review_event` a no-op, because delivery
+    identity is exactly what it deduplicates on. And a committed repository row
+    changes the population the rule-learning scheduler counts. Deltas inside one
+    rolled-back transaction sidestep all three: the helpers below do not commit
+    on their own, and a transaction sees its own uncommitted writes.
+    """
+    database_url = os.environ["POSTGRES_TEST_DATABASE_URL"]
+
+    with closing(psycopg2.connect(database_url)) as connection:
+        try:
+            begin_index_snapshot(
+                connection,
+                "workflow/queue-depth",
+                "e" * 40,
+                "integration-model",
+                1536,
+            )
+            before = workflow_queue_depth(connection)
+
+            enqueue_review_event(
+                connection,
+                _queue_depth_event(
+                    delivery="queue-depth-1",
+                    head="a" * 40,
+                    updated_at="2026-07-23T15:30:00Z",
+                ),
+                payload_sha256="d" * 64,
+            )
+
+            queued = workflow_queue_depth(connection)
+            assert queued.queued == before.queued + 1
+            assert queued.running == before.running
+            assert queued.retrying == before.retrying
+
+            job = claim_workflow_job(connection, "queue-depth-worker", lease_seconds=60)
+            assert job is not None
+
+            running = workflow_queue_depth(connection)
+            assert running.running == before.running + 1
+            assert running.queued == before.queued
+
+            # A retryable failure returns the job to `queued` with a future
+            # available_at, which is exactly what `retrying` exists to expose.
+            fail_workflow_job(
+                connection,
+                job.id,
+                "queue-depth-worker",
+                error_code="model_timeout",
+                retryable=True,
+            )
+
+            backing_off = workflow_queue_depth(connection)
+            assert backing_off.queued == before.queued + 1
+            assert backing_off.retrying == before.retrying + 1
+            assert backing_off.running == before.running
+        finally:
+            connection.rollback()
