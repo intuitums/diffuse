@@ -1,5 +1,13 @@
 # AGENTS.md
 
+> **Scope: this file describes ONE environment — the Cursor Cloud VM.** Almost nothing
+> in it generalises: there is no Docker, PostgreSQL runs natively, and the paths and
+> credentials are that VM's. If you are not on that VM, read `DEVELOPMENT.md` instead.
+>
+> Note also that `repository_policy/discovery.py` indexes `AGENTS.md` as scoped review
+> guidance, so this file is fed into Diffuse's reviews of Diffuse. Keep it free of
+> anything that reads as a project-wide instruction.
+
 ## Cursor Cloud specific instructions
 
 Diffuse is a self-hostable code-review platform. Standard setup/run/test commands live in
@@ -25,20 +33,22 @@ Python dependencies live in `.venv` (created by the startup update script). Use 
 or activate it. `.env` (gitignored) already exists with dev values and points `DATABASE_URL` at
 the native localhost Postgres.
 
-### GOTCHA 1 — run `pytest` without `.env` in the working directory
+### `.env` no longer leaks into the test process
 
-`litellm` calls `load_dotenv()` on import, so importing any service module auto-loads `.env` from
-the current directory into the process environment. The dev `.env` values then leak into the test
-process and break 2 otherwise-passing tests (e.g. `DIFFUSE_MCP_ALLOWED_HOSTS` rejects the
-`testserver` host used by the MCP test). CI has no `.env`, so it is unaffected. When running tests
-locally, move `.env` aside first, for example:
+`litellm` calls `load_dotenv()` on import, so importing any service module auto-loads `.env`
+from the current directory into the process environment. That used to break otherwise-passing
+tests whenever a developer had followed the setup instructions and created one — the dev
+`DIFFUSE_MCP_ALLOWED_HOSTS`, for instance, rejects the `testserver` host the MCP test uses.
+
+`tests/conftest.py` now sets `LITELLM_MODE=PRODUCTION` before the first litellm import, which
+disables that load for the test process only. Running tests with `.env` in place is fine; the
+old `mv .env .env.bak` dance is no longer needed. The app and worker still load `.env`
+normally, which is what you want for local development.
 
 ```bash
-mv .env .env.bak
-.venv/bin/python -m pytest -m "not integration"        # 750 pass
+.venv/bin/python -m pytest -m "not integration"
 POSTGRES_TEST_DATABASE_URL=postgresql://diffuse:diffuse-dev@127.0.0.1:5432/diffuse_test \
-  .venv/bin/python -m pytest -m integration            # 45 pass (migrate test DB first)
-mv .env.bak .env
+  .venv/bin/python -m pytest -m integration            # migrate the test DB first
 ```
 
 Integration tests re-create the `vector` extension from scratch, which requires the `diffuse`
@@ -69,8 +79,9 @@ own `git commit`/`git push`.)
 Onboarding a repo (clone + resolve exact commit + durable queue) works with no external secrets,
 and the worker indexes up to the embedding call. Full indexing/review additionally needs:
 
-- `OPENAI_API_KEY` (or `REVIEW_API_BASE`) — embeddings + review model. Without it the worker
-  reaches `indexer/embed.py` and fails with "Missing credentials … OPENAI_API_KEY".
+- `OPENAI_API_KEY` (or `REVIEW_API_BASE`) — embeddings + review model. The worker now refuses
+  to start without a usable embedding credential rather than failing each index job partway
+  through, so a missing key surfaces immediately at startup instead of after five retries.
 - `GITHUB_TOKEN` + webhook secret — to clone private repos and publish reviews.
 
 The bare-repo mirrors live under `/var/lib/diffuse/repositories` (created, owned by `ubuntu`).
