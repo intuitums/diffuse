@@ -47,6 +47,7 @@ from service.cross_repository import resolve_cross_repository_context_plan
 from service.custom_context_store import load_active_custom_contexts
 from service.diff_parser import ParsedDiff, parse_unified_diff
 from service.learning_store import load_active_learned_rules
+from service.model_providers import resolve_provider
 from service.repositories import RegisteredRepository, list_repositories
 from service.review_engine import (
     PROMPT_VERSION,
@@ -1124,10 +1125,15 @@ def model_error_message(error: openai.OpenAIError) -> str:
         model = os.environ.get("REVIEW_MODEL", "").strip() or "<unset>"
     detail = str(error).strip() or error.__class__.__name__
     if isinstance(error, openai.AuthenticationError | openai.PermissionDeniedError):
+        # Name the credential this model actually authenticates with. litellm raises
+        # the openai exception hierarchy for every provider, so hardcoding
+        # OPENAI_API_KEY here sent anyone who typo'd an Anthropic key -- the default
+        # provider -- to fix a variable that has nothing to do with the failure.
+        credentials = " or ".join(resolve_provider(model).credential_env_names)
         head = (
             f"The review model provider rejected the credential for REVIEW_MODEL={model}.\n"
             f"{detail}\n"
-            "Set OPENAI_API_KEY (or OPENAI_KEY) to a key valid for that model."
+            f"Set {credentials} to a key valid for that model."
         )
     elif isinstance(error, openai.APIConnectionError):
         head = (

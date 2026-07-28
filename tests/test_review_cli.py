@@ -702,6 +702,29 @@ def test_model_errors_name_the_credential_env_var_and_the_model(monkeypatch):
     assert "openai/gpt-test" in message
 
 
+def test_model_errors_name_the_credential_for_a_non_openai_default(monkeypatch):
+    """The default provider is Anthropic, so naming OPENAI_API_KEY was wrong.
+
+    litellm raises the openai exception hierarchy for every provider, so this
+    message hardcoded OPENAI_API_KEY and sent anyone who mistyped their Anthropic
+    key -- the first error a new customer is likely to hit -- to fix a variable
+    that has nothing to do with the failure. The test above pinned an OpenAI
+    model, so it could never have caught this.
+    """
+    monkeypatch.setenv("REVIEW_MODEL", "anthropic/claude-sonnet-5")
+
+    message = review_cli.model_error_message(
+        litellm.exceptions.AuthenticationError(
+            message="invalid x-api-key",
+            llm_provider="anthropic",
+            model="anthropic/claude-sonnet-5",
+        )
+    )
+
+    assert "ANTHROPIC_API_KEY" in message
+    assert "OPENAI_API_KEY" not in message
+
+
 def test_model_connection_errors_are_actionable(monkeypatch):
     monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-test")
 

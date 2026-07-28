@@ -88,3 +88,34 @@ def test_release_bundle_ships_the_customer_env_example():
     """If the bundle stops shipping this file, the tests above stop meaning anything."""
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "release.yml").read_text()
     assert "deploy/env.example" in workflow
+
+
+def _declared_values(path: Path) -> dict[str, str]:
+    return dict(re.findall(r"^([A-Z][A-Z0-9_]*)=(.*)$", path.read_text(), re.M))
+
+
+# Names being in sync is not enough: the customer bundle shipped
+# REVIEW_MODEL=openai/gpt-4.1-mini while the code default and `.env.example` both
+# said anthropic/claude-sonnet-5. `deploy/README.md` tells the customer to copy
+# this file to `.env`, so the documented production install silently ran the
+# budget model the source tree calls "the previous default". The tests above all
+# passed throughout, because none of them ever compared a value.
+MODEL_SETTINGS = ("REVIEW_MODEL", "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS")
+
+
+def test_customer_env_example_ships_the_same_model_defaults():
+    source = _declared_values(SOURCE_ENV)
+    customer = _declared_values(CUSTOMER_ENV)
+    for name in MODEL_SETTINGS:
+        assert customer[name] == source[name], (
+            f"{name} differs between the two env files: "
+            f".env.example={source[name]!r} deploy/env.example={customer[name]!r}. "
+            "A customer following deploy/README.md would get the second one."
+        )
+
+
+def test_shipped_review_model_matches_the_code_default():
+    """The env files and the code must not drift apart either."""
+    from service.review_engine import DEFAULT_REVIEW_MODEL
+
+    assert _declared_values(CUSTOMER_ENV)["REVIEW_MODEL"] == DEFAULT_REVIEW_MODEL
