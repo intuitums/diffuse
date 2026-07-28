@@ -33,6 +33,7 @@ from service.review_models import (
     VerificationDecision,
 )
 from service.scm import ReviewConversationEvent
+from service.workflow import NonRetryableError
 
 DIFF = """\
 diff --git a/app.py b/app.py
@@ -1261,3 +1262,65 @@ def test_structured_call_omits_the_key_for_environment_authenticated_providers(
     )
 
     assert "api_key" not in arguments[0]
+
+
+def test_model_calls_retry_transient_failures(monkeypatch):
+    """A review is many model calls but retries as a single job.
+
+    Without in-call retries one 429 in the last pass discards every pass that
+    already succeeded, re-pays for them on the next attempt, and spends one of
+    only five workflow attempts.
+    """
+    batch = CandidateBatch(analysis_summary="No issue.", findings=[])
+    arguments: list[dict] = []
+
+    def fake_completion(**kwargs):
+        arguments.append(kwargs)
+        return {
+            "choices": [{"message": {"content": batch.model_dump_json()}}],
+            "usage": {},
+        }
+
+    monkeypatch.setattr(review_engine.litellm, "completion", fake_completion)
+
+    review_engine._call_structured(
+        CandidateBatch,
+        system_prompt="System",
+        user_prompt="User",
+    )
+
+    assert arguments[0]["num_retries"] == 2
+
+
+def test_model_retries_are_configurable_and_can_be_disabled(monkeypatch):
+    """Zero is a legitimate setting: it restores the previous behaviour."""
+    monkeypatch.setenv("REVIEW_MODEL_RETRIES", "0")
+    assert review_engine.model_retries() == 0
+
+    monkeypatch.setenv("REVIEW_MODEL_RETRIES", "-1")
+    with pytest.raises(ValueError, match="REVIEW_MODEL_RETRIES"):
+        review_engine.model_retries()
+
+
+def test_rejected_model_credential_is_non_retryable(monkeypatch):
+    """A revoked key cannot be retried into working.
+
+    Every attempt re-runs the passes that already succeeded, so this has to
+    dead-letter on the first one and report the provider's own reason.
+    """
+
+    def reject(**_kwargs):
+        raise review_engine.AuthenticationError(
+            message="invalid x-api-key",
+            llm_provider="anthropic",
+            model="anthropic/claude-sonnet-5",
+        )
+
+    monkeypatch.setattr(review_engine.litellm, "completion", reject)
+
+    with pytest.raises(NonRetryableError, match="rejected the credential"):
+        review_engine._call_structured(
+            CandidateBatch,
+            system_prompt="System",
+            user_prompt="User",
+        )

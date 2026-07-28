@@ -8,9 +8,9 @@ Records are append-only. A change that contradicts an accepted decision needs a
 **new** record that supersedes the old one, and a note added to the old one's
 `Status` line — not an edit to its Context or Decision.
 
-Numbers are never reused, and a record is never deleted. ADR 0034 is absent
-because the third-party configuration importer it described was removed
-outright; the number stays retired.
+Numbers are never reused. ADR 0034 is absent because the third-party
+configuration importer it described was withdrawn before it constrained
+anything; the number stays retired rather than being reassigned.
 
 Use [`TEMPLATE.md`](TEMPLATE.md) for a new record.
 
@@ -77,7 +77,7 @@ These four carry the decisions the rest of the system is built on:
 
 ## Amended records
 
-Three records are still accepted but no longer describe the system exactly as
+These records are still accepted but no longer describe the system exactly as
 written. Their `Status` lines carry the detail:
 
 - **0021** — its "read-only" constraint is void. ADR 0023 introduced
@@ -88,6 +88,12 @@ written. Their `Status` lines carry the detail:
   introduced still ship.
 - **0033** — its provider neutrality now spans exactly one provider. The
   authoritative-refetch decision it records still binds.
+
+Separately, these records remain correct in their own decisions but contain
+forward references to the superseded GitLab records (0030/0031/0032) as though
+those still extended the system. Read every such reference as withdrawn by
+[0041](0041-github-only-source-control.md): **0003** (GitLab OAuth installation
+flow), **0008**, **0011**, **0012**, **0013**, **0016**, **0017**, and **0023**.
 
 ## A note on this set
 

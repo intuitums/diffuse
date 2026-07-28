@@ -52,7 +52,12 @@ from service.scm import (
     PushEvent,
     ReviewConversationEvent,
 )
-from service.workflow import NonRetryableError, StrandedReviewJob, WorkflowJob
+from service.workflow import (
+    NonRetryableError,
+    StrandedReviewJob,
+    WorkflowJob,
+    WorkflowQueueDepth,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1667,3 +1672,68 @@ def test_supersede_proceeds_for_the_worker_still_holding_the_lease(monkeypatch):
         statement.startswith("UPDATE review_runs")
         for statement, _ in connection.statements
     )
+
+
+def test_heartbeat_reports_progress_not_just_liveness(monkeypatch, caplog):
+    """The worker has no container healthcheck by design, so this is the only
+    signal separating healthy-and-idle from wedged."""
+    monkeypatch.setattr(worker, "get_conn", lambda: _FakeConnection())
+    monkeypatch.setattr(
+        worker,
+        "workflow_queue_depth",
+        lambda _conn: WorkflowQueueDepth(
+            queued=4, running=1, dead=2, failed=0, retrying=3
+        ),
+    )
+
+    with caplog.at_level(logging.INFO):
+        worker._log_heartbeat("worker-1", processed=7)
+
+    message = caplog.text
+    assert "worker_id=worker-1" in message
+    assert "processed=7" in message
+    assert "queued=4" in message
+    assert "retrying=3" in message
+    assert "dead=2" in message
+
+
+def test_heartbeat_never_kills_the_worker_it_observes(monkeypatch, caplog):
+    """A heartbeat that can crash the run loop is worse than none at all."""
+
+    def explode():
+        raise RuntimeError("database is gone")
+
+    monkeypatch.setattr(worker, "get_conn", explode)
+
+    with caplog.at_level(logging.ERROR):
+        worker._log_heartbeat("worker-1", processed=0)
+
+    assert "could not read queue depth" in caplog.text
+
+
+def test_heartbeat_interval_is_validated_and_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("WORKER_HEARTBEAT_SECONDS", "0")
+    assert worker._heartbeat_seconds() == 0
+
+    monkeypatch.setenv("WORKER_HEARTBEAT_SECONDS", "-5")
+    with pytest.raises(ValueError, match="WORKER_HEARTBEAT_SECONDS"):
+        worker._heartbeat_seconds()
+
+
+def test_missing_embedding_credential_is_not_a_configuration_parse_error(monkeypatch):
+    """Credential checks must not sit in the parse-probe list.
+
+    Placed there, the credential failure fires ahead of every later variable and
+    masks the parse error the probe list exists to name -- and the unit suite
+    and packaging smoke test, which run with no provider keys, could no longer
+    validate configuration at all.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_KEY", raising=False)
+    monkeypatch.setenv("REVIEW_PASSES", "correctness,perf")
+
+    with pytest.raises(ValueError, match="REVIEW_PASSES is invalid"):
+        worker.validate_worker_configuration()
+
+    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+        worker.validate_worker_credentials()

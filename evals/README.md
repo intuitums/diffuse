@@ -20,10 +20,24 @@ rather than mispriced.
 Thresholds must be finite values in `[0, 1]`. `--min-f1 nan` is refused rather
 than accepted as a gate that can never fail.
 
-Start by copying `baseline.example.json`, replacing the illustrative cases
-with real reviewed pull requests, and filling `observed` from a Diffuse run:
+This scores a run; it does not perform one. There is no harness that invokes
+the review engine against fixtures, so `observed` has to be transcribed by hand
+from a Diffuse run. Building that harness is open Phase 0 work — see
+`docs/roadmap.md`.
+
+Start by copying `baseline.example.json`, replacing the illustrative cases with
+real reviewed pull requests, and filling `observed` from a Diffuse run:
 
 ```sh
+diffuse evaluate evals/baseline.example.json
+```
+
+The shipped fixture records one expected finding and zero observed, so it
+scores 0% recall and exits non-zero under any recall gate. That is intentional
+— the thresholds below are an example of the syntax, not a passing invocation:
+
+```sh
+# Exits 1 against the shipped fixture, by design.
 diffuse evaluate evals/baseline.example.json \
   --min-precision 0.80 \
   --min-recall 0.60

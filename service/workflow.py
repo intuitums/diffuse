@@ -1362,6 +1362,51 @@ def heartbeat_workflow_job(
         return cursor.rowcount == 1
 
 
+@dataclass(frozen=True)
+class WorkflowQueueDepth:
+    """How much work is outstanding, and how much has stopped moving."""
+
+    queued: int
+    running: int
+    dead: int
+    failed: int
+    retrying: int
+
+
+def workflow_queue_depth(conn) -> WorkflowQueueDepth:
+    """Count jobs by status for the worker heartbeat.
+
+    `retrying` is the subset of queued jobs deferred by backoff rather than
+    waiting on a free worker. Separating them matters: a queue that is deep
+    because of backoff is failing repeatedly, and a queue that is deep because
+    of throughput is not, and the two need opposite responses.
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                count(*) FILTER (WHERE status = 'queued') AS queued,
+                count(*) FILTER (WHERE status = 'running') AS running,
+                count(*) FILTER (WHERE status = 'dead') AS dead,
+                count(*) FILTER (WHERE status = 'failed') AS failed,
+                count(*) FILTER (
+                    WHERE status = 'queued'
+                      AND attempt_count > 0
+                      AND available_at > now()
+                ) AS retrying
+            FROM workflow_jobs
+            """
+        )
+        row = cursor.fetchone()
+    return WorkflowQueueDepth(
+        queued=row[0],
+        running=row[1],
+        dead=row[2],
+        failed=row[3],
+        retrying=row[4],
+    )
+
+
 def workflow_job_is_current(conn, job_id: int, worker_id: str) -> bool:
     with conn.cursor() as cursor:
         cursor.execute(

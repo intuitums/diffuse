@@ -80,7 +80,9 @@ Status values:
    including cross-repository context.
 7. Diffuse is independently implemented against open standards and provider
    APIs. Third-party trademarks, branding, prompts, and private implementation
-   details are out of scope, and no third-party product name belongs in
-   Diffuse's own contracts, identifiers, or documentation.
+   details are out of scope, and no *competitor* product name belongs in
+   Diffuse's own contracts, identifiers, or documentation. Naming an
+   integration target is different and is expected — the agent-handoff contract
+   necessarily identifies the agents it targets.
 8. Claims such as SOC 2, HIPAA, or GDPR compliance require an actual audit and
    operating program; code features alone do not justify them.
