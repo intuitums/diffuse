@@ -1113,7 +1113,7 @@ def database_error_message(error: psycopg2.Error) -> str:
         f"PostgreSQL rejected a Diffuse query on {redacted_database_url()} (from {source}); "
         "the schema may be missing or out of date.\n"
         f"{detail}\n"
-        "Apply migrations with `docker compose run --rm migrate diffuse database migrate`."
+        "Apply migrations with `docker compose run --rm migrate database migrate`."
     )
 
 

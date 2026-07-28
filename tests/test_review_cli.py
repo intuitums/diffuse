@@ -680,7 +680,11 @@ def test_schema_errors_point_at_the_migration_command(monkeypatch):
         psycopg2.errors.UndefinedTable("relation diffuse_repositories does not exist")
     )
 
-    assert "diffuse database migrate" in message
+    # The image ENTRYPOINT is already `diffuse`, so the service name must be
+    # followed by the bare subcommand: `migrate diffuse database migrate` would
+    # resolve to `diffuse diffuse database migrate`.
+    assert "docker compose run --rm migrate database migrate" in message
+    assert "migrate diffuse database" not in message
 
 
 def test_model_errors_name_the_credential_env_var_and_the_model(monkeypatch):
