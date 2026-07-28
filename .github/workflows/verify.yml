@@ -30,7 +30,7 @@ jobs:
   # stacked on another `claude/` branch, which is a reviewed, temporary state.
   guard-base-branch:
     if: github.event_name == 'pull_request'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Refuse a pull request aimed away from the default branch
@@ -54,7 +54,7 @@ jobs:
           exit 1
 
   lint-and-unit:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -82,7 +82,7 @@ jobs:
         run: python -m pytest -m "not integration"
 
   test-postgres:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 20
     services:
       postgres:
@@ -120,7 +120,7 @@ jobs:
         run: python -m pytest -m integration
 
   build-container:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     env:
       POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
