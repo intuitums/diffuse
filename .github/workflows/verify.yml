@@ -30,7 +30,7 @@ jobs:
   # stacked on another `claude/` branch, which is a reviewed, temporary state.
   guard-base-branch:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Refuse a pull request aimed away from the default branch
@@ -54,7 +54,7 @@ jobs:
           exit 1
 
   lint-and-unit:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -82,7 +82,7 @@ jobs:
         run: python -m pytest -m "not integration"
 
   test-postgres:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     services:
       postgres:
@@ -120,7 +120,7 @@ jobs:
         run: python -m pytest -m integration
 
   build-container:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     env:
       POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
@@ -139,16 +139,15 @@ jobs:
 
       # ADDED: buildx + a GitHub Actions layer cache. The old step ran a bare `docker build`
       # on every run, so an unchanged Dockerfile still rebuilt every layer from scratch.
-      - uses: docker/setup-buildx-action@v4
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
       - name: Build production image
-        uses: docker/build-push-action@v7
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           load: true
           tags: diffuse:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Validate packaged runtime
         run: |
