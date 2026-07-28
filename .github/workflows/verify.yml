@@ -1,4 +1,14 @@
-name: CI
+# Verify — the gate every change passes before it can land.
+#
+# Naming convention shared with intuitumxyz/leo:
+#   verify.yml   this file: runs on pull requests and on pushes to the default branch
+#   release.yml  tag-driven publish
+# Job ids are verb-led kebab-case so the checks list reads as a sequence of actions.
+#
+# Replaces ci.yml. Logic is ported unchanged except where noted; the container build now
+# uses buildx with a GitHub Actions cache, which is the one place repeat runs were paying
+# full price for an unchanged image.
+name: Verify
 
 on:
   pull_request:
@@ -10,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: verify-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -18,7 +28,7 @@ jobs:
   # stranding two Urgent security fixes for a day without anything failing.
   # A pull request must target the default branch unless it is deliberately
   # stacked on another `claude/` branch, which is a reviewed, temporary state.
-  base-branch:
+  guard-base-branch:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -71,7 +81,7 @@ jobs:
       - name: Run unit tests
         run: python -m pytest -m "not integration"
 
-  postgres-integration:
+  test-postgres:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -109,7 +119,7 @@ jobs:
       - name: Run PostgreSQL integration tests
         run: python -m pytest -m integration
 
-  container:
+  build-container:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -118,6 +128,7 @@ jobs:
       DIFFUSE_PUBLIC_URL: http://localhost:8000
     steps:
       - uses: actions/checkout@v6
+
       - name: Validate Compose configuration
         run: |
           cp .env.example .env
@@ -125,8 +136,20 @@ jobs:
           DIFFUSE_ENV_FILE=env.example DIFFUSE_IMAGE=diffuse:test \
             docker compose --env-file deploy/env.example \
               --file deploy/compose.yaml config --quiet
+
+      # ADDED: buildx + a GitHub Actions layer cache. The old step ran a bare `docker build`
+      # on every run, so an unchanged Dockerfile still rebuilt every layer from scratch.
+      - uses: docker/setup-buildx-action@v4
+
       - name: Build production image
-        run: docker build --tag diffuse:test .
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: diffuse:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Validate packaged runtime
         run: |
           docker run --rm --entrypoint diffuse diffuse:test database --help
