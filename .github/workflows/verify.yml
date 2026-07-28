@@ -1,0 +1,177 @@
+# Verify — the gate every change passes before it can land.
+#
+# Naming convention shared with intuitumxyz/leo:
+#   verify.yml   this file: runs on pull requests and on pushes to the default branch
+#   release.yml  tag-driven publish
+# Job ids are verb-led kebab-case so the checks list reads as a sequence of actions.
+#
+# Replaces ci.yml. Logic is ported unchanged except where noted; the container build now
+# uses buildx with a GitHub Actions cache, which is the one place repeat runs were paying
+# full price for an unchanged image.
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # PR #8 merged into a feature branch that `main` had already left behind,
+  # stranding two Urgent security fixes for a day without anything failing.
+  # A pull request must target the default branch unless it is deliberately
+  # stacked on another `claude/` branch, which is a reviewed, temporary state.
+  guard-base-branch:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse a pull request aimed away from the default branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
+            echo "Base branch is $BASE_REF."
+            exit 0
+          fi
+          case "$BASE_REF" in
+            claude/*)
+              echo "::notice::Stacked on $BASE_REF. Retarget to $DEFAULT_BRANCH before merging, or merge the parent first."
+              exit 0
+              ;;
+          esac
+          echo "::error::This pull request targets '$BASE_REF', not '$DEFAULT_BRANCH'." >&2
+          echo "Merging here can strand the change on a branch that $DEFAULT_BRANCH has already moved past." >&2
+          echo "Retarget the pull request, or name the base 'claude/<feature>' if the stack is intentional." >&2
+          exit 1
+
+  lint-and-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements.lock
+            requirements-build.txt
+            requirements-build.lock
+      - name: Install development dependencies
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pip install --no-deps -e .
+      - name: Validate dependencies
+        run: python -m pip check
+      - name: Audit locked runtime dependencies
+        run: python -m pip_audit -r requirements.lock --disable-pip
+      - name: Lint
+        run: python -m ruff check .
+      - name: Run unit tests
+        run: python -m pytest -m "not integration"
+
+  test-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: diffuse
+          POSTGRES_PASSWORD: integration-test
+          POSTGRES_DB: diffuse_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U diffuse -d diffuse_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_TEST_DATABASE_URL: postgresql://diffuse:integration-test@127.0.0.1:5432/diffuse_test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements.lock
+      - name: Install development dependencies
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pip install --no-deps -e .
+      - name: Migrate disposable database
+        run: DATABASE_URL="$POSTGRES_TEST_DATABASE_URL" diffuse database migrate
+      - name: Run PostgreSQL integration tests
+        run: python -m pytest -m integration
+
+  build-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
+      DIFFUSE_API_TOKEN: 0123456789abcdef0123456789abcdef
+      DIFFUSE_PUBLIC_URL: http://localhost:8000
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate Compose configuration
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          DIFFUSE_ENV_FILE=env.example DIFFUSE_IMAGE=diffuse:test \
+            docker compose --env-file deploy/env.example \
+              --file deploy/compose.yaml config --quiet
+
+      # ADDED: buildx + a GitHub Actions layer cache. The old step ran a bare `docker build`
+      # on every run, so an unchanged Dockerfile still rebuilt every layer from scratch.
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build production image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: diffuse:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Validate packaged runtime
+        run: |
+          docker run --rm --entrypoint diffuse diffuse:test database --help
+          docker run --rm --entrypoint diffuse diffuse:test worker --help
+          docker run --rm --entrypoint /bin/sh diffuse:test -c '
+            test "$(id -u)" -ne 0
+            test ! -e /usr/local/bin/python
+            test -x /opt/diffuse/diffuse
+            test -x /opt/diffuse/_internal/service/git_askpass.sh
+            test -f /opt/diffuse/_internal/sql/schema.sql
+            ! find /opt/diffuse -type f \
+              \( -name "*.py" -o -name "*.pyc" -o -name "*.pyo" \) \
+              -print -quit | grep -q .
+          '
+          # Parser distribution metadata must ship, or INDEX_FORMAT_VERSION
+          # stops tracking grammar upgrades and stale indexes survive an
+          # upgrade. See indexer/index_version.py.
+          docker run --rm --entrypoint /bin/sh diffuse:test -c '
+            for dist in tree_sitter tree_sitter_c tree_sitter_cpp tree_sitter_go \
+                tree_sitter_java tree_sitter_javascript tree_sitter_php \
+                tree_sitter_ruby tree_sitter_rust tree_sitter_typescript; do
+              ls -d /opt/diffuse/_internal/"${dist}"-*.dist-info >/dev/null 2>&1 \
+                || { echo "missing parser metadata: ${dist}" >&2; exit 1; }
+            done
+          '
