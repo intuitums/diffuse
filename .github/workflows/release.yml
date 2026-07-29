@@ -1,5 +1,5 @@
 # Release — tag-driven publish of a signed, immutable multi-arch image plus the
-# customer self-host bundle.
+# self-host deployment bundle.
 #
 # Naming convention shared with intuitumxyz/leo: verify.yml gates changes, release.yml
 # publishes them.
@@ -15,7 +15,7 @@
 #   * semver validation and the check that the tag descends from main
 #   * cosign signing of the DIGEST, not a tag
 #   * SBOM and provenance mode=max
-#   * the digest-pinned customer bundle and its sha256
+#   * the digest-pinned self-host bundle and its sha256
 #
 # EVERY `uses:` IS PINNED TO A FULL COMMIT SHA, with the tag it resolved from in a
 # trailing comment. Do not "tidy" these back into tags. A version tag is a mutable
@@ -23,7 +23,7 @@
 # and runs third-party actions BEFORE `cosign sign`, so a retagged upstream action
 # would get code execution in the exact job that mints the Fulcio certificate - and
 # the signature it produced would verify cleanly against the identity regexp we
-# publish to customers. Refresh a pin by resolving the tag with
+# publish to operators. Refresh a pin by resolving the tag with
 # `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` and updating both the SHA and
 # the comment together.
 #
@@ -49,10 +49,9 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/intuitumxyz/diffuse
-  # The customer bundle is published as an OCI artifact next to the image, in the
-  # same registry, so it is retrievable with the same credential a customer is
-  # already issued for the image and WITHOUT read access to this private source
-  # repository - which is what deploy/README.md promises.
+  # The self-host bundle is published as a public OCI artifact next to the image.
+  # GHCR package visibility is configured outside Actions. The anonymous-access
+  # gate below fails the release if either package is not actually public.
   BUNDLE_ARTIFACT: ghcr.io/intuitumxyz/diffuse-self-host
 
 jobs:
@@ -108,7 +107,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - name: Sign in to the private registry
+      - name: Sign in to GHCR
         uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
         with:
           registry: ghcr.io
@@ -181,7 +180,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
 
-      - name: Sign in to the private registry
+      - name: Sign in to GHCR
         uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
         with:
           registry: ghcr.io
@@ -216,7 +215,7 @@ jobs:
           DIGEST: ${{ steps.manifest.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
-      - name: Build customer deployment bundle
+      - name: Build self-host deployment bundle
         env:
           DIGEST: ${{ steps.manifest.outputs.digest }}
         run: |
@@ -233,7 +232,7 @@ jobs:
           sha256sum diffuse-self-host.tar.gz > diffuse-self-host.tar.gz.sha256
 
       # Job-to-job handoff ONLY - not a distribution channel. `distribute` republishes
-      # this to the two places customers and operators can actually fetch it from, so
+      # this to the two places operators can actually fetch it from, so
       # the retention here is deliberately one day.
       - name: Hand the bundle to the distribute job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -245,26 +244,19 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Where the customer bundle actually becomes retrievable. Split out of `publish`
+  # Where the self-host bundle actually becomes retrievable. Split out of `publish`
   # for permission separation: this job needs `contents: write` to cut a Release,
   # and GitHub has no narrower scope for that, so it must not also hold
   # `id-token: write`. It holds neither an OIDC identity nor any signing key.
   #
-  # Two channels, because they serve different readers:
+  # Two public channels, because they serve different readers:
   #
-  #   1. OCI artifact at $BUNDLE_ARTIFACT. This is the CUSTOMER channel. A GitHub
-  #      Release on a private repository requires repository read - i.e. read access
-  #      to the proprietary source - which is precisely what deploy/README.md says
-  #      customers do not get. A registry artifact is fetchable with the same GHCR
-  #      credential they are already issued for the image, is immutable, and never
-  #      expires. Grant customers read on the diffuse-self-host package alongside
-  #      the diffuse package.
+  #   1. OCI artifact at $BUNDLE_ARTIFACT. This is the machine-readable,
+  #      anonymously pullable channel for deployment automation.
   #
-  #   2. GitHub Release on this repository. This is the OPERATOR/support channel and
-  #      the human-readable record: it is what makes `vX.Y.Z -> pinned digest ->
-  #      bundle sha256` durably greppable years later, without needing a registry
-  #      client. docs/deployment.md's "obtain the new signed bundle" upgrade step
-  #      resolves here for staff and to `oras pull` for customers.
+  #   2. GitHub Release on this public repository. This is the human-readable record:
+  #      it makes `vX.Y.Z -> pinned digest -> bundle sha256` durably greppable years
+  #      later without needing a registry client.
   distribute:
     needs: [publish]
     runs-on: blacksmith-2vcpu-ubuntu-2404
@@ -309,7 +301,7 @@ jobs:
           rm oras.tar.gz
           echo "${RUNNER_TEMP}/oras" >> "$GITHUB_PATH"
 
-      # CHANNEL 1 - customers. Annotations carry the image digest the bundle pins, so
+      # CHANNEL 1 - OCI. Annotations carry the image digest the bundle pins, so
       # the binding survives even if the tarball is unpacked and the env.example edited.
       - name: Publish the bundle as an OCI artifact
         env:
@@ -328,7 +320,18 @@ jobs:
             diffuse-self-host.tar.gz:application/gzip \
             diffuse-self-host.tar.gz.sha256:text/plain
 
-      # CHANNEL 2 - operators and support. Idempotent so a re-run of a release tag
+      # Public GHCR packages can be pulled anonymously. GitHub creates new packages
+      # private, and package visibility is an irreversible repository setting rather
+      # than a workflow input. Fail before creating the GitHub Release if an
+      # administrator has not made both packages public. The first bundle publish may
+      # therefore need a re-run after its package is made public.
+      - name: Verify anonymous release access
+        run: |
+          oras logout ghcr.io
+          oras manifest fetch "${IMAGE}@${DIGEST}" >/dev/null
+          oras manifest fetch "${BUNDLE_ARTIFACT}:${RELEASE_TAG}" >/dev/null
+
+      # CHANNEL 2 - GitHub Release. Idempotent so a re-run of a release tag
       # repairs a partial publish instead of failing on "release already exists";
       # `concurrency: cancel-in-progress: false` means a re-run is a real scenario.
       - name: Publish the GitHub Release
@@ -336,7 +339,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           {
-            echo "Private release. The image is signed with cosign; verify it before running it."
+            echo "Self-hosted Diffuse release. The image is signed with cosign; verify it before running it."
             echo
             echo '```'
             echo "DIFFUSE_IMAGE=${IMAGE}@${DIGEST}"
@@ -348,8 +351,7 @@ jobs:
             cat diffuse-self-host.tar.gz.sha256
             echo '```'
             echo
-            echo "Customers fetch the same bundle from the registry, which needs no"
-            echo "access to this repository:"
+            echo "The same bundle is anonymously pullable from GHCR:"
             echo
             echo '```'
             echo "oras pull ${BUNDLE_ARTIFACT}:${RELEASE_TAG}"

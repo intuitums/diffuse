@@ -126,7 +126,7 @@ jobs:
           PY
       # NOTE: this runs in the merge gate, so a new advisory against any transitive
       # dependency fails every open pull request until someone re-locks. That is a
-      # deliberate trade for a proprietary self-hosted product, but it is the reason a
+      # deliberate trade for a self-hosted product, but it is the reason a
       # green branch can go red without a code change. Re-lock, do not skip.
       - name: Audit locked runtime dependencies
         run: python -m pip_audit -r requirements.lock --disable-pip

@@ -8,10 +8,10 @@ name = "diffuse-code-review"
 version = "0.1.0"
 description = "Self-hostable code intelligence and review platform"
 requires-python = ">=3.12"
-license = "LicenseRef-Proprietary"
+license = "BUSL-1.1"
 license-files = ["LICENSE"]
-# Diffuse is proprietary and must never be published to a public index.
-# PyPI rejects any distribution carrying this classifier.
+# Diffuse is distributed as a self-hosted application, not through PyPI.
+# Keep the upload guard even though the source is published under BSL 1.1.
 classifiers = ["Private :: Do Not Upload"]
 dynamic = ["dependencies"]
 

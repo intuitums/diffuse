@@ -55,29 +55,28 @@ The webhook acknowledges work only after its delivery and review job are
 persisted. Workers use leases, bounded exponential retry, dead-letter state,
 revision deduplication, and queued-job supersession.
 
-## Deployment models
+## Deployment model
 
-Diffuse is proprietary software with two operating models. Self-hosted ships
-today; managed cloud is planned.
+Diffuse is self-hosted. You run the API, workers, PostgreSQL/pgvector,
+repository storage, and model connections in infrastructure you control. There
+is no Diffuse-hosted control plane, no account to create, and no managed
+service. Source-derived data does not leave your environment unless you
+explicitly configure an external model or integration, and the model
+credentials Diffuse uses are your own.
 
-- **Self-hosted:** customers run the API, workers, PostgreSQL/pgvector,
-  repository storage, and model connections in infrastructure they control.
-  Standalone operation does not require a Diffuse-hosted control plane, and
-  source-derived data does not leave the customer environment unless the
-  operator explicitly configures an external model or integration.
-- **Managed cloud:** Diffuse operates the same versioned data plane and
-  PostgreSQL contract for the customer, with an additional cloud control plane
-  for accounts, subscriptions, provisioning, deployment management, and
-  support.
+Permitted self-hosted use requires no separate commercial agreement, license
+key, or registry credential. Diffuse contains no license-enforcement code.
 
-Self-hosting is a deployment right, not an open-source license grant. The
-source repository remains private; customers receive authenticated, signed
-executable artifacts and installation documentation under a commercial
-agreement. See
-[ADR 0040](docs/adr/0040-proprietary-self-hosted-and-managed-cloud-distribution.md).
-The customer-facing, digest-pinned Compose profile and signature-verification
-instructions live in [`deploy/`](deploy/README.md); the root Compose file
-remains the source-workspace development profile.
+Diffuse is **proprietary, source-available software — not open source**. The
+Business Source License 1.1 is not OSI-approved. You may read, modify, and run
+this software in production, including inside a commercial organization. You
+may not offer it to third parties as a hosted service before the Change Date. See
+[`LICENSE`](LICENSE) and
+[ADR 0042](docs/adr/0042-source-available-self-hosted-distribution.md).
+
+The digest-pinned Compose profile and signature-verification instructions live
+in [`deploy/`](deploy/README.md); the root Compose file remains the
+source-workspace development profile.
 
 ## Local setup
 
@@ -744,12 +743,24 @@ operator visibility, tenant authorization, and operational metrics.
 
 ## Licensing
 
-Diffuse is proprietary software. Copyright 2026 intuitumxyz. All rights
-reserved. See [`LICENSE`](LICENSE).
+Diffuse is licensed under the [Business Source License 1.1](LICENSE).
+Copyright 2026 intuitumxyz.
 
-Self-hostable does not mean open source. The right to operate Diffuse inside
-infrastructure you control is a deployment right conveyed under a commercial
-agreement; it is not a license to this source repository. Self-hosted customers
-receive authenticated, signed executable artifacts and installation
-documentation, not source access. See
-[ADR 0040](docs/adr/0040-proprietary-self-hosted-and-managed-cloud-distribution.md).
+**Proprietary and source-available, not open source.** BSL 1.1 is not approved
+by the Open Source Initiative, so please do not describe Diffuse as open source.
+
+- **You may** read and modify the source, run Diffuse in production, use it
+  inside a commercial organization, process proprietary source code with it,
+  and self-host it anywhere you control.
+- **You may not** offer Diffuse to third parties as a hosted, managed, or
+  embedded service, or otherwise sell access to Diffuse's functionality, before
+  the applicable Change Date.
+
+The current Licensed Work converts to the Apache License 2.0 on 2030-07-28, or
+the fourth anniversary of its first public distribution, whichever comes
+first. Later versions may carry different Change Dates.
+
+Permitted self-hosted use requires no separate commercial agreement, license
+key, or entitlement file. See
+[ADR 0042](docs/adr/0042-source-available-self-hosted-distribution.md) for the
+reasoning, and `legal@intuitum.xyz` for alternative licensing.
