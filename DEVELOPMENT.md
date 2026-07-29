@@ -1,8 +1,9 @@
 # Developing Diffuse
 
-Diffuse is proprietary software and this repository is private. This is the
-internal engineering guide: environment setup, the test recipe, and the rules
-that are not obvious from the code. It is not a contributor guide — see
+Diffuse is proprietary, source-available software under
+[BSL 1.1](LICENSE) — not open source. This is the engineering guide:
+environment setup, the test recipe, and the rules that are not obvious from the
+code. There is no contribution process yet; see
 [`SECURITY.md`](SECURITY.md) for vulnerability reporting and
 [`LICENSE`](LICENSE) for what you may do with the source.
 
@@ -244,4 +245,3 @@ publication, authorization, or the database, read the relevant record:
 
 A change that contradicts an accepted ADR needs a new ADR in the same numbered,
 append-only style, not an edit to the old one.
-

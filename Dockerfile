@@ -145,9 +145,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && chown -R diffuse:diffuse /opt/diffuse /var/lib/diffuse
 
 COPY --from=builder --chown=diffuse:diffuse /build/diffuse/ /opt/diffuse/
+COPY --chown=diffuse:diffuse LICENSE /opt/diffuse/LICENSE
 
 RUN chmod 500 /opt/diffuse/diffuse \
     && chmod 500 /opt/diffuse/_internal/service/git_askpass.sh \
+    && test -f /opt/diffuse/LICENSE \
     && ! find /opt/diffuse -type f \
         \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit \
         | grep -q .
