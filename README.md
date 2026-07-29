@@ -109,15 +109,14 @@ Requirements:
 
 - Python 3.12+
 - Docker with Compose
-- a GitHub token that can clone private target repositories
-- a GitHub App installation or user access token with pull-request read/write
-  permission, plus Checks write permission when status checks are enabled
+- a GitHub App installed on the target repositories, with its client/App ID,
+  installation ID, and private key available to Diffuse
 - an embedding/model provider supported by LiteLLM
 
 ```bash
 cp .env.example .env
 # Fill in POSTGRES_PASSWORD, DIFFUSE_API_TOKEN, the model credentials,
-# and the GitHub token and webhook secret.
+# and the GitHub App credentials and webhook secret.
 
 docker compose up -d --build
 
@@ -139,7 +138,7 @@ Before onboarding, Diffuse requires the exact SCM origin to match the
 configured primary origin or explicit allowlist. Set
 `GITHUB_WEB_URL`/`GITHUB_API_URL` for a primary GitHub Enterprise host. Add any
 additional exact origins to `GITHUB_ALLOWED_INSTANCES`; these hosts receive the
-process-level GitHub token during clone/fetch, so keep the list narrow.
+resolved GitHub credential during clone/fetch, so keep the list narrow.
 
 Compose runs a one-shot migration service after PostgreSQL is healthy and
 starts the API and worker only after that service exits successfully. Every
@@ -426,15 +425,17 @@ Use the same random value for the webhook's GitHub secret and
 `GITHUB_WEBHOOK_SECRET`. Diffuse refuses webhook requests when the secret is
 missing or the signature is invalid.
 
-SCM tokens are passed to Git only through a non-interactive askpass
+GitHub installation tokens are minted from the configured App private key,
+cached in memory, and refreshed before their one-hour expiry. SCM tokens are
+passed to Git only through a non-interactive askpass
 environment. They are not embedded in clone URLs, job payloads, database rows,
 or command arguments. Repository onboarding accepts only the configured
 primary origin or an exact entry in `GITHUB_ALLOWED_INSTANCES`, preventing an
 API request from redirecting askpass credentials to an arbitrary host. GitHub
 Enterprise is selected with `GITHUB_WEB_URL` and `GITHUB_API_URL`. Set
 `GITHUB_GRAPHQL_URL` when its GraphQL endpoint cannot be derived from the REST
-URL. The process-level token and webhook credentials are still shared across
-configured GitHub instances pending encrypted per-installation credentials.
+URL. This self-hosted profile still configures one GitHub App installation per
+Diffuse deployment; selecting installation identity per tenant is future work.
 
 The version-1 database schema expects 1,536-dimensional embeddings. A release
 that supports another stored dimension must add a numbered migration for both

@@ -77,6 +77,10 @@ def test_security_relevant_settings_reach_customers():
     declared = _declared(CUSTOMER_ENV)
     for name in (
         "DIFFUSE_ALLOW_PLAINTEXT_ORIGINS",
+        "GITHUB_APP_ID",
+        "GITHUB_APP_INSTALLATION_ID",
+        "GITHUB_APP_PRIVATE_KEY",
+        "GITHUB_APP_PRIVATE_KEY_FILE",
         "GITHUB_ALLOWED_INSTANCES",
         "MIN_REVIEW_CONFIDENCE",
         "SCM_API_TIMEOUT_SECONDS",

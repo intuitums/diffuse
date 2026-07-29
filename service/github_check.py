@@ -11,6 +11,7 @@ import httpx
 
 from service.check_store import CHECK_NAME, VALID_CONCLUSIONS, CheckConclusion
 from service.github import GITHUB_API_VERSION
+from service.github_app import github_token
 from service.review_models import (
     Category,
     ReviewFinding,
@@ -42,10 +43,10 @@ def _safe_text(value: str) -> str:
 
 
 def _headers() -> dict[str, str]:
-    token = os.environ.get("GITHUB_TOKEN", "")
+    token = github_token()
     if not token:
         raise RuntimeError(
-            "GITHUB_TOKEN with GitHub Checks write permission is required"
+            "GitHub authentication with Checks write permission is required"
         )
     return {
         "Accept": "application/vnd.github+json",

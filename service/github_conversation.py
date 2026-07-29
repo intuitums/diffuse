@@ -12,6 +12,7 @@ import httpx
 from service.conversation_models import ConversationReference
 from service.conversation_store import PublishedConversationReply
 from service.github import GITHUB_API_VERSION
+from service.github_app import github_token
 from service.scm import (
     ReviewConversationEvent,
     scm_api_timeout_seconds,
@@ -90,10 +91,10 @@ def format_conversation_reply(
 
 
 def _headers() -> dict[str, str]:
-    token = os.environ.get("GITHUB_TOKEN", "")
+    token = github_token()
     if not token:
         raise RuntimeError(
-            "GITHUB_TOKEN with pull-request write permission is required"
+            "GitHub authentication with pull-request write permission is required"
         )
     return {
         "Accept": "application/vnd.github+json",

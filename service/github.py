@@ -12,6 +12,7 @@ from urllib.parse import quote
 import httpx
 from fastapi import HTTPException, status
 
+from service.github_app import github_token
 from service.review_interaction import (
     ManualReviewRequest,
     conversation_question,
@@ -454,7 +455,7 @@ def _github_json_headers() -> dict[str, str]:
         ),
         "User-Agent": "diffuse-manual-review",
     }
-    token = os.environ.get("GITHUB_TOKEN", "")
+    token = github_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
@@ -583,7 +584,7 @@ async def _fetch_diff_url(
     user_agent: str,
     client: httpx.AsyncClient | None = None,
 ) -> str:
-    token = os.environ.get("GITHUB_TOKEN", "")
+    token = github_token()
     headers = {
         "Accept": "application/vnd.github.diff",
         "X-GitHub-Api-Version": os.environ.get(

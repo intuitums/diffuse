@@ -82,13 +82,28 @@ ExecStart=/usr/bin/docker compose --env-file /run/diffuse/env up -d
 captured by a filesystem backup. Keep the mode at `600` and the owner at the
 account that runs Compose.
 
+Doppler's Developer plan is a right-sized example for a small internal
+deployment. Put the PEM in `GITHUB_APP_PRIVATE_KEY`; its Docker output format
+escapes PEM newlines, and Diffuse restores them before signing:
+
+```bash
+doppler secrets download --no-file --format docker > /run/diffuse/env
+chmod 600 /run/diffuse/env
+DIFFUSE_ENV_FILE=/run/diffuse/env \
+  docker compose --env-file /run/diffuse/env up -d
+```
+
+The Doppler service token that authorizes this download is then the only
+bootstrap credential the host must hold. Scope it to the production config;
+do not put it in Diffuse's environment file.
+
 Two properties of Diffuse constrain how rotation works:
 
-- **The process reads its credentials from its own environment.** A rotated
-  value does not reach a running container; re-render and recreate the
-  containers. The one exception is the browser sign-in client secret, which is
-  read from a file per call — and that flow is disabled, so it does not help
-  here.
+- **Most credentials are read from the process environment.** A rotated value
+  does not reach a running container; re-render and recreate the containers.
+  A file-backed `GITHUB_APP_PRIVATE_KEY_FILE` is re-read when the in-memory
+  installation token refreshes, but recreate app and worker when rotating it
+  so the new key is exercised immediately.
 - **`POSTGRES_PASSWORD` is not rotatable by editing the file.** Compose
   interpolates it into `DATABASE_URL`, and PostgreSQL stores the password in the
   data volume on first initialization. Changing it later requires an
@@ -105,6 +120,44 @@ Whatever the source of the values, the security property that matters is that
 the credential's home of record is somewhere with access control, an audit
 trail, and rotation — not a file that exists only on one host. `.env` on the
 server is a cache of that record, not the record itself.
+
+### Configure the GitHub App
+
+Diffuse authenticates automation as a GitHub App installation. Do not mint an
+installation token by hand and do not create a PAT: installation tokens expire
+after one hour, and Diffuse now creates and refreshes them itself.
+
+Create a private GitHub App owned by the organization and configure:
+
+- repository permissions: **Contents: read**, **Pull requests: read and
+  write**, **Issues: read** (required for the `issue_comment` event), and
+  **Checks: read and write** when status checks will be enabled;
+- webhook events: `push`, `pull_request`, `issue_comment`, and
+  `pull_request_review_comment`;
+- webhook URL: `https://diffuse.example.com/webhook/github`; and
+- a high-entropy webhook secret copied into `GITHUB_WEBHOOK_SECRET`.
+
+Install the App only on the pilot repositories. Then set:
+
+- `GITHUB_APP_ID` to the App's client ID (GitHub's recommended JWT issuer) or
+  numeric App ID;
+- `GITHUB_APP_INSTALLATION_ID` to the trailing number in the organization's
+  installed-App settings URL; and
+- one of `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_FILE`.
+
+The default release profile is easiest with a secret manager that injects
+`GITHUB_APP_PRIVATE_KEY`. If you use a file, mount it read-only into both
+`app` and `worker`, set the container-visible path in
+`GITHUB_APP_PRIVATE_KEY_FILE`, and use mode `600` where the platform permits.
+The migration container does not need the key.
+
+`GITHUB_TOKEN` remains only as a compatibility fallback. Leave it empty for
+App authentication. A partial App configuration fails closed rather than
+silently falling back to a different identity.
+
+GitHub permits overlapping App private keys. Rotate without downtime by
+generating a second key, replacing the secret-manager value, recreating app and
+worker, confirming a token can be minted, and only then deleting the old key.
 
 ### Model credentials without a long-lived key
 
