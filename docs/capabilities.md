@@ -2,11 +2,10 @@
 
 ## Objective
 
-Diffuse must be a code-intelligence and review platform an operator can run
-entirely inside infrastructure they control, at the capability level teams
-expect from a hosted reviewer. Self-hosting is the architecture, not a
-downgraded tier: every outcome below must be achievable without source code
-leaving the operator's environment.
+Diffuse must keep review execution, repository contents, indexes, and durable
+review state inside infrastructure the operator controls while providing an
+always-available hosted integration relay for shared provider Apps. The relay
+temporarily buffers raw provider callbacks and is not a hosted review engine.
 
 This document is the acceptance checklist and the honest status of each
 capability. A capability is not complete merely because a prompt mentions it:
@@ -23,7 +22,7 @@ Status values:
 
 | Area | Required Diffuse outcome | Status |
 | --- | --- | --- |
-| Repository onboarding | Connect and manage GitHub Cloud and GitHub Enterprise; select repositories; auto-enable new repositories; support multiple GitHub instances at once. Admin/all-repository REST and operator CLI onboarding constrain clone credentials to explicit origins, verify mirror access, and queue the exact default-branch commit. The self-hosted profile now mints and refreshes short-lived tokens for one configured GitHub App installation; App/OAuth discovery, per-tenant installation selection, bulk selection, auto-enable, encrypted database-backed credentials, and UI remain. | foundation |
+| Repository onboarding | Connect and manage GitHub Cloud and GitHub Enterprise; select repositories; auto-enable new repositories; support multiple GitHub instances at once. The hosted relay verifies App installation ownership, issues one-time node pairing, routes signed callbacks by installation, and brokers one-hour credentials without receiving repository source. A node still onboards repositories explicitly. Bulk selection, multi-installation nodes, auto-enable, and UI remain. | foundation |
 | Repository lifecycle | Secure clone/fetch, default-branch indexing, push-triggered incremental updates, deletion on revoked access, visible indexing state, retry/recovery, and large-monorepo support. GitHub authenticated push indexing plus repository-authorized, idempotent REST reindexing reuse one exact-commit workflow; revocation deletion, operational UI, and monorepo evaluation remain. | foundation |
 | Code graph | Parse mainstream languages into directories, files, symbols, variables, imports, calls, inheritance, usage, and dependency edges with stable identities across commits. | foundation |
 | Semantic index | Embed code, summaries, docs, file paths, rules, and generated symbol descriptions; support hybrid lexical/vector/graph retrieval and model-aware re-indexing. | foundation |
@@ -51,7 +50,7 @@ Status values:
 | External context | Permissioned connectors for issue trackers, documentation systems, and partner-maintained API/SDK guidance with source attribution. | planned |
 | Web application | Onboarding, repository/index status, review settings, rules/context, organizations/teams, members/roles, integrations, analytics, audit log, and operator settings. | planned |
 | Organizations and RBAC | Organization/team hierarchy, inheritance and reset-to-default behavior, invitations, member/admin roles, repository scopes, and least-privilege authorization. | planned |
-| Authentication | Local accounts, GitHub OAuth, OIDC, SAML SSO, session management, service tokens, and optional SCIM provisioning. Only repository-scoped service tokens and the bootstrap credential authenticate a request today. The GitHub OAuth endpoints (`/auth/cli`, `/auth/github/callback`, `/setup`) are mounted and mint a session row, but no `diffuse login` command exists and no authenticator reads a session, so browser sign-in cannot be completed end to end. There is no local account store and no OIDC, SAML, or SCIM implementation. | foundation |
+| Authentication | Local accounts, GitHub installation authentication, OIDC, SAML SSO, service tokens, and optional SCIM provisioning. Browser GitHub authentication can attribute an App installation, verify it against GitHub plus the signed installation event, and issue a one-time node pairing code. It does not create a Diffuse login session or authenticate model access, and there is no local account store, OIDC, SAML, or SCIM. | foundation |
 | Analytics | PRs reviewed, latency, merge time, addressed rate, severity/critical findings, reactions, review completion, cost/usage, filters, weekly reports, and export. The MCP foundation now reports exact authorized review/finding/engagement/token/context/approval metrics, author filtering, opened PRs reviewed versus unreviewed, authoritative mean/median merge time with completeness, repository and UTC daily breakdowns, reaction percentages, and linked open findings with explicit denominators. Team filters, historical policy-eligibility coverage, historical monetary pricing, UI, scheduled reports, and CSV/JSON export remain. | foundation |
 | Audit and governance | Immutable actor/action/resource audit events, data-retention controls, model/provider policy, repository allowlists, usage limits, and administrative export. An append-only `audit_events` table records actor kind/label, action, resource kind/id, optional repository, and a JSON detail object; seven production call sites write to it — repository onboarding and reindex, MCP review re-run, custom-context create/update/delete, and service-token issuance — and MCP context reads project the resulting history. Exact SCM origin allowlists are enforced at onboarding. Data-retention controls, model/provider policy, usage limits, a general audit query surface, and administrative export do not exist. | foundation |
 | Self-hosting | Supported Docker Compose profile for small teams and Helm/Kubernetes profile for high availability and horizontal scaling. The Compose profile is supported; no Helm chart or Kubernetes manifest exists yet. | foundation |
@@ -66,9 +65,10 @@ Status values:
 
 ## Product principles
 
-1. Self-hosted is the default architecture, not an enterprise bolt-on.
-2. Source code, embeddings, review history, and feedback stay within the
-   operator's chosen trust boundary.
+1. Review execution is self-hosted; shared provider callbacks are hosted.
+2. Repository contents, embeddings, and durable review/feedback records stay
+   within the operator's chosen trust boundary. Raw provider callbacks transit
+   the relay and are erased after acknowledgement.
 3. Every review finding must be traceable to code, a rule, runtime evidence, or
    a clearly labeled model inference.
 4. Graph, lexical, and semantic retrieval complement one another; embeddings

@@ -25,12 +25,11 @@ from service.github import (
     normalize_push_event,
     normalize_review_conversation_event,
     normalize_review_feedback_comment_event,
+    verify_relay_delivery_signature,
     verify_signature,
 )
+from service.github_app import relay_credentials
 from service.mcp_server import diffuse_mcp, mcp_http_app
-from service.oauth_api import (
-    router as oauth_router,
-)
 from service.rest_api import (
     RestApiError,
     rest_api_error_handler,
@@ -124,7 +123,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Diffuse", version="0.1.0", lifespan=lifespan)
 app.include_router(rest_api_router)
-app.include_router(oauth_router)
 app.add_exception_handler(RestApiError, rest_api_error_handler)
 
 
@@ -256,13 +254,29 @@ async def github_webhook(
     x_github_event: str = Header(default=""),
     x_github_delivery: str = Header(default=""),
     x_hub_signature_256: str = Header(default=""),
+    x_diffuse_relay_signature: str = Header(default=""),
 ):
     body = await _read_bounded_webhook_body(request)
-    verify_signature(
-        body,
-        x_hub_signature_256,
-        os.environ.get("GITHUB_WEBHOOK_SECRET", ""),
-    )
+    if x_diffuse_relay_signature:
+        relay = relay_credentials()
+        if relay is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Relay node authentication is not configured",
+            )
+        verify_relay_delivery_signature(
+            body,
+            x_diffuse_relay_signature,
+            event_name=x_github_event,
+            delivery_id=x_github_delivery,
+            secret=relay.token,
+        )
+    else:
+        verify_signature(
+            body,
+            x_hub_signature_256,
+            os.environ.get("GITHUB_WEBHOOK_SECRET", ""),
+        )
     try:
         payload = json.loads(body)
     except (json.JSONDecodeError, UnicodeDecodeError) as error:

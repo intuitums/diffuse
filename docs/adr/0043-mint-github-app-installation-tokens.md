@@ -2,7 +2,9 @@
 
 Date: 2026-07-29
 
-Status: Accepted
+Status: Accepted; amended by ADR 0044. Standalone nodes retain the local App
+identity described below. Relay nodes now use the hosted token broker selected
+by ADR 0044, and the gateway selects an installation per paired node.
 
 ## Context
 

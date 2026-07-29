@@ -220,10 +220,12 @@ jobs:
           DIGEST: ${{ steps.manifest.outputs.digest }}
         run: |
           mkdir -p release/diffuse
-          cp LICENSE deploy/README.md deploy/compose.yaml deploy/env.example release/diffuse/
+          cp LICENSE deploy/README.md deploy/compose.yaml deploy/env.example \
+            deploy/model-runner.compose.yaml release/diffuse/
           sed -i "s|^DIFFUSE_IMAGE=.*|DIFFUSE_IMAGE=${IMAGE}@${DIGEST}|" \
             release/diffuse/env.example
           cp docs/deployment.md release/diffuse/OPERATIONS.md
+          cp docs/model-execution.md release/diffuse/MODEL_EXECUTION.md
           # The per-repository policy reference. README.md and OPERATIONS.md both
           # send the reader here to change the trigger and status-check defaults,
           # so omitting it ships two dangling references and no way to act on them.

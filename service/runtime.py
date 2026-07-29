@@ -93,6 +93,26 @@ def _run_api(arguments: Sequence[str]) -> None:
     )
 
 
+def _run_gateway(arguments: Sequence[str]) -> None:
+    if arguments:
+        raise ValueError("The gateway command does not accept positional arguments")
+    import logging
+
+    import uvicorn
+
+    from service.gateway_server import app
+
+    logging_level, uvicorn_level = _log_level()
+    logging.basicConfig(level=logging_level)
+    logging.getLogger().setLevel(logging_level)
+    uvicorn.run(
+        app,
+        host=os.environ.get("DIFFUSE_BIND_HOST", DEFAULT_BIND_HOST),
+        port=_bind_port(),
+        log_level=uvicorn_level,
+    )
+
+
 def _run_worker(arguments: Sequence[str]) -> None:
     from service.worker import main as worker_main
 
@@ -122,6 +142,8 @@ def main(arguments: Sequence[str] | None = None) -> None:
     try:
         if command == "serve":
             _run_api(selected)
+        elif command == "gateway":
+            _run_gateway(selected)
         elif command == "worker":
             _run_worker(selected)
         elif command == "healthcheck":

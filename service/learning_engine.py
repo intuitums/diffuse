@@ -11,7 +11,8 @@ from service.learning_models import (
     RuleLearningEvidence,
     SuggestedRuleBatch,
 )
-from service.review_engine import _call_structured, review_model
+from service.review_engine import call_structured as _call_structured
+from service.review_engine import review_model
 
 RULE_LEARNING_PROMPT_VERSION = "suggested-rules-v1-cited-feedback"
 

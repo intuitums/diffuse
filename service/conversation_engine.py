@@ -13,7 +13,8 @@ from service.conversation_models import (
     ConversationTurn,
     GeneratedConversationAnswer,
 )
-from service.review_engine import _call_structured, review_model
+from service.review_engine import call_structured as _call_structured
+from service.review_engine import review_model
 from service.review_models import ReviewFinding
 from service.scm import ReviewConversationEvent
 
@@ -36,9 +37,7 @@ def build_conversation_retrieval_diff(
             f"Evidence: {finding.evidence}",
         )
     )
-    additions = "\n".join(
-        f"+{line}" for line in query[:12_000].splitlines()
-    )
+    additions = "\n".join(f"+{line}" for line in query[:12_000].splitlines())
     return (
         f"diff --git {old_path} {new_path}\n"
         f"--- {old_path}\n"
@@ -50,11 +49,7 @@ def build_conversation_retrieval_diff(
 
 def _history_text(turns: tuple[ConversationTurn, ...]) -> str:
     rendered = "\n\n".join(
-        (
-            f"Human ({turn.author}):\n{turn.question}\n\n"
-            f"Diffuse:\n{turn.answer}"
-        )
-        for turn in turns
+        (f"Human ({turn.author}):\n{turn.question}\n\nDiffuse:\n{turn.answer}") for turn in turns
     )
     if len(rendered) <= MAX_CONVERSATION_HISTORY_CHARS:
         return rendered
@@ -105,13 +100,9 @@ def _grounded_references(
     finding: ReviewFinding,
     contexts: list[RetrievedContext],
 ) -> tuple[ConversationReference, ...]:
-    allowed: dict[str, list[tuple[int, int]]] = {
-        finding.file_path: [(finding.line, finding.line)]
-    }
+    allowed: dict[str, list[tuple[int, int]]] = {finding.file_path: [(finding.line, finding.line)]}
     for context in contexts:
-        allowed.setdefault(context.file_path, []).append(
-            (context.start_line, context.end_line)
-        )
+        allowed.setdefault(context.file_path, []).append((context.start_line, context.end_line))
 
     selected: list[ConversationReference] = []
     seen: set[tuple[str, int, int]] = set()

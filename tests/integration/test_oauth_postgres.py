@@ -7,48 +7,87 @@ import psycopg2
 
 from service.oauth_store import (
     APP_INSTALL_PURPOSE,
-    CLI_LOGIN_PURPOSE,
+    GITHUB_INSTALL_AUTH_PURPOSE,
     MAX_EXPIRED_STATES_PER_PURGE,
     consume_oauth_state,
+    create_install_auth_state,
     create_install_state,
-    create_login_state,
-    create_session,
-    generate_session_token,
     generate_state,
-    load_session,
+    load_oauth_state,
     record_user_installation,
-    revoke_session,
-    session_token_sha256,
     state_sha256,
     upsert_user,
 )
+
+
+def test_install_state_can_be_inspected_before_single_use_claim():
+    connection = psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])
+    state = generate_state()
+    user_id = None
+    try:
+        with connection:
+            user = upsert_user(
+                connection,
+                github_user_id=_github_user_id(),
+                login=f"retry-user-{uuid.uuid4().hex[:12]}",
+                avatar_url=None,
+            )
+            user_id = user.id
+            create_install_state(connection, state=state, user_id=user.id)
+
+        pending = load_oauth_state(
+            connection,
+            state=state,
+            purpose=APP_INSTALL_PURPOSE,
+        )
+        connection.commit()
+        assert pending is not None
+        assert pending.user_id == user_id
+
+        claimed = consume_oauth_state(
+            connection,
+            state=state,
+            purpose=APP_INSTALL_PURPOSE,
+        )
+        connection.commit()
+        assert claimed is not None
+        assert claimed.user_id == user_id
+        assert (
+            load_oauth_state(
+                connection,
+                state=state,
+                purpose=APP_INSTALL_PURPOSE,
+            )
+            is None
+        )
+    finally:
+        connection.close()
 
 
 def _github_user_id() -> int:
     return int(uuid.uuid4().int % 1_000_000_000) + 1
 
 
-def test_login_state_is_single_use_and_carries_the_callback_port():
+def test_install_auth_state_is_single_use():
     connection = psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])
     state = generate_state()
     try:
-        create_login_state(connection, state=state, callback_port=53123)
+        create_install_auth_state(connection, state=state)
         connection.commit()
 
         claimed = consume_oauth_state(
             connection,
             state=state,
-            purpose=CLI_LOGIN_PURPOSE,
+            purpose=GITHUB_INSTALL_AUTH_PURPOSE,
         )
         connection.commit()
         assert claimed is not None
-        assert claimed.callback_port == 53123
         assert claimed.user_id is None
 
         replayed = consume_oauth_state(
             connection,
             state=state,
-            purpose=CLI_LOGIN_PURPOSE,
+            purpose=GITHUB_INSTALL_AUTH_PURPOSE,
         )
         connection.commit()
         assert replayed is None
@@ -64,18 +103,22 @@ def test_unknown_expired_and_cross_purpose_states_are_all_rejected():
             consume_oauth_state(
                 connection,
                 state=generate_state(),
-                purpose=CLI_LOGIN_PURPOSE,
+                purpose=GITHUB_INSTALL_AUTH_PURPOSE,
             )
             is None
         )
         # A malformed nonce must be rejected, not raise, so the route can render
         # the same page for every kind of bad state.
         assert (
-            consume_oauth_state(connection, state="short", purpose=CLI_LOGIN_PURPOSE)
+            consume_oauth_state(
+                connection,
+                state="short",
+                purpose=GITHUB_INSTALL_AUTH_PURPOSE,
+            )
             is None
         )
 
-        create_login_state(connection, state=state, callback_port=53123)
+        create_install_auth_state(connection, state=state)
         connection.commit()
         assert (
             consume_oauth_state(
@@ -100,7 +143,11 @@ def test_unknown_expired_and_cross_purpose_states_are_all_rejected():
                 (state_sha256(state),),
             )
         assert (
-            consume_oauth_state(connection, state=state, purpose=CLI_LOGIN_PURPOSE)
+            consume_oauth_state(
+                connection,
+                state=state,
+                purpose=GITHUB_INSTALL_AUTH_PURPOSE,
+            )
             is None
         )
     finally:
@@ -113,16 +160,20 @@ def test_only_one_of_two_concurrent_callbacks_can_claim_a_state():
     state = generate_state()
     claimed: dict[str, object] = {}
     try:
-        create_login_state(first, state=state, callback_port=53123)
+        create_install_auth_state(first, state=state)
         first.commit()
 
-        winner = consume_oauth_state(first, state=state, purpose=CLI_LOGIN_PURPOSE)
+        winner = consume_oauth_state(
+            first,
+            state=state,
+            purpose=GITHUB_INSTALL_AUTH_PURPOSE,
+        )
 
         def race():
             claimed["loser"] = consume_oauth_state(
                 second,
                 state=state,
-                purpose=CLI_LOGIN_PURPOSE,
+                purpose=GITHUB_INSTALL_AUTH_PURPOSE,
             )
 
         contender = threading.Thread(target=race)
@@ -136,7 +187,6 @@ def test_only_one_of_two_concurrent_callbacks_can_claim_a_state():
         assert not contender.is_alive()
 
         assert winner is not None
-        assert winner.callback_port == 53123
         assert claimed["loser"] is None
     finally:
         first.close()
@@ -144,7 +194,7 @@ def test_only_one_of_two_concurrent_callbacks_can_claim_a_state():
 
 
 def test_expired_states_are_drained_in_bounded_batches():
-    """`/auth/cli` is unauthenticated, so its per-request work must be capped."""
+    """`/auth/github` is anonymous, so its per-request work must be capped."""
     connection = psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])
     backlog = MAX_EXPIRED_STATES_PER_PURGE * 2
     try:
@@ -155,7 +205,7 @@ def test_expired_states_are_drained_in_bounded_batches():
                 INSERT INTO oauth_states (
                     state_sha256, purpose, expires_at, consumed_at, created_at
                 )
-                SELECT encode(sha256(g::text::bytea), 'hex'), 'cli_login',
+                SELECT encode(sha256(g::text::bytea), 'hex'), 'github_install_auth',
                        now() - interval '1 hour',
                        CASE WHEN g %% 2 = 0 THEN now() - interval '1 hour' END,
                        now() - interval '2 hours'
@@ -164,7 +214,7 @@ def test_expired_states_are_drained_in_bounded_batches():
                 (backlog,),
             )
 
-        create_login_state(connection, state=generate_state(), callback_port=53123)
+        create_install_auth_state(connection, state=generate_state())
         connection.commit()
 
         with connection.cursor() as cursor:
@@ -178,7 +228,7 @@ def test_expired_states_are_drained_in_bounded_batches():
         # Consumed and abandoned states are both drained; retention is the TTL,
         # so nothing survives on a grace period.
         for _ in range(3):
-            create_login_state(connection, state=generate_state(), callback_port=53123)
+            create_install_auth_state(connection, state=generate_state())
             connection.commit()
         with connection.cursor() as cursor:
             cursor.execute("SELECT count(*) FROM oauth_states WHERE expires_at < now()")
@@ -186,25 +236,6 @@ def test_expired_states_are_drained_in_bounded_batches():
     finally:
         with connection, connection.cursor() as cursor:
             cursor.execute("DELETE FROM oauth_states")
-        connection.close()
-
-
-def test_browser_initiated_state_records_no_port():
-    connection = psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])
-    state = generate_state()
-    try:
-        create_login_state(connection, state=state, callback_port=None)
-        connection.commit()
-
-        claimed = consume_oauth_state(
-            connection,
-            state=state,
-            purpose=CLI_LOGIN_PURPOSE,
-        )
-        connection.commit()
-        assert claimed is not None
-        assert claimed.callback_port is None
-    finally:
         connection.close()
 
 
@@ -234,42 +265,6 @@ def test_user_upsert_is_keyed_on_the_github_id_and_refreshes_the_profile():
         connection.close()
 
 
-def test_sessions_are_stored_hashed_and_resolve_until_revoked():
-    connection = psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])
-    token = generate_session_token()
-    try:
-        user = upsert_user(
-            connection,
-            github_user_id=_github_user_id(),
-            login="octocat",
-            avatar_url=None,
-        )
-        record = create_session(connection, user_id=user.id, token=token)
-        connection.commit()
-
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT token_sha256 FROM sessions WHERE id = %s",
-                (record.id,),
-            )
-            stored = cursor.fetchone()[0]
-        assert stored == session_token_sha256(token)
-        assert token not in stored
-
-        resolved = load_session(connection, token_sha256=session_token_sha256(token))
-        connection.commit()
-        assert resolved is not None
-        assert resolved.user_id == user.id
-
-        revoke_session(connection, session_id=record.id)
-        connection.commit()
-        assert (
-            load_session(connection, token_sha256=session_token_sha256(token)) is None
-        )
-    finally:
-        connection.close()
-
-
 def test_install_state_binds_a_user_and_installations_are_idempotent():
     connection = psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])
     state = generate_state()
@@ -292,7 +287,6 @@ def test_install_state_binds_a_user_and_installations_are_idempotent():
         connection.commit()
         assert claimed is not None
         assert claimed.user_id == user.id
-        assert claimed.callback_port is None
 
         record_user_installation(
             connection,

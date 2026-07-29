@@ -14,10 +14,21 @@ commercial agreement, license key, entitlement file, or registry credential.
 ## Install
 
 1. Copy `env.example` to `.env`, restrict it with `chmod 600 .env`, and fill
-   every required value. Configure the GitHub App ID, installation ID, private
-   key, and webhook secret; Diffuse mints and refreshes installation tokens, so
-   do not paste a one-hour token into `GITHUB_TOKEN`. Release bundles already
-   pin `DIFFUSE_IMAGE` to the immutable release digest.
+   every required value. For the recommended shared GitHub App, install it
+   through the hosted relay, run the one-time `diffuse relay pair` command it
+   displays, and set `DIFFUSE_RELAY_URL` plus `DIFFUSE_RELAY_TOKEN`. Leave the
+   local App identity and webhook-secret fields empty. Standalone deployments
+   may instead configure an operator-owned App ID, installation ID, private key,
+   and webhook secret. Release bundles already pin `DIFFUSE_IMAGE` to the
+   immutable release digest.
+   LiteLLM remains the default review executor: configure `OPENAI_API_KEY` or
+   `ANTHROPIC_API_KEY` to match `REVIEW_MODEL` (plus the embedding credential or
+   endpoint documented in `env.example`). Alternatively, select `codex-cli` or
+   `claude-cli`, authenticate that CLI as the dedicated host-runner account,
+   and use `model-runner.compose.yaml` as documented in the
+   [model execution guide](MODEL_EXECUTION.md).
+   Never place model-account access or refresh tokens in `.env`; Diffuse invokes
+   the CLI-owned login without reading it.
 2. Verify the image signature before starting it:
 
    ```bash
@@ -38,9 +49,10 @@ commercial agreement, license key, entitlement file, or registry credential.
    curl --fail http://127.0.0.1:8000/ready
    ```
 
-4. Configure the GitHub App webhook, pointing it at
-   `https://your-diffuse-host/webhook/github` with the `GITHUB_WEBHOOK_SECRET`
-   from `.env`. Enable exactly these four event types and no others:
+4. In relay mode, no public webhook URL is needed: confirm the worker is polling
+   without authentication errors. In standalone mode, point the operator-owned
+   GitHub App webhook at `https://your-diffuse-host/webhook/github` with the
+   `GITHUB_WEBHOOK_SECRET` from `.env`. Enable these four event types:
 
    - `push`
    - `pull_request`
@@ -84,7 +96,7 @@ docker compose --env-file .env run --rm worker <command>
 
 For example, `diffuse token add` becomes
 `docker compose --env-file .env run --rm worker token add`. The available
-subcommands are `review`, `repository`, `cluster`, `learning`, `token`,
+subcommands are `review`, `repository`, `cluster`, `learning`, `token`, `relay`,
 `database`, `evaluate`, and `model`; each accepts `--help`.
 
 ## Obtaining this bundle and later ones

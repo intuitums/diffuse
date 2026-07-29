@@ -72,11 +72,11 @@ The following are explicitly **in scope**:
   `(provider, base URL, delivery id)` record. Signature-verification bypass,
   replaying a delivery past that record, or forging an instance origin are all
   in scope.
-- **OAuth and session flaws** in the browser sign-in path (`/auth/cli`,
-  `/auth/github/callback`, `/setup`), including state fixation or reuse,
-  session-token exposure, and open redirects. These routes are mounted and
-  reachable even though no request authenticator consumes the session they
-  mint yet; they still spend the client secret and write identity rows.
+- **GitHub installation-authentication flaws** in the browser path
+  (`/auth/github`, `/auth/github/callback`, `/setup`), including state fixation
+  or reuse, installer misattribution, and open redirects. These routes spend
+  the GitHub OAuth client secret and write installer identity rows, but do not
+  mint a Diffuse login session or authenticate model access.
 - **MCP and REST API flaws**, including DNS-rebinding protection bypass and
   authentication bypass.
 - **Database migration integrity** failures that allow unverified SQL to be

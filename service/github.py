@@ -65,6 +65,51 @@ def verify_signature(body: bytes, signature: str, secret: str) -> None:
         )
 
 
+def relay_delivery_signature(
+    body: bytes,
+    *,
+    event_name: str,
+    delivery_id: str,
+    secret: str,
+) -> str:
+    if not secret:
+        raise ValueError("Relay node secret is not configured")
+    message = (
+        event_name.encode("utf-8")
+        + b"\0"
+        + delivery_id.encode("utf-8")
+        + b"\0"
+        + body
+    )
+    return "sha256=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+
+
+def verify_relay_delivery_signature(
+    body: bytes,
+    signature: str,
+    *,
+    event_name: str,
+    delivery_id: str,
+    secret: str,
+) -> None:
+    if not signature.isascii() or not signature.startswith("sha256="):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid relay delivery signature",
+        )
+    expected = relay_delivery_signature(
+        body,
+        event_name=event_name,
+        delivery_id=delivery_id,
+        secret=secret,
+    )
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid relay delivery signature",
+        )
+
+
 def normalize_pull_request_event(
     payload: dict,
     *,

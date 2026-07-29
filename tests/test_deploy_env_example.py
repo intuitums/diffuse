@@ -32,10 +32,9 @@ COMPOSE_SUPPLIED = frozenset(
 
 # Only meaningful in the customer bundle: digest pinning and env-file placement.
 #
-# DIFFUSE_SECRETS_DIR used to be here. It configured one thing -- a read-only bind
-# mount for the browser sign-in client secret -- and that mount is gone from both
-# Compose files because nothing reads a secret from it: there is no `diffuse login`
-# subcommand, so the flow cannot be completed. Put both back together, or not at all.
+# DIFFUSE_SECRETS_DIR used to be here. It configured one read-only bind mount
+# for a client secret that no runtime path reads. Put the variable and mount
+# back together if that changes, or keep both absent.
 CUSTOMER_ONLY = frozenset(
     {
         "DIFFUSE_IMAGE",
@@ -92,6 +91,8 @@ def test_release_bundle_ships_the_customer_env_example():
     """If the bundle stops shipping this file, the tests above stop meaning anything."""
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "release.yml").read_text()
     assert "deploy/env.example" in workflow
+    assert "deploy/model-runner.compose.yaml" in workflow
+    assert "docs/model-execution.md" in workflow
 
 
 def test_release_artifacts_ship_the_license():

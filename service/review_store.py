@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from service.finding_store import (
     discard_unpublished_finding_lineage,
     persist_finding_lineage,
 )
+from service.model_execution import StoredGenerationStep, StructuredGenerationResult
 from service.review_models import ReviewDiagram, ReviewFinding, ReviewReport
 
 
@@ -192,6 +194,9 @@ def begin_review_run(
     verifier_model: str | None = None,
     provenance: dict[str, object] | None = None,
     model_routing_reason: str = "legacy_single_model",
+    executor: str = "litellm",
+    execution_plan: dict[str, object] | None = None,
+    execution_plan_fingerprint: str | None = None,
     learned_rules: tuple[ApprovedLearnedRule, ...] = (),
     custom_contexts: tuple[ApprovedCustomContext, ...] = (),
     context_snapshots: tuple[RepositoryContextSnapshot, ...] = (),
@@ -200,10 +205,25 @@ def begin_review_run(
         raise ValueError("Review context fingerprint must be a lowercase SHA-256 value")
     selected_verifier_model = verifier_model or model
     selected_provenance = {} if provenance is None else provenance
+    selected_execution_plan = {} if execution_plan is None else execution_plan
+    selected_execution_plan_fingerprint = (
+        execution_plan_fingerprint
+        or hashlib.sha256(
+            json.dumps(
+                selected_execution_plan,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+    )
     if not model.strip() or not selected_verifier_model.strip():
         raise ValueError("Review models cannot be empty")
     if not re.fullmatch(r"[a-z0-9_]{1,64}", model_routing_reason):
         raise ValueError("Review model routing reason is invalid")
+    if executor not in {"litellm", "codex-cli", "claude-cli"}:
+        raise ValueError("Review executor is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", selected_execution_plan_fingerprint):
+        raise ValueError("Review execution-plan fingerprint is invalid")
     if (
         not isinstance(selected_provenance, dict)
         or len(
@@ -216,6 +236,18 @@ def begin_review_run(
         > 65_536
     ):
         raise ValueError("Review provenance must be a bounded JSON object")
+    if (
+        not isinstance(selected_execution_plan, dict)
+        or len(
+            json.dumps(
+                selected_execution_plan,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+        > 65_536
+    ):
+        raise ValueError("Review execution plan must be a bounded JSON object")
     with conn.cursor() as cursor:
         cursor.execute(
             "SELECT repository_id FROM pull_requests WHERE id = %s FOR UPDATE",
@@ -261,6 +293,9 @@ def begin_review_run(
                         verifier_model = %s,
                         provenance = %s,
                         model_routing_reason = %s,
+                        executor = %s,
+                        execution_plan = %s,
+                        execution_plan_fingerprint = %s,
                         prompt_version = %s,
                         context_fingerprint = %s,
                         status = 'generating',
@@ -275,6 +310,9 @@ def begin_review_run(
                         selected_verifier_model,
                         psycopg2.extras.Json(selected_provenance),
                         model_routing_reason,
+                        executor,
+                        psycopg2.extras.Json(selected_execution_plan),
+                        selected_execution_plan_fingerprint,
                         prompt_version,
                         context_fingerprint,
                         review_run_id,
@@ -303,9 +341,7 @@ def begin_review_run(
             return ReviewRunHandle(
                 id=review_run_id,
                 status=existing_status,
-                index_snapshot_id=(
-                    int(job_run[2]) if job_run[2] is not None else None
-                ),
+                index_snapshot_id=(int(job_run[2]) if job_run[2] is not None else None),
             )
 
         cursor.execute(
@@ -385,12 +421,16 @@ def begin_review_run(
                 verifier_model,
                 provenance,
                 model_routing_reason,
+                executor,
+                execution_plan,
+                execution_plan_fingerprint,
                 prompt_version,
                 context_fingerprint,
                 status
             )
             VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s,
                 'generating'
             )
             RETURNING id
@@ -406,6 +446,9 @@ def begin_review_run(
                 selected_verifier_model,
                 psycopg2.extras.Json(selected_provenance),
                 model_routing_reason,
+                executor,
+                psycopg2.extras.Json(selected_execution_plan),
+                selected_execution_plan_fingerprint,
                 prompt_version,
                 context_fingerprint,
             ),
@@ -433,6 +476,112 @@ def begin_review_run(
         )
 
 
+def load_review_generation_step(
+    conn,
+    *,
+    review_run_id: int,
+    step_key: str,
+    request_fingerprint: str,
+) -> StoredGenerationStep | None:
+    if review_run_id <= 0:
+        raise ValueError("Review run ID must be positive")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_/-]{0,127}", step_key):
+        raise ValueError("Review generation step key is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", request_fingerprint):
+        raise ValueError("Review generation request fingerprint is invalid")
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+        cursor.execute(
+            """
+            SELECT response,
+                   prompt_tokens,
+                   completion_tokens,
+                   resolved_model,
+                   executor_version
+            FROM review_generation_steps
+            WHERE review_run_id = %s
+              AND step_key = %s
+              AND request_fingerprint = %s
+            """,
+            (review_run_id, step_key, request_fingerprint),
+        )
+        row = cursor.fetchone()
+    if row is None:
+        return None
+    return StoredGenerationStep(
+        response=dict(row["response"]),
+        prompt_tokens=int(row["prompt_tokens"]),
+        completion_tokens=int(row["completion_tokens"]),
+        resolved_model=row["resolved_model"],
+        executor_version=row["executor_version"],
+    )
+
+
+def save_review_generation_step(
+    conn,
+    *,
+    review_run_id: int,
+    step_key: str,
+    request_fingerprint: str,
+    response_schema: str,
+    result: StructuredGenerationResult,
+) -> None:
+    if review_run_id <= 0:
+        raise ValueError("Review run ID must be positive")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_/-]{0,127}", step_key):
+        raise ValueError("Review generation step key is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", request_fingerprint):
+        raise ValueError("Review generation request fingerprint is invalid")
+    if not response_schema or len(response_schema) > 512:
+        raise ValueError("Review generation response schema is invalid")
+    response = result.value.model_dump(mode="json")
+    encoded = json.dumps(response, sort_keys=True, separators=(",", ":")).encode()
+    if len(encoded) > 1_048_576:
+        raise ValueError("Review generation response is too large to persist")
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO review_generation_steps (
+                review_run_id,
+                step_key,
+                request_fingerprint,
+                response_schema,
+                response,
+                prompt_tokens,
+                completion_tokens,
+                resolved_model,
+                executor_version
+            )
+            SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s
+            FROM review_runs
+            WHERE id = %s
+              AND status = 'generating'
+            ON CONFLICT (review_run_id, step_key) DO UPDATE
+            SET request_fingerprint = EXCLUDED.request_fingerprint,
+                response_schema = EXCLUDED.response_schema,
+                response = EXCLUDED.response,
+                prompt_tokens = EXCLUDED.prompt_tokens,
+                completion_tokens = EXCLUDED.completion_tokens,
+                resolved_model = EXCLUDED.resolved_model,
+                executor_version = EXCLUDED.executor_version,
+                updated_at = now()
+            """,
+            (
+                review_run_id,
+                step_key,
+                request_fingerprint,
+                response_schema,
+                psycopg2.extras.Json(response),
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.resolved_model,
+                result.executor_version,
+                review_run_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("Review run is not accepting generation steps")
+
+
 def persist_review_report(
     conn,
     review_run_id: int,
@@ -443,10 +592,7 @@ def persist_review_report(
 ) -> None:
     next_status = "ready" if report.publication_enabled else "skipped"
     aliases = path_aliases or {}
-    if any(
-        not isinstance(path, str) or not path or path.startswith("/")
-        for path in touched_paths
-    ):
+    if any(not isinstance(path, str) or not path or path.startswith("/") for path in touched_paths):
         raise ValueError("Touched finding paths must be normalized repository paths")
     if any(
         not isinstance(old, str)
@@ -655,24 +801,12 @@ def load_review_report(conn, review_run_id: int) -> ReviewReport:
         summary_section_included=bool(run["summary_section_included"]),
         summary_section_collapsible=bool(run["summary_section_collapsible"]),
         summary_section_default_open=bool(run["summary_section_default_open"]),
-        issues_table_section_included=bool(
-            run["issues_table_section_included"]
-        ),
-        issues_table_section_collapsible=bool(
-            run["issues_table_section_collapsible"]
-        ),
-        issues_table_section_default_open=bool(
-            run["issues_table_section_default_open"]
-        ),
-        confidence_score_section_included=bool(
-            run["confidence_score_section_included"]
-        ),
-        confidence_score_section_collapsible=bool(
-            run["confidence_score_section_collapsible"]
-        ),
-        confidence_score_section_default_open=bool(
-            run["confidence_score_section_default_open"]
-        ),
+        issues_table_section_included=bool(run["issues_table_section_included"]),
+        issues_table_section_collapsible=bool(run["issues_table_section_collapsible"]),
+        issues_table_section_default_open=bool(run["issues_table_section_default_open"]),
+        confidence_score_section_included=bool(run["confidence_score_section_included"]),
+        confidence_score_section_collapsible=bool(run["confidence_score_section_collapsible"]),
+        confidence_score_section_default_open=bool(run["confidence_score_section_default_open"]),
         footer_included=bool(run["footer_included"]),
         update_description=bool(run["update_description"]),
         summary_comment_enabled=bool(run["summary_comment_enabled"]),

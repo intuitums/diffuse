@@ -2,7 +2,8 @@
 
 Date: 2026-07-28
 
-Status: Accepted
+Status: Accepted; hosted-control-plane prohibition superseded by
+[ADR 0044](0044-hosted-integration-relay.md).
 
 Supersedes ADR 0040.
 

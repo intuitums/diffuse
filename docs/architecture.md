@@ -52,22 +52,26 @@ GitHub / CLI / MCP / Web app
 
 ## Deployment and ownership boundary
 
-Diffuse uses one PostgreSQL-backed data plane, self-hosted by the operator:
+Diffuse separates the provider-integration boundary from the review data plane:
 
 ```text
-Self-hosted
-  Operator
-        |
-  Diffuse API + workers + web app
-        |
-  Operator PostgreSQL/pgvector + repository storage
+GitHub / [Slack planned]
+      |
+Hosted Diffuse integration relay
+  callbacks + routing + short-lived credentials
+      |
+      | outbound node connection
+      v
+Self-hosted Diffuse API + workers
+      |
+Operator PostgreSQL/pgvector + repository storage
 ```
 
-There is no Diffuse-hosted control plane and no managed service; see
-[ADR 0042](adr/0042-source-available-self-hosted-distribution.md).
-PostgreSQL remains authoritative for repository, source-derived, review,
-workflow, feedback, and learning state. Self-hosted telemetry and diagnostic
-upload are opt-in.
+The relay never clones repositories or runs reviews. Node PostgreSQL remains
+authoritative for repository, source-derived, review, workflow, feedback, and
+learning state. Relay PostgreSQL stores installation/node mappings, hashed
+credentials, and unacknowledged provider payloads. See
+[ADR 0044](adr/0044-hosted-integration-relay.md).
 
 Releases are delivered as signed, digest-pinned artifacts. Runtime images omit
 the build-only material and compile the Python application rather than shipping
@@ -88,9 +92,10 @@ distribution decision.
   onboarding, reindexing, and review requests. A web UI, settings, identity,
   and broader administrative mutations remain.
 - Scoped service tokens and the bootstrap credential are the authenticated
-  principals. The GitHub OAuth browser endpoints are mounted but no
-  authenticator consumes the session they mint, so OAuth grants no access yet;
-  OIDC and SAML will be added.
+  API principals. GitHub browser authentication exists only to attribute a
+  shared GitHub App installation before issuing a one-time node pairing code;
+  it does not mint a Diffuse session or authenticate model access. OIDC and
+  SAML remain future work.
 - Organizations, teams, users, roles, repositories, integrations, policies,
   rules, model settings, audit events, analytics, and operational state will be
   the control plane's resources. Repositories, policies, rules, model settings,
@@ -101,10 +106,10 @@ distribution decision.
 - One normalized interface for GitHub Cloud and GitHub Enterprise.
 - SCM credentials are never placed in clone URLs, subprocess arguments,
   database rows, job payloads, or logs; they reach Git only through a
-  non-interactive askpass environment. The self-hosted profile reads one
-  process-level GitHub App identity, mints short-lived installation tokens, and
-  keeps them only in memory. Per-tenant installation selection and encrypted
-  database-backed credentials remain targets.
+  non-interactive askpass environment. A relay node exchanges its paired-node
+  credential for a one-hour installation token and clones directly from GitHub;
+  the App private key stays hosted. Standalone mode retains the local
+  process-level App identity.
 - Normalized repositories, commits, diffs, checks, reviews, inline threads,
   reactions, pull requests, and webhook events.
 - Every event has a provider delivery ID and an idempotency record.
@@ -300,6 +305,15 @@ target; the parenthetical notes record what ships today.
 
 Model output is parsed into a versioned schema. Raw model text is never posted
 directly as an SCM action.
+
+Model execution is backend-neutral. Diffuse sends each backend only a trusted
+stage prompt, bounded policy-filtered diff and retrieved context, and the exact
+output schema. Candidate pass/chunk calls, the optional diagram, and the
+verifier are durable steps whose fingerprints include that complete request.
+The CLI runner protocol has no repository path, arbitrary environment,
+tool/MCP configuration, or publication authority; only Diffuse can turn a
+validated response into a GitHub review. See
+[ADR 0045](adr/0045-model-execution-boundary.md).
 
 Before any review-model call, the worker fetches a bounded list of commit
 metadata from the SCM and classifies authors, committers, verified bot
@@ -612,7 +626,7 @@ contract remains portable.
 ## Core data model
 
 > **Target, not current state.** This is the intended full data model. Most of
-> it is built: 33 of the 52 tables named below already exist, out of 45 tables
+> it is built: 33 of the 52 tables named below already exist, out of 44 tables
 > created across `sql/schema.sql` and `sql/migrations/`. Those two are the only
 > authoritative description of the current schema, and `diffuse database status`
 > prints what is actually applied.
@@ -621,8 +635,7 @@ contract remains portable.
 > `code_symbols` and `code_relationships` (the snapshot-scoped graph),
 > `repository_refs`, `pull_request_lifecycle_events`, `review_publications`,
 > `scm_webhook_deliveries`, `scm_webhook_rejections`, `api_idempotency_keys`,
-> `api_token_repositories`, `oauth_states`, `sessions`, and
-> `user_installations`.
+> `api_token_repositories`, `oauth_states`, and `user_installations`.
 >
 > Absent today: `organizations`, `teams`, `memberships`, `roles`,
 > `scm_connections`, `repository_access`, `commits`, `index_jobs`, the separate
@@ -661,13 +674,14 @@ history, and artifacts according to configured retention policy.
 
 ## Deployment profiles
 
-> **Target, not current state.** Only the Developer profile and a single-node
-> Compose profile exist. The shipped Compose topology is four services — `db`,
-> `migrate`, `app`, `worker` — as defined in `docker-compose.yml` (development)
-> and `deploy/compose.yaml` (release, digest-pinned). Split index/review
-> workers, a Redis-compatible cache, S3-compatible object storage, and the
-> Kubernetes profile are not implemented; there is no Helm chart or Kubernetes
-> manifest in the repository.
+> **Target, not current state.** The Developer profile, a single-node release
+> profile, and a minimal integration-relay profile exist. The node topology is
+> four services—`db`, `migrate`, `app`, `worker`—as defined in
+> `docker-compose.yml` and `deploy/compose.yaml`. The relay topology is only
+> `db`, `migrate`, and `gateway` in `deploy/gateway.compose.yaml`; it has no
+> worker or repository volume. Split index/review workers, a Redis-compatible
+> cache, S3-compatible object storage, and the Kubernetes profile are not
+> implemented; there is no Helm chart or Kubernetes manifest in the repository.
 
 ### Developer
 

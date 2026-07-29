@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import logging
+import math
 import os
 import socket
 import time
@@ -42,6 +43,7 @@ from retriever.retrieve import (
     retrieve_context_from_plan,
     retrieve_context_from_snapshot,
 )
+from service import relay_client
 from service.approval_publication import (
     ApprovalNotCurrentError,
     PublishedApproval,
@@ -138,6 +140,12 @@ from service.learning_store import (
     persist_rule_suggestions,
     schedule_due_rule_learning_jobs,
 )
+from service.model_config import ModelExecutor, load_model_execution_config
+from service.model_execution import (
+    ModelRequestCancelledError,
+    StoredGenerationStep,
+    StructuredGenerationResult,
+)
 from service.repositories import get_repository, update_mirror_state
 from service.repository_mirror import (
     RepositoryMirror,
@@ -174,6 +182,7 @@ from service.review_store import (
     ReviewRunHandle,
     begin_publication,
     begin_review_run,
+    load_review_generation_step,
     load_review_report,
     mark_publication_failed,
     mark_publication_published,
@@ -181,6 +190,7 @@ from service.review_store import (
     mark_review_superseded,
     mark_review_terminal_failed,
     persist_review_report,
+    save_review_generation_step,
 )
 from service.scm import (
     FeedbackSyncEvent,
@@ -313,12 +323,8 @@ def _schedule_feedback_syncs() -> int:
 
 def _schedule_rule_learning() -> int:
     minimum_evidence = int(os.environ.get("RULE_LEARNING_MIN_EVIDENCE", "10"))
-    minimum_pull_requests = int(
-        os.environ.get("RULE_LEARNING_MIN_PULL_REQUESTS", "10")
-    )
-    interval_seconds = int(
-        os.environ.get("RULE_LEARNING_EVALUATION_INTERVAL_SECONDS", "3600")
-    )
+    minimum_pull_requests = int(os.environ.get("RULE_LEARNING_MIN_PULL_REQUESTS", "10"))
+    interval_seconds = int(os.environ.get("RULE_LEARNING_EVALUATION_INTERVAL_SECONDS", "3600"))
     batch_size = int(os.environ.get("RULE_LEARNING_BATCH_SIZE", "5"))
     with closing(get_conn()) as conn, conn:
         return schedule_due_rule_learning_jobs(
@@ -385,9 +391,7 @@ async def _finalize_stranded_reviews() -> int:
             failure.error_code,
         )
         try:
-            handle = await anyio.to_thread.run_sync(
-                partial(_get_native_check_for_job, stranded.id)
-            )
+            handle = await anyio.to_thread.run_sync(partial(_get_native_check_for_job, stranded.id))
             await _complete_native_check(
                 event,
                 handle,
@@ -484,6 +488,7 @@ def _begin_native_review(
     if job.pull_request_id is None:
         raise NonRetryableError("Review job does not reference a pull request")
     with closing(get_conn()) as conn, conn:
+        execution_plan = model_plan.execution_plan
         return begin_review_run(
             conn,
             workflow_job_id=job.id,
@@ -496,6 +501,9 @@ def _begin_native_review(
             verifier_model=model_plan.verifier_model,
             provenance=provenance.to_dict(),
             model_routing_reason=model_plan.reason_code,
+            executor=model_plan.executor,
+            execution_plan=execution_plan.to_dict(),
+            execution_plan_fingerprint=execution_plan.fingerprint,
             prompt_version=PROMPT_VERSION,
             context_fingerprint=_review_context_fingerprint(
                 context_plan,
@@ -639,8 +647,7 @@ def _persist_trigger_skip(
 ) -> None:
     parsed = parse_unified_diff(diff_text)
     reviewable_count = sum(
-        bool(file.comment_path and policy.allows_path(file.comment_path))
-        for file in parsed.files
+        bool(file.comment_path and policy.allows_path(file.comment_path)) for file in parsed.files
     )
     report = ReviewReport(
         summary=decision.message,
@@ -692,6 +699,39 @@ def _generate_and_persist_review(
     path_aliases: dict[str, str] | None = None,
     model_plan: ReviewModelPlan | None = None,
 ) -> None:
+    class PostgresGenerationStepStore:
+        def load(
+            self,
+            *,
+            step_key: str,
+            request_fingerprint: str,
+        ) -> StoredGenerationStep | None:
+            with closing(get_conn()) as conn:
+                return load_review_generation_step(
+                    conn,
+                    review_run_id=review_run_id,
+                    step_key=step_key,
+                    request_fingerprint=request_fingerprint,
+                )
+
+        def save(
+            self,
+            *,
+            step_key: str,
+            request_fingerprint: str,
+            response_schema: str,
+            result: StructuredGenerationResult,
+        ) -> None:
+            with closing(get_conn()) as conn, conn:
+                save_review_generation_step(
+                    conn,
+                    review_run_id=review_run_id,
+                    step_key=step_key,
+                    request_fingerprint=request_fingerprint,
+                    response_schema=response_schema,
+                    result=result,
+                )
+
     def report_progress() -> None:
         if not _heartbeat_and_check_current(job.id, worker_id):
             raise ReviewSupersededError(
@@ -704,12 +744,16 @@ def _generate_and_persist_review(
             contexts,
             progress_callback=report_progress,
             policy=policy,
-            candidate_model=(
-                model_plan.candidate_model if model_plan is not None else None
+            candidate_model=(model_plan.candidate_model if model_plan is not None else None),
+            verifier_model=(model_plan.verifier_model if model_plan is not None else None),
+            step_store=PostgresGenerationStepStore(),
+            cancellation_check=lambda: (
+                not _heartbeat_and_check_current(
+                    job.id,
+                    worker_id,
+                )
             ),
-            verifier_model=(
-                model_plan.verifier_model if model_plan is not None else None
-            ),
+            request_namespace=f"review-{review_run_id}",
         )
         report_progress()
         with closing(get_conn()) as conn, conn:
@@ -720,6 +764,17 @@ def _generate_and_persist_review(
                 touched_paths=touched_paths,
                 path_aliases=path_aliases,
             )
+    except ModelRequestCancelledError:
+        # A CLI wait polls this job's lease and current revision. Convert that
+        # cancellation into the existing supersession path; preserve an
+        # unrelated backend cancellation as a normal execution failure.
+        if not _heartbeat_and_check_current(job.id, worker_id):
+            with closing(get_conn()) as conn, conn:
+                mark_review_superseded(conn, review_run_id, worker_id=worker_id)
+            raise ReviewSupersededError(
+                "A newer pull-request revision or worker lease replaced this review"
+            ) from None
+        raise
     except ReviewSupersededError:
         with closing(get_conn()) as conn, conn:
             if not mark_review_superseded(conn, review_run_id, worker_id=worker_id):
@@ -1155,9 +1210,7 @@ async def _publish_native_thread_operations(
             if event.provider == "github":
                 result = await apply_github_thread_operation(event, operation)
             else:
-                raise NonRetryableError(
-                    f"Unsupported SCM provider: {event.provider}"
-                )
+                raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
         except Exception:
             await anyio.to_thread.run_sync(
                 partial(
@@ -1230,9 +1283,7 @@ async def _ensure_native_check(
     event: PullRequestEvent,
     review_run_id: int,
 ) -> CheckRunHandle:
-    handle = await anyio.to_thread.run_sync(
-        partial(_begin_native_check, review_run_id, event)
-    )
+    handle = await anyio.to_thread.run_sync(partial(_begin_native_check, review_run_id, event))
     if handle.is_completed:
         return handle
     try:
@@ -1254,9 +1305,7 @@ async def _ensure_native_check(
             )
         )
     except Exception:
-        await anyio.to_thread.run_sync(
-            partial(_mark_native_check_failed, handle.id)
-        )
+        await anyio.to_thread.run_sync(partial(_mark_native_check_failed, handle.id))
         raise
     return CheckRunHandle(
         id=handle.id,
@@ -1281,13 +1330,9 @@ async def _complete_native_check(
     if handle is None or handle.is_completed:
         return
     if handle.external_id is None:
-        await anyio.to_thread.run_sync(
-            partial(_mark_native_check_failed, handle.id)
-        )
+        await anyio.to_thread.run_sync(partial(_mark_native_check_failed, handle.id))
         return
-    await anyio.to_thread.run_sync(
-        partial(_mark_native_check_completing, handle.id)
-    )
+    await anyio.to_thread.run_sync(partial(_mark_native_check_completing, handle.id))
     try:
         if event.provider == "github":
             await complete_github_check_run(
@@ -1302,13 +1347,9 @@ async def _complete_native_check(
         else:
             raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
     except Exception:
-        await anyio.to_thread.run_sync(
-            partial(_mark_native_check_failed, handle.id)
-        )
+        await anyio.to_thread.run_sync(partial(_mark_native_check_failed, handle.id))
         raise
-    await anyio.to_thread.run_sync(
-        partial(_mark_native_check_completed, handle.id, conclusion)
-    )
+    await anyio.to_thread.run_sync(partial(_mark_native_check_completed, handle.id, conclusion))
 
 
 async def _publish_native_auto_approval(
@@ -1335,9 +1376,7 @@ async def _complete_existing_job_check(
     conclusion: str,
     message: str,
 ) -> None:
-    handle = await anyio.to_thread.run_sync(
-        partial(_get_native_check_for_job, job.id)
-    )
+    handle = await anyio.to_thread.run_sync(partial(_get_native_check_for_job, job.id))
     await _complete_native_check(
         event,
         handle,
@@ -1533,11 +1572,14 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
             )
             await anyio.to_thread.run_sync(partial(_supersede, job.id, worker_id))
             return
+    model_execution_config = load_model_execution_config()
     model_plan = select_review_model_plan(
         provenance,
-        candidate_model=review_model(),
-        verifier_model=review_verifier_model(),
+        candidate_model=model_execution_config.review_model,
+        verifier_model=model_execution_config.verifier_model,
         minimum_confidence=review_provenance_minimum_confidence(),
+        executor=model_execution_config.executor.value,
+        structured_output_mode=model_execution_config.structured_output_mode.value,
     )
 
     review_run = await anyio.to_thread.run_sync(
@@ -1625,9 +1667,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
             )
         except Exception:
             if check_run is not None:
-                await anyio.to_thread.run_sync(
-                    partial(_mark_native_check_failed, check_run.id)
-                )
+                await anyio.to_thread.run_sync(partial(_mark_native_check_failed, check_run.id))
             raise
     if review_run.needs_generation and decision.eligible:
         try:
@@ -1656,24 +1696,16 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
             return
         except Exception:
             if check_run is not None:
-                await anyio.to_thread.run_sync(
-                    partial(_mark_native_check_failed, check_run.id)
-                )
+                await anyio.to_thread.run_sync(partial(_mark_native_check_failed, check_run.id))
             raise
     try:
-        report = await anyio.to_thread.run_sync(
-            partial(_load_native_report, review_run.id)
-        )
+        report = await anyio.to_thread.run_sync(partial(_load_native_report, review_run.id))
     except Exception:
         if check_run is not None:
-            await anyio.to_thread.run_sync(
-                partial(_mark_native_check_failed, check_run.id)
-            )
+            await anyio.to_thread.run_sync(partial(_mark_native_check_failed, check_run.id))
         raise
     continuity = (
-        await anyio.to_thread.run_sync(
-            partial(_load_native_continuity, review_run.id)
-        )
+        await anyio.to_thread.run_sync(partial(_load_native_continuity, review_run.id))
         if report.publication_enabled
         else ReviewContinuity()
     )
@@ -1705,17 +1737,13 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
                         continuity=continuity,
                     )
                 else:
-                    raise NonRetryableError(
-                        f"Unsupported SCM provider: {event.provider}"
-                    )
+                    raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
             except Exception:
                 await anyio.to_thread.run_sync(
                     partial(_mark_native_publication_failed, publication.id)
                 )
                 if check_run is not None:
-                    await anyio.to_thread.run_sync(
-                        partial(_mark_native_check_failed, check_run.id)
-                    )
+                    await anyio.to_thread.run_sync(partial(_mark_native_check_failed, check_run.id))
                 raise
             await anyio.to_thread.run_sync(
                 partial(
@@ -1736,9 +1764,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
             )
         except Exception:
             if check_run is not None:
-                await anyio.to_thread.run_sync(
-                    partial(_mark_native_check_failed, check_run.id)
-                )
+                await anyio.to_thread.run_sync(partial(_mark_native_check_failed, check_run.id))
             raise
     if check_run is not None:
         await _extend_publication_lease(job, worker_id)
@@ -1831,24 +1857,18 @@ async def process_conversation_job(job: WorkflowJob, worker_id: str) -> None:
         raise NonRetryableError("Conversation workflow identity does not match its payload")
 
     try:
-        if not await anyio.to_thread.run_sync(
-            partial(_heartbeat_lease, job.id, worker_id)
-        ):
+        if not await anyio.to_thread.run_sync(partial(_heartbeat_lease, job.id, worker_id)):
             raise RuntimeError("Workflow lease was lost before conversation processing")
         work = await anyio.to_thread.run_sync(partial(_begin_conversation, job.id))
         if work.root_comment_id != event.root_comment_id:
             raise NonRetryableError("Conversation thread does not match its workflow payload")
         if work.status == "ignored":
-            completed = await anyio.to_thread.run_sync(
-                partial(_complete, job.id, worker_id)
-            )
+            completed = await anyio.to_thread.run_sync(partial(_complete, job.id, worker_id))
             if not completed:
                 raise RuntimeError("Workflow lease was lost before completion")
             return
         if work.is_published:
-            completed = await anyio.to_thread.run_sync(
-                partial(_complete, job.id, worker_id)
-            )
+            completed = await anyio.to_thread.run_sync(partial(_complete, job.id, worker_id))
             if not completed:
                 raise RuntimeError("Workflow lease was lost before completion")
             return
@@ -1879,9 +1899,7 @@ async def process_conversation_job(job: WorkflowJob, worker_id: str) -> None:
                         "conversation_disabled",
                     )
                 )
-                completed = await anyio.to_thread.run_sync(
-                    partial(_complete, job.id, worker_id)
-                )
+                completed = await anyio.to_thread.run_sync(partial(_complete, job.id, worker_id))
                 if not completed:
                     raise RuntimeError("Workflow lease was lost before completion")
                 return
@@ -1916,19 +1934,11 @@ async def process_conversation_job(job: WorkflowJob, worker_id: str) -> None:
                     references=publication.references,
                 )
             else:
-                raise NonRetryableError(
-                    f"Unsupported SCM provider: {event.provider}"
-                )
-            await anyio.to_thread.run_sync(
-                partial(_mark_conversation_published, work.id, result)
-            )
-        if not await anyio.to_thread.run_sync(
-            partial(_heartbeat_lease, job.id, worker_id)
-        ):
+                raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
+            await anyio.to_thread.run_sync(partial(_mark_conversation_published, work.id, result))
+        if not await anyio.to_thread.run_sync(partial(_heartbeat_lease, job.id, worker_id)):
             raise RuntimeError("Workflow lease was lost before conversation completion")
-        completed = await anyio.to_thread.run_sync(
-            partial(_complete, job.id, worker_id)
-        )
+        completed = await anyio.to_thread.run_sync(partial(_complete, job.id, worker_id))
         if not completed:
             raise RuntimeError("Workflow lease was lost before conversation completion")
         LOGGER.info(
@@ -1940,9 +1950,7 @@ async def process_conversation_job(job: WorkflowJob, worker_id: str) -> None:
             job.id,
         )
     except Exception:
-        await anyio.to_thread.run_sync(
-            partial(_mark_conversation_failed, job.id)
-        )
+        await anyio.to_thread.run_sync(partial(_mark_conversation_failed, job.id))
         raise
 
 
@@ -1990,29 +1998,19 @@ async def process_feedback_sync_job(job: WorkflowJob, worker_id: str) -> None:
         raise NonRetryableError("Feedback workflow identity does not match its payload")
 
     try:
-        if not await anyio.to_thread.run_sync(
-            partial(_heartbeat_lease, job.id, worker_id)
-        ):
+        if not await anyio.to_thread.run_sync(partial(_heartbeat_lease, job.id, worker_id)):
             raise RuntimeError("Workflow lease was lost before feedback processing")
-        target = await anyio.to_thread.run_sync(
-            partial(_begin_feedback_sync, job.id, event)
-        )
+        target = await anyio.to_thread.run_sync(partial(_begin_feedback_sync, job.id, event))
         if event.provider == "github":
             reactions = await fetch_github_review_reactions(event)
         else:
-            raise NonRetryableError(
-                f"Unsupported SCM provider: {event.provider}"
-            )
+            raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
         result = await anyio.to_thread.run_sync(
             partial(_reconcile_feedback_reactions, target, reactions)
         )
-        if not await anyio.to_thread.run_sync(
-            partial(_heartbeat_lease, job.id, worker_id)
-        ):
+        if not await anyio.to_thread.run_sync(partial(_heartbeat_lease, job.id, worker_id)):
             raise RuntimeError("Workflow lease was lost before feedback completion")
-        completed = await anyio.to_thread.run_sync(
-            partial(_complete, job.id, worker_id)
-        )
+        completed = await anyio.to_thread.run_sync(partial(_complete, job.id, worker_id))
         if not completed:
             raise RuntimeError("Workflow lease was lost before feedback completion")
         LOGGER.info(
@@ -2030,9 +2028,7 @@ async def process_feedback_sync_job(job: WorkflowJob, worker_id: str) -> None:
             job.id,
         )
     except Exception:
-        await anyio.to_thread.run_sync(
-            partial(_mark_feedback_sync_failed, job.id)
-        )
+        await anyio.to_thread.run_sync(partial(_mark_feedback_sync_failed, job.id))
         raise
 
 
@@ -2049,13 +2045,9 @@ async def process_rule_learning_job(job: WorkflowJob, worker_id: str) -> None:
         raise NonRetryableError("Rule-learning workflow identity does not match its payload")
 
     try:
-        if not await anyio.to_thread.run_sync(
-            partial(_heartbeat_lease, job.id, worker_id)
-        ):
+        if not await anyio.to_thread.run_sync(partial(_heartbeat_lease, job.id, worker_id)):
             raise RuntimeError("Workflow lease was lost before rule learning")
-        work = await anyio.to_thread.run_sync(
-            partial(_begin_rule_learning_job, job.id, event)
-        )
+        work = await anyio.to_thread.run_sync(partial(_begin_rule_learning_job, job.id, event))
         if work.needs_generation:
             result = await anyio.to_thread.run_sync(
                 partial(
@@ -2067,13 +2059,9 @@ async def process_rule_learning_job(job: WorkflowJob, worker_id: str) -> None:
             )
         else:
             result = None
-        if not await anyio.to_thread.run_sync(
-            partial(_heartbeat_lease, job.id, worker_id)
-        ):
+        if not await anyio.to_thread.run_sync(partial(_heartbeat_lease, job.id, worker_id)):
             raise RuntimeError("Workflow lease was lost before rule-learning completion")
-        completed = await anyio.to_thread.run_sync(
-            partial(_complete, job.id, worker_id)
-        )
+        completed = await anyio.to_thread.run_sync(partial(_complete, job.id, worker_id))
         if not completed:
             raise RuntimeError("Workflow lease was lost before rule-learning completion")
         LOGGER.info(
@@ -2089,9 +2077,7 @@ async def process_rule_learning_job(job: WorkflowJob, worker_id: str) -> None:
             job.id,
         )
     except Exception:
-        await anyio.to_thread.run_sync(
-            partial(_mark_rule_learning_job_failed, job.id)
-        )
+        await anyio.to_thread.run_sync(partial(_mark_rule_learning_job_failed, job.id))
         raise
 
 
@@ -2125,10 +2111,7 @@ async def run_once(worker_id: str) -> bool:
         next_status = await anyio.to_thread.run_sync(
             partial(_fail, job.id, worker_id, retryable=retryable)
         )
-        if (
-            job.job_type == "review_pull_request"
-            and next_status in {"dead", "failed"}
-        ):
+        if job.job_type == "review_pull_request" and next_status in {"dead", "failed"}:
             failure = terminal_review_failure(
                 job.id,
                 retries_exhausted=next_status == "dead",
@@ -2223,17 +2206,18 @@ def _log_heartbeat(worker_id: str, processed: int) -> None:
 
 
 async def run_forever(worker_id: str, poll_seconds: float) -> None:
-    scheduler_seconds = float(
-        os.environ.get("FEEDBACK_SYNC_SCHEDULER_SECONDS", "60")
-    )
+    scheduler_seconds = float(os.environ.get("FEEDBACK_SYNC_SCHEDULER_SECONDS", "60"))
     if scheduler_seconds <= 0:
         raise ValueError("FEEDBACK_SYNC_SCHEDULER_SECONDS must be positive")
-    learning_scheduler_seconds = float(
-        os.environ.get("RULE_LEARNING_SCHEDULER_SECONDS", "300")
-    )
+    learning_scheduler_seconds = float(os.environ.get("RULE_LEARNING_SCHEDULER_SECONDS", "300"))
     if learning_scheduler_seconds <= 0:
         raise ValueError("RULE_LEARNING_SCHEDULER_SECONDS must be positive")
     heartbeat_seconds = _heartbeat_seconds()
+    relay_poll_seconds = float(os.environ.get("DIFFUSE_RELAY_POLL_SECONDS", "5"))
+    if not math.isfinite(relay_poll_seconds) or relay_poll_seconds <= 0:
+        raise ValueError("DIFFUSE_RELAY_POLL_SECONDS must be positive")
+    relay_enabled = relay_client.configured()
+    next_relay_poll = 0.0
     next_feedback_schedule = 0.0
     next_learning_schedule = 0.0
     next_stranded_reconcile = 0.0
@@ -2246,6 +2230,16 @@ async def run_forever(worker_id: str, poll_seconds: float) -> None:
     processed_since_heartbeat = 0
     while True:
         now = time.monotonic()
+        if relay_enabled and now >= next_relay_poll:
+            try:
+                received = await relay_client.pull_once()
+            except Exception:
+                LOGGER.exception("Failed to poll the Diffuse integration relay")
+                next_relay_poll = now + relay_poll_seconds
+            else:
+                # Drain a backlog without an artificial delay. An empty queue
+                # falls back to the configured interval.
+                next_relay_poll = now if received else now + relay_poll_seconds
         if heartbeat_seconds and now >= next_heartbeat:
             _log_heartbeat(worker_id, processed_since_heartbeat)
             processed_since_heartbeat = 0
@@ -2263,9 +2257,7 @@ async def run_forever(worker_id: str, poll_seconds: float) -> None:
             next_stranded_reconcile = now + STRANDED_REVIEW_INTERVAL_SECONDS
         if now >= next_feedback_schedule:
             try:
-                scheduled = await anyio.to_thread.run_sync(
-                    _schedule_feedback_syncs
-                )
+                scheduled = await anyio.to_thread.run_sync(_schedule_feedback_syncs)
                 if scheduled:
                     LOGGER.info(
                         "Scheduled review feedback synchronization jobs count=%s",
@@ -2276,9 +2268,7 @@ async def run_forever(worker_id: str, poll_seconds: float) -> None:
             next_feedback_schedule = now + scheduler_seconds
         if now >= next_learning_schedule:
             try:
-                scheduled = await anyio.to_thread.run_sync(
-                    _schedule_rule_learning
-                )
+                scheduled = await anyio.to_thread.run_sync(_schedule_rule_learning)
                 if scheduled:
                     LOGGER.info(
                         "Scheduled suggested-rule generation jobs count=%s",
@@ -2310,6 +2300,14 @@ def _probe_positive_int(name: str) -> None:
     Repeating the real defaults here would create a second copy to drift.
     """
     _positive_int(name, 1)
+
+
+def _probe_positive_float(name: str) -> None:
+    value = os.environ.get(name)
+    if value is not None:
+        number = float(value)
+        if not math.isfinite(number) or number <= 0:
+            raise ValueError(f"{name} must be positive")
 
 
 def _probe_base_url(name: str, default: str) -> None:
@@ -2406,6 +2404,10 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("GITHUB_API_URL", partial(_probe_base_url, "GITHUB_API_URL", "https://api.github.com")),
     ("GITHUB_WEB_URL", partial(_probe_base_url, "GITHUB_WEB_URL", "https://github.com")),
     ("GitHub App authentication", validate_app_configuration),
+    (
+        "DIFFUSE_RELAY_POLL_SECONDS",
+        partial(_probe_positive_float, "DIFFUSE_RELAY_POLL_SECONDS"),
+    ),
 )
 
 
@@ -2430,6 +2432,24 @@ def validate_worker_credentials() -> None:
     the probe list exists to name.
     """
     verify_embedding_credential()
+    model_config = load_model_execution_config()
+    if model_config.executor is ModelExecutor.LITELLM:
+        return
+    # Imported only for CLI deployments so provider-only workers do not load
+    # the Unix-socket client.
+    from service.model_runner_client import runner_health
+
+    try:
+        health = runner_health(model_config.runner_socket)
+    except RuntimeError as error:
+        raise ValueError(
+            f"{model_config.executor.value} runner is unavailable: {error}"
+        ) from error
+    if model_config.executor.value not in health.supported_executors:
+        raise ValueError(
+            f"{model_config.executor.value} is not capability-gated as ready by "
+            "the configured model runner"
+        )
 
 
 def main() -> None:

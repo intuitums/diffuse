@@ -25,6 +25,9 @@ def test_frozen_baseline_catalog_is_packaged_and_contract_is_parseable():
         (6, "oauth_login"),
         (7, "webhook_rejections"),
         (8, "review_provenance"),
+        (9, "integration_relay"),
+        (10, "remove_cli_oauth_sessions"),
+        (11, "model_execution_foundation"),
     ]
     assert catalog[0].checksum == BASELINE_SCHEMA_SHA256
     contract = _baseline_contract(catalog[0].sql)
@@ -42,9 +45,7 @@ def test_frozen_baseline_catalog_is_packaged_and_contract_is_parseable():
 
 
 def test_catalog_rejects_an_edited_baseline(tmp_path: Path):
-    (tmp_path / "schema.sql").write_text(
-        "CREATE TABLE IF NOT EXISTS changed (id BIGINT);\n"
-    )
+    (tmp_path / "schema.sql").write_text("CREATE TABLE IF NOT EXISTS changed (id BIGINT);\n")
 
     with pytest.raises(MigrationDriftError, match="frozen version-1"):
         load_migration_catalog(tmp_path)

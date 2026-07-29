@@ -1,4 +1,4 @@
-"""GitHub OAuth exchange for the Diffuse CLI sign-in flow.
+"""GitHub OAuth exchange for the hosted relay's node-pairing flow.
 
 Diffuse acts as a confidential client: the client secret is read from a
 file-backed deployment secret at call time and never leaves this process. The
@@ -136,6 +136,16 @@ def build_app_install_url(*, state: str) -> str | None:
         return None
     query = urlencode({"state": state})
     return f"{github_web_url()}/apps/{slug}/installations/new?{query}"
+
+
+def validate_gateway_oauth_configuration() -> None:
+    """Fail gateway readiness when its browser installation flow is incomplete."""
+    oauth_client_id()
+    oauth_client_secret()
+    if build_app_install_url(state="n" * 43) is None:
+        raise GitHubOAuthConfigurationError(
+            "GITHUB_APP_SLUG is required by the integration gateway"
+        )
 
 
 def validate_authorization_code(value: str) -> str:

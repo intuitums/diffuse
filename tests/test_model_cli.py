@@ -1,8 +1,11 @@
 import argparse
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 from service import model_cli
 from service.model_cli import model_status
+from service.model_config import ModelExecutor
 
 
 def test_openai_model_status_reports_names_without_secret(
@@ -13,6 +16,9 @@ def test_openai_model_status_reports_names_without_secret(
 
     status = model_status()
 
+    assert status["executor"] == "litellm"
+    assert status["execution_mode"] == "provider_api"
+    assert status["authentication_kind"] == "api_key"
     assert status["provider"] == "openai"
     assert status["credential_configured"] is True
     assert status["credential_env_names"] == ("OPENAI_API_KEY", "OPENAI_KEY")
@@ -25,6 +31,7 @@ def test_anthropic_model_reports_missing_key(monkeypatch) -> None:
 
     status = model_status()
 
+    assert status["authentication_kind"] == "api_key"
     assert status["provider"] == "anthropic"
     assert status["credential_configured"] is False
 
@@ -65,6 +72,7 @@ def test_vertex_live_check_uses_application_default_credentials(
     model_cli._run(argparse.Namespace(live=True))
 
     status = json.loads(capsys.readouterr().out)
+    assert status["authentication_kind"] == "ambient"
     assert calls == [model]
     assert status["credential_configured"] is True
     assert status["live_verified"] is True
@@ -86,6 +94,31 @@ def test_vertex_live_check_attempts_ambient_adc_without_static_hints(
     model_cli._run(argparse.Namespace(live=True))
 
     status = json.loads(capsys.readouterr().out)
+    assert status["authentication_kind"] == "ambient"
     assert calls == [model]
     assert status["credential_configured"] is False
+    assert status["live_verified"] is True
+
+
+def test_cli_live_check_probes_runner_and_real_generation(monkeypatch, capsys):
+    config = SimpleNamespace(
+        executor=ModelExecutor.CODEX_CLI,
+        review_model="default",
+        verifier_model="default",
+        runner_socket=Path("/tmp/diffuse-model-runner.sock"),
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(model_cli, "load_model_execution_config", lambda: config)
+    monkeypatch.setattr(
+        model_cli,
+        "runner_health",
+        lambda socket_path: SimpleNamespace(supported_executors=["codex-cli"]),
+    )
+    monkeypatch.setattr(model_cli, "verify_model_connection", calls.append)
+
+    model_cli._run(argparse.Namespace(live=True))
+
+    status = json.loads(capsys.readouterr().out)
+    assert calls == ["default"]
+    assert status["runner_reachable"] is True
     assert status["live_verified"] is True
