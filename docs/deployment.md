@@ -163,11 +163,35 @@ An index job that completes has already agreed with the constraint; one that
 prints that line disagrees, and no repository will be reviewable until the model
 changes.
 
-For the cloud providers, ambient credential chains already work and are
-preferable to a stored key: `bedrock/…` resolves the AWS chain (so an instance
-role or IRSA works) and `vertex_ai/…` resolves Google application default
-credentials. Both apply to `REVIEW_MODEL`; note that `boto3` is not a Diffuse
-runtime dependency, so Bedrock needs it installed first.
+### Embeddings with no stored credential at all
+
+If the deployment already runs in AWS, Google Cloud, or Azure, there is a better
+answer than storing any key: point `EMBEDDING_MODEL` at that cloud's provider
+prefix and let the ambient identity authenticate. Diffuse resolves a credential
+itself only for OpenAI model names, so for these prefixes it passes no key and
+LiteLLM uses the provider's own chain — an EC2 instance profile, IRSA or EKS Pod
+Identity, GKE Workload Identity, or an Azure managed identity. `EMBEDDING_API_BASE`
+is not involved, and no secret reaches `.env`.
+
+The 1536-dimension constraint still applies, and it eliminates each cloud's
+default embedding model, so the combination matters:
+
+| `EMBEDDING_MODEL` | Identity | 1536? |
+| --- | --- | --- |
+| `bedrock/amazon.titan-embed-text-v1` | IAM (instance profile, IRSA, Pod Identity) | yes, fixed |
+| `bedrock/cohere.embed-v4` | IAM | yes, the default `output_dimension` |
+| `bedrock/amazon.titan-embed-text-v2:0` | IAM | **no — 1024, fails every index job** |
+| `azure/text-embedding-3-small` | Entra ID managed identity | yes, the default |
+| `vertex_ai/text-embedding-005` | ADC / Workload Identity | **no — caps at 768** |
+
+Bedrock additionally needs `boto3`, which is not a Diffuse runtime dependency.
+
+Two caveats worth knowing before choosing this path. Azure is the only one of
+the three whose vendor documentation covers keyless auth on the embeddings
+endpoint specifically, and the only one that can prove keys are off by setting
+`disableLocalAuth` on the resource. And `vertex_ai/gemini-embedding-001` can
+reach 1536 only through an `output_dimensionality` parameter that Diffuse does
+not send, so it is not usable here today even though the model supports it.
 
 ### Browser sign-in is not usable yet
 
