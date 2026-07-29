@@ -44,15 +44,53 @@ def _embedding_from_item(item: object) -> list[float]:
     return list(value)
 
 
+def embedding_api_base() -> str | None:
+    """An operator-run OpenAI-compatible embedding endpoint, or None.
+
+    This is the embedding counterpart of ``REVIEW_API_BASE``, and it exists so
+    that running Diffuse does not require an OpenAI account. Any server speaking
+    the OpenAI embeddings API works -- Ollama, vLLM, Text Embeddings Inference,
+    a LiteLLM proxy, or Azure OpenAI through a compatible gateway.
+
+    LiteLLM would also honour an ambient ``OPENAI_BASE_URL``/``OPENAI_API_BASE``,
+    and that does redirect embeddings today. It is the wrong lever: those names
+    are read for *every* OpenAI-family call, so an operator redirecting
+    embeddings to a local server would silently redirect an OpenAI review model
+    to the same server, sending a managed provider's model name and credential
+    to a host that is not theirs. That is the misrouting ``REVIEW_API_BASE``
+    already guards against for review. This variable is passed per call, so it
+    moves embeddings and nothing else.
+
+    ``service.worker`` validates the URL at startup through the same
+    ``_probe_base_url`` used for the GitHub origins, which is where the scheme
+    and credential checks live; ``indexer`` cannot import them without depending
+    on ``service``.
+    """
+    return os.environ.get("EMBEDDING_API_BASE", "").strip().rstrip("/") or None
+
+
 def _resolves_own_credential(model: str) -> bool:
     """Whether Diffuse resolves this model's key rather than LiteLLM's ambient chain."""
     return model.startswith(("openai/", "text-embedding-"))
 
 
+# The OpenAI client refuses to issue a request without a credential -- "Missing
+# credentials. Please pass an `api_key` ..." -- even when `api_base` points at a
+# server on the operator's own network that ignores the header entirely. Sending
+# a constant to that server is what an operator would otherwise be told to do by
+# hand, so Diffuse does it instead of failing on a credential nobody needs. This
+# is not a secret and never reaches a managed provider: it is used only when the
+# operator configured their own endpoint and set no key.
+_SELF_HOSTED_PLACEHOLDER_KEY = "diffuse-self-hosted-endpoint"
+
+
 def _provider_api_key(model: str) -> str | None:
-    if _resolves_own_credential(model):
-        return os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_KEY")
-    return None
+    if not _resolves_own_credential(model):
+        return None
+    configured = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_KEY")
+    if configured:
+        return configured
+    return _SELF_HOSTED_PLACEHOLDER_KEY if embedding_api_base() else None
 
 
 def verify_embedding_credential() -> None:
@@ -70,15 +108,24 @@ def verify_embedding_credential() -> None:
     dead-letters, and reports nothing an operator can act on.
     """
     model = embedding_model()
-    if _resolves_own_credential(model) and not _provider_api_key(model):
-        raise ValueError(
-            f"EMBEDDING_MODEL is {model!r}, which authenticates with "
-            "OPENAI_API_KEY, but neither OPENAI_API_KEY nor OPENAI_KEY is set. "
-            "Indexing a repository requires embeddings, and a repository with "
-            "no index cannot be reviewed. Set OPENAI_API_KEY, or point "
-            "EMBEDDING_MODEL at a provider that authenticates from the ambient "
-            "environment."
-        )
+    if not _resolves_own_credential(model) or _provider_api_key(model):
+        return
+    if embedding_api_base():
+        # An operator-run endpoint decides its own authentication, and most
+        # self-hosted embedding servers accept an unauthenticated request from
+        # inside the deployment's own network. Demanding an OPENAI_API_KEY here
+        # would force an operator with no OpenAI account to invent a placeholder
+        # to get past a check that is about OpenAI's credential, not theirs.
+        return
+    raise ValueError(
+        f"EMBEDDING_MODEL is {model!r}, which authenticates with "
+        "OPENAI_API_KEY, but neither OPENAI_API_KEY nor OPENAI_KEY is set. "
+        "Indexing a repository requires embeddings, and a repository with "
+        "no index cannot be reviewed. Set OPENAI_API_KEY, point "
+        "EMBEDDING_API_BASE at an OpenAI-compatible endpoint you run, or point "
+        "EMBEDDING_MODEL at a provider that authenticates from the ambient "
+        "environment."
+    )
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
@@ -95,6 +142,7 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
                 model=model,
                 input=batch,
                 api_key=_provider_api_key(model),
+                api_base=embedding_api_base(),
             )
         except (AuthenticationError, PermissionDeniedError) as error:
             # A rejected or revoked key is permanent: the mirror is re-cloned and

@@ -2315,6 +2315,18 @@ def _probe_base_url(name: str, default: str) -> None:
     normalize_base_url(os.environ.get(name, default), field_name=name)
 
 
+def _probe_optional_base_url(name: str) -> None:
+    """Validate a base URL that is legitimately unset.
+
+    ``_probe_base_url`` takes a default because its variables always resolve to
+    an origin. An optional endpoint has no default to fall back on, and an unset
+    value must stay valid rather than being normalized as the empty string.
+    """
+    configured = os.environ.get(name, "").strip()
+    if configured:
+        normalize_base_url(configured, field_name=name)
+
+
 # Every configuration value the worker reads once a job has been claimed, in one
 # place. `run_once` classifies ValueError as non-retryable -- deliberately, since
 # NonRetryableError subclasses it -- so a bare env-parsing ValueError raised
@@ -2328,6 +2340,7 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("EMBEDDING_MODEL", embedding_model),
     ("EMBEDDING_DIMENSIONS", embedding_dimensions),
     ("EMBEDDING_BATCH_SIZE", embedding_batch_size),
+    ("EMBEDDING_API_BASE", partial(_probe_optional_base_url, "EMBEDDING_API_BASE")),
     ("MAX_CONTEXT_CHUNKS", max_context_chunks),
     ("MAX_CONTEXT_CHARS", max_context_chars),
     ("MIN_CONTEXT_SIMILARITY", minimum_similarity),
