@@ -2,7 +2,11 @@
 
 Date: 2026-07-25
 
-Status: Accepted
+Status: Superseded by [ADR 0042](0042-source-available-self-hosted-distribution.md).
+Diffuse is proprietary, source-available software under BSL 1.1 and self-hosted
+only; the commercial-agreement distribution and the managed cloud service
+described below are withdrawn. The PostgreSQL-authoritative decision survives
+in ADR 0042.
 
 ## Context
 
