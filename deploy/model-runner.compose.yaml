@@ -1,0 +1,15 @@
+# Opt-in bridge from the containerized worker to a host-authenticated CLI runner.
+# The host directory must already exist; see ../docs/model-execution.md.
+services:
+  worker:
+    group_add:
+      - "${DIFFUSE_MODEL_RUNNER_GID:?Set DIFFUSE_MODEL_RUNNER_GID to the host runner group GID}"
+    environment:
+      DIFFUSE_MODEL_RUNNER_SOCKET: /run/diffuse/model-runner.sock
+    volumes:
+      - type: bind
+        source: ${DIFFUSE_MODEL_RUNNER_DIR:-/run/diffuse}
+        target: /run/diffuse
+        read_only: true
+        bind:
+          create_host_path: false

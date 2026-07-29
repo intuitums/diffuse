@@ -40,6 +40,8 @@ from service import (
     evaluation_cli,
     learning_cli,
     model_cli,
+    model_runner,
+    relay_cli,
     repository_cli,
     token_cli,
 )
@@ -83,6 +85,7 @@ SECRET_ENV_NAMES = (
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "DIFFUSE_API_TOKEN",
+    "DIFFUSE_RELAY_PAIRING_CODE",
     "GITHUB_TOKEN",
     "GITHUB_WEBHOOK_SECRET",
     "POSTGRES_PASSWORD",
@@ -1030,6 +1033,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
     )
     token_cli.configure_parser(token)
 
+    relay = subparsers.add_parser(
+        "relay",
+        help="Pair and manage a self-hosted node's hosted App connection",
+    )
+    relay_cli.configure_parser(relay)
+
     database = subparsers.add_parser(
         "database",
         help="Inspect, migrate, and verify the PostgreSQL schema",
@@ -1048,6 +1057,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
     )
     model_cli.configure_parser(model)
 
+    model_runner_command = subparsers.add_parser(
+        "model-runner",
+        help="Run the local Codex/Claude CLI bridge",
+    )
+    model_runner.configure_parser(model_runner_command)
+
     # Every subparser must appear here, or an unknown flag typed on that
     # subcommand is reported against the top-level parser and prints the wrong
     # usage block -- the defect this mapping exists to fix.
@@ -1060,6 +1075,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
         "database": database,
         "evaluate": evaluate,
         "model": model,
+        "model-runner": model_runner_command,
     }
     return parser, commands
 

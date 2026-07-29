@@ -7,14 +7,15 @@ token expires after one hour, and nothing here renewed it, so the option that
 sounded correct silently stopped working mid-afternoon and the option that
 worked was a personal access token carrying a human's identity.
 
-This module closes that gap. Given an App id, an installation id, and the App's
-private key, it mints a short-lived RS256 JWT, exchanges it for an installation
-token, and caches that token until shortly before it expires.
+This module closes that gap in both supported deployment modes. A standalone
+node uses an App id, installation id, and private key locally. A relay node
+exchanges its node credential with the hosted integration gateway, where the
+App identity remains. Both paths cache the returned installation token until
+shortly before it expires.
 
-``github_token()`` is the single resolver every GitHub call site uses. When App
-credentials are configured it returns a live installation token; otherwise it
-falls back to ``GITHUB_TOKEN``, so a deployment that has not migrated keeps
-working unchanged.
+``github_token()`` is the single resolver every GitHub call site uses. It
+prefers relay credentials, then standalone App credentials, and finally the
+compatibility-only ``GITHUB_TOKEN`` fallback.
 
 The exchange is synchronous, and some callers are async request handlers. That
 is a deliberate trade: the call happens roughly once an hour per process rather
@@ -26,6 +27,7 @@ is to refresh from the worker's existing scheduler rather than lazily here.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -46,10 +48,13 @@ APP_ID_VARIABLE = "GITHUB_APP_ID"
 INSTALLATION_ID_VARIABLE = "GITHUB_APP_INSTALLATION_ID"
 PRIVATE_KEY_FILE_VARIABLE = "GITHUB_APP_PRIVATE_KEY_FILE"
 PRIVATE_KEY_VARIABLE = "GITHUB_APP_PRIVATE_KEY"
+RELAY_URL_VARIABLE = "DIFFUSE_RELAY_URL"
+RELAY_TOKEN_VARIABLE = "DIFFUSE_RELAY_TOKEN"
 DEFAULT_GITHUB_API_VERSION = "2026-03-10"
 
 MAX_PRIVATE_KEY_BYTES = 16_384
 MAX_TOKEN_RESPONSE_BYTES = 64_000
+MAX_INSTALLATION_RESPONSE_BYTES = 256_000
 
 # GitHub accepts either the numeric App id or the App's client id as `iss`.
 APP_ID_PATTERN = re.compile(r"[0-9]{1,20}|Iv[0-9A-Za-z._-]{6,253}")
@@ -80,20 +85,33 @@ class GitHubAppConfigurationError(GitHubAppError, ValueError):
 
 
 @dataclass(frozen=True)
-class AppCredentials:
+class AppIdentity:
     app_id: str
-    installation_id: str
     private_key: str
 
 
+@dataclass(frozen=True)
+class AppCredentials(AppIdentity):
+    installation_id: str
+
+
+@dataclass(frozen=True)
+class RelayCredentials:
+    base_url: str
+    token: str
+
+
+@dataclass(frozen=True)
+class GitHubInstallation:
+    id: int
+    account_login: str
+
+
 _cache_lock = threading.Lock()
-_cached_token: str | None = None
-_cached_expires_at: float = 0.0
-# Credentials are resolved per exchange rather than cached, so rotating the key
-# file takes effect on the next refresh. This records what the cached token was
-# minted from, so rotating to a *different* installation invalidates it rather
-# than serving a token for the previous one until it expires.
-_cached_identity: tuple[str, str] | None = None
+# The gateway serves many installations, while a node serves one. A bounded
+# dictionary avoids serially evicting every installation token on the gateway.
+_cached_tokens: dict[tuple[str, str], tuple[str, float]] = {}
+MAX_CACHED_INSTALLATION_TOKENS = 10_000
 
 
 def _api_url() -> str:
@@ -160,25 +178,17 @@ def _private_key() -> str | None:
     return inline.replace("\\n", "\n").strip() or None
 
 
-def app_credentials() -> AppCredentials | None:
-    """Resolve App credentials, or None when App authentication is not in use.
-
-    Returns None only when *nothing* is configured. A partial configuration
-    raises instead: silently falling back to ``GITHUB_TOKEN`` because one of
-    three variables was missing is how a deployment ends up authenticating as
-    something other than what its operator believes.
-    """
+def app_identity() -> AppIdentity | None:
+    """Resolve the long-lived App identity without selecting an installation."""
     app_id = os.environ.get(APP_ID_VARIABLE, "").strip()
-    installation_id = os.environ.get(INSTALLATION_ID_VARIABLE, "").strip()
     private_key = _private_key()
-    if not any((app_id, installation_id, private_key)):
+    if not any((app_id, private_key)):
         return None
 
     missing = [
         name
         for name, value in (
             (APP_ID_VARIABLE, app_id),
-            (INSTALLATION_ID_VARIABLE, installation_id),
             (f"{PRIVATE_KEY_FILE_VARIABLE} or {PRIVATE_KEY_VARIABLE}", private_key),
         )
         if not value
@@ -186,12 +196,36 @@ def app_credentials() -> AppCredentials | None:
     if missing:
         raise GitHubAppConfigurationError(
             "GitHub App authentication is partially configured; missing "
-            f"{', '.join(missing)}. Set all three, or unset them all to "
-            "authenticate with GITHUB_TOKEN instead."
+            f"{', '.join(missing)}. Set both identity values, or unset them."
         )
     if not APP_ID_PATTERN.fullmatch(app_id):
         raise GitHubAppConfigurationError(
             f"{APP_ID_VARIABLE} must be the App's numeric id or its client id"
+        )
+    if "PRIVATE KEY" not in private_key:
+        raise GitHubAppConfigurationError(
+            "The GitHub App private key is not a PEM document. Download the "
+            "`.pem` GitHub generates and provide its contents unmodified."
+        )
+    return AppIdentity(app_id=app_id, private_key=private_key)
+
+
+def app_credentials() -> AppCredentials | None:
+    """Resolve standalone App credentials, or None when App auth is unused."""
+    identity = app_identity()
+    installation_id = os.environ.get(INSTALLATION_ID_VARIABLE, "").strip()
+    if identity is None and not installation_id:
+        return None
+    if identity is None or not installation_id:
+        missing = (
+            f"{APP_ID_VARIABLE} and {PRIVATE_KEY_FILE_VARIABLE} or {PRIVATE_KEY_VARIABLE}"
+            if identity is None
+            else INSTALLATION_ID_VARIABLE
+        )
+        raise GitHubAppConfigurationError(
+            "GitHub App authentication is partially configured; missing "
+            f"{missing}. A hosted relay configures the App identity without an "
+            "installation only in the `diffuse gateway` process."
         )
     if not INSTALLATION_ID_PATTERN.fullmatch(installation_id):
         raise GitHubAppConfigurationError(
@@ -199,15 +233,49 @@ def app_credentials() -> AppCredentials | None:
             "It is the trailing number in the installation's settings URL, not "
             "the App id."
         )
-    if "PRIVATE KEY" not in private_key:
+    return AppCredentials(
+        app_id=identity.app_id,
+        private_key=identity.private_key,
+        installation_id=installation_id,
+    )
+
+
+def app_credentials_for_installation(installation_id: int) -> AppCredentials:
+    if (
+        isinstance(installation_id, bool)
+        or not isinstance(installation_id, int)
+        or installation_id <= 0
+    ):
+        raise GitHubAppConfigurationError("GitHub installation id must be positive")
+    identity = app_identity()
+    if identity is None:
+        raise GitHubAppConfigurationError("GitHub App identity is not configured")
+    return AppCredentials(
+        app_id=identity.app_id,
+        private_key=identity.private_key,
+        installation_id=str(installation_id),
+    )
+
+
+def relay_credentials() -> RelayCredentials | None:
+    base_url = os.environ.get(RELAY_URL_VARIABLE, "").strip()
+    token = os.environ.get(RELAY_TOKEN_VARIABLE, "").strip()
+    if not any((base_url, token)):
+        return None
+    if not base_url or not token:
+        missing = RELAY_URL_VARIABLE if not base_url else RELAY_TOKEN_VARIABLE
         raise GitHubAppConfigurationError(
-            "The GitHub App private key is not a PEM document. Download the "
-            "`.pem` GitHub generates and provide its contents unmodified."
+            f"Diffuse relay authentication is partially configured; missing {missing}"
         )
-    return AppCredentials(app_id, installation_id, private_key)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{40,128}", token):
+        raise GitHubAppConfigurationError(f"{RELAY_TOKEN_VARIABLE} is malformed")
+    return RelayCredentials(
+        base_url=normalize_base_url(base_url, field_name=RELAY_URL_VARIABLE),
+        token=token,
+    )
 
 
-def _mint_app_jwt(credentials: AppCredentials) -> str:
+def _mint_app_jwt(credentials: AppIdentity) -> str:
     issued_at = int(time.time()) - JWT_BACKDATE_SECONDS
     try:
         return jwt.encode(
@@ -219,13 +287,13 @@ def _mint_app_jwt(credentials: AppCredentials) -> str:
             credentials.private_key,
             algorithm="RS256",
         )
-    except Exception as error:
+    except Exception:
         # PyJWT surfaces a malformed or non-RSA key as a bare ValueError whose
         # message quotes the key material, which must not reach a log.
         raise GitHubAppConfigurationError(
             "The GitHub App private key could not sign a token. It must be the "
             "unmodified RSA PEM GitHub issued for this App."
-        ) from error
+        ) from None
 
 
 def validate_app_configuration() -> None:
@@ -235,9 +303,40 @@ def validate_app_configuration() -> None:
     malformed PEM is deterministic configuration. Catch it at worker startup
     rather than dead-lettering the first claimed review job.
     """
+    relay = relay_credentials()
+    if relay is not None:
+        if any(
+            os.environ.get(name, "").strip()
+            for name in (
+                APP_ID_VARIABLE,
+                INSTALLATION_ID_VARIABLE,
+                PRIVATE_KEY_FILE_VARIABLE,
+                PRIVATE_KEY_VARIABLE,
+                "GITHUB_TOKEN",
+            )
+        ):
+            raise GitHubAppConfigurationError(
+                "A Diffuse node using DIFFUSE_RELAY_URL must not also configure "
+                "GitHub App credentials or GITHUB_TOKEN"
+            )
+        return
     credentials = app_credentials()
     if credentials is not None:
         _mint_app_jwt(credentials)
+
+
+def validate_gateway_app_configuration() -> None:
+    identity = app_identity()
+    if identity is None:
+        raise GitHubAppConfigurationError(
+            "The integration gateway requires GITHUB_APP_ID and a private key"
+        )
+    if os.environ.get(INSTALLATION_ID_VARIABLE, "").strip():
+        raise GitHubAppConfigurationError(
+            "The integration gateway selects installations per node; "
+            f"{INSTALLATION_ID_VARIABLE} must be unset"
+        )
+    _mint_app_jwt(identity)
 
 
 def _exchange_for_installation_token(credentials: AppCredentials) -> tuple[str, float]:
@@ -300,44 +399,172 @@ def _exchange_for_installation_token(credentials: AppCredentials) -> tuple[str, 
     return token, time.monotonic() + 3600.0
 
 
+def verify_installation(installation_id: int) -> GitHubInstallation:
+    """Verify an installation id against GitHub using the relay's App identity."""
+    credentials = app_credentials_for_installation(installation_id)
+    try:
+        response = httpx.get(
+            f"{_api_url()}/app/installations/{credentials.installation_id}",
+            headers={
+                "Authorization": f"Bearer {_mint_app_jwt(credentials)}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": os.environ.get(
+                    "GITHUB_API_VERSION",
+                    DEFAULT_GITHUB_API_VERSION,
+                ),
+                "User-Agent": "diffuse-integration-relay",
+            },
+            timeout=scm_api_timeout_seconds(),
+        )
+    except httpx.HTTPError as error:
+        raise GitHubAppError("Could not reach GitHub to verify the installation") from error
+    if response.status_code == httpx.codes.UNAUTHORIZED:
+        raise GitHubAppConfigurationError(
+            "GitHub rejected the App JWT while verifying an installation"
+        )
+    if response.status_code == httpx.codes.NOT_FOUND:
+        raise GitHubAppError("GitHub App installation could not be verified")
+    if response.status_code >= httpx.codes.BAD_REQUEST:
+        raise GitHubAppError(
+            f"GitHub refused installation verification (HTTP {response.status_code})"
+        )
+    if len(response.content) > MAX_INSTALLATION_RESPONSE_BYTES:
+        raise GitHubAppError("GitHub returned an implausibly large installation response")
+    try:
+        payload = response.json()
+        returned_id = payload["id"]
+        account_login = payload["account"]["login"]
+    except (ValueError, KeyError, TypeError) as error:
+        raise GitHubAppError(
+            "GitHub returned an installation response Diffuse could not read"
+        ) from error
+    if (
+        isinstance(returned_id, bool)
+        or not isinstance(returned_id, int)
+        or returned_id != installation_id
+        or not isinstance(account_login, str)
+        or not 1 <= len(account_login) <= 255
+        or "\x00" in account_login
+    ):
+        raise GitHubAppError("GitHub returned invalid installation identity")
+    return GitHubInstallation(id=returned_id, account_login=account_login)
+
+
+def _exchange_relay_token(credentials: RelayCredentials) -> tuple[str, float]:
+    try:
+        response = httpx.post(
+            f"{credentials.base_url}/relay/v1/github/token",
+            headers={
+                "Authorization": f"Bearer {credentials.token}",
+                "Accept": "application/json",
+                "User-Agent": "diffuse-node",
+            },
+            timeout=scm_api_timeout_seconds(),
+        )
+    except httpx.HTTPError as error:
+        raise GitHubAppError("Could not reach the Diffuse integration relay") from error
+    if response.status_code in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
+        raise GitHubAppConfigurationError(
+            "The Diffuse integration relay rejected this node credential"
+        )
+    if response.status_code >= httpx.codes.BAD_REQUEST:
+        raise GitHubAppError(
+            f"Diffuse integration relay refused a GitHub token (HTTP {response.status_code})"
+        )
+    if len(response.content) > MAX_TOKEN_RESPONSE_BYTES:
+        raise GitHubAppError("Diffuse relay returned an implausibly large token response")
+    try:
+        payload = response.json()
+        token = payload["token"]
+        expires_in = payload["expiresIn"]
+    except (ValueError, KeyError, TypeError) as error:
+        raise GitHubAppError(
+            "Diffuse relay returned a token response this node could not read"
+        ) from error
+    if (
+        not isinstance(token, str)
+        or not token
+        or isinstance(expires_in, bool)
+        or not isinstance(expires_in, int)
+        or not 300 <= expires_in <= 3600
+    ):
+        raise GitHubAppError("Diffuse relay returned invalid GitHub token metadata")
+    return token, time.monotonic() + expires_in
+
+
+def _cached_or_exchange(
+    identity: tuple[str, str],
+    exchange,
+) -> str:
+    with _cache_lock:
+        now = time.monotonic()
+        cached = _cached_tokens.get(identity)
+        if cached is not None and now < cached[1] - TOKEN_REFRESH_MARGIN_SECONDS:
+            return cached[0]
+        token, expires_at = exchange()
+        if len(_cached_tokens) >= MAX_CACHED_INSTALLATION_TOKENS:
+            expired = [
+                key
+                for key, (_token, expiry) in _cached_tokens.items()
+                if now >= expiry - TOKEN_REFRESH_MARGIN_SECONDS
+            ]
+            for key in expired:
+                _cached_tokens.pop(key, None)
+            if len(_cached_tokens) >= MAX_CACHED_INSTALLATION_TOKENS:
+                _cached_tokens.pop(next(iter(_cached_tokens)))
+        _cached_tokens[identity] = (token, expires_at)
+        return token
+
+
 def installation_token(credentials: AppCredentials | None = None) -> str:
     """Return a live installation token, minting one when the cache is cold."""
-    global _cached_token, _cached_expires_at, _cached_identity
-
     credentials = credentials or app_credentials()
     if credentials is None:
         raise GitHubAppConfigurationError(
             "GitHub App authentication is not configured"
         )
     identity = (credentials.app_id, credentials.installation_id)
+    token = _cached_or_exchange(
+        identity,
+        lambda: _exchange_for_installation_token(credentials),
+    )
+    LOGGER.debug(
+        "Resolved a GitHub App installation token for installation %s",
+        credentials.installation_id,
+    )
+    return token
 
-    with _cache_lock:
-        fresh = (
-            _cached_token is not None
-            and _cached_identity == identity
-            and time.monotonic() < _cached_expires_at - TOKEN_REFRESH_MARGIN_SECONDS
-        )
-        if fresh:
-            return _cached_token
 
-        token, expires_at = _exchange_for_installation_token(credentials)
-        _cached_token = token
-        _cached_expires_at = expires_at
-        _cached_identity = identity
-        LOGGER.info(
-            "Minted a GitHub App installation token for installation %s",
-            credentials.installation_id,
-        )
-        return token
+def mint_installation_token_for_installation(installation_id: int) -> tuple[str, int]:
+    """Mint a fresh token for a paired node.
+
+    A fresh exchange lets the relay state the full lifetime accurately. Returning
+    a cached gateway token with a new one-hour lifetime would let the node use it
+    after GitHub had already expired it.
+    """
+    credentials = app_credentials_for_installation(installation_id)
+    token, _expires_at = _exchange_for_installation_token(credentials)
+    return token, 3600
+
+
+def relay_installation_token(credentials: RelayCredentials | None = None) -> str:
+    credentials = credentials or relay_credentials()
+    if credentials is None:
+        raise GitHubAppConfigurationError("Diffuse relay authentication is not configured")
+    identity = (
+        f"relay:{credentials.base_url}",
+        hashlib.sha256(credentials.token.encode()).hexdigest(),
+    )
+    return _cached_or_exchange(
+        identity,
+        lambda: _exchange_relay_token(credentials),
+    )
 
 
 def reset_installation_token_cache() -> None:
     """Drop the cached token. For tests, and for a forced refresh after a 401."""
-    global _cached_token, _cached_expires_at, _cached_identity
     with _cache_lock:
-        _cached_token = None
-        _cached_expires_at = 0.0
-        _cached_identity = None
+        _cached_tokens.clear()
 
 
 def github_token() -> str:
@@ -347,6 +574,9 @@ def github_token() -> str:
     permissions and installation rather than to a person, and expires on its
     own. Falls back to ``GITHUB_TOKEN`` when no App is configured.
     """
+    relay = relay_credentials()
+    if relay is not None:
+        return relay_installation_token(relay)
     credentials = app_credentials()
     if credentials is not None:
         return installation_token(credentials)

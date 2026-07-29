@@ -25,7 +25,8 @@ from service.code_query_models import (
 )
 from service.cross_repository import resolve_cross_repository_context_plan
 from service.mcp_store import McpRemote, resolve_mcp_repository
-from service.review_engine import _call_structured, review_model
+from service.review_engine import call_structured as _call_structured
+from service.review_engine import review_model
 
 CODE_QUERY_PROMPT_VERSION = "grounded-code-query-v1"
 CODE_SEARCH_SCHEMA_VERSION = "diffuse-code-search-v1"
@@ -121,11 +122,7 @@ def resolve_code_query_target(
     )
     related = plan.related_snapshots if include_related else ()
     if authorized_repository_ids is not None:
-        related = tuple(
-            item
-            for item in related
-            if item.repository_id in authorized_repository_ids
-        )
+        related = tuple(item for item in related if item.repository_id in authorized_repository_ids)
     plan = CrossRepositoryContextPlan(
         primary_repository_id=plan.primary_repository_id,
         primary_repository_full_name=plan.primary_repository_full_name,
@@ -193,11 +190,7 @@ def _source_url(
     encoded_repository = quote(repository_name, safe="/")
     encoded_commit = quote(commit_sha, safe="")
     encoded_path = quote(file_path, safe="/")
-    fragment = (
-        f"#L{start_line}"
-        if start_line == end_line
-        else f"#L{start_line}-L{end_line}"
-    )
+    fragment = f"#L{start_line}" if start_line == end_line else f"#L{start_line}-L{end_line}"
     route = f"{encoded_repository}/blob/{encoded_commit}/{encoded_path}"
     return f"{target.remote_url.rstrip('/')}/{route}{fragment}"
 
@@ -275,11 +268,7 @@ def _source_json(target: CodeQueryTarget, source: _CodeSource) -> dict[str, obje
         "retrieval": {
             "reason": source.retrieval_reason,
             "score": round(source.relevance_score, 8),
-            "similarity": (
-                round(source.similarity, 8)
-                if source.similarity is not None
-                else None
-            ),
+            "similarity": (round(source.similarity, 8) if source.similarity is not None else None),
         },
     }
 
@@ -398,9 +387,9 @@ def _packed_evidence(sources: tuple[_CodeSource, ...]) -> tuple[_CodeSource, ...
     selected: list[_CodeSource] = []
     used = 0
     for source in sources[:MAX_ANSWER_SOURCES]:
-        rendered_size = len(source.content) + len(source.repository_name) + len(
-            source.file_path
-        ) + 200
+        rendered_size = (
+            len(source.content) + len(source.repository_name) + len(source.file_path) + 200
+        )
         if selected and used + rendered_size > MAX_ANSWER_CONTEXT_CHARS:
             break
         selected.append(source)
@@ -515,9 +504,7 @@ def ask_codebase(
     limit: int = 8,
 ) -> dict[str, object]:
     if not 1 <= limit <= MAX_ANSWER_SOURCES:
-        raise ValueError(
-            f"limit must be between 1 and {MAX_ANSWER_SOURCES} for codebase answers"
-        )
+        raise ValueError(f"limit must be between 1 and {MAX_ANSWER_SOURCES} for codebase answers")
     question, retrieved_sources, fingerprint = _retrieve(
         target,
         query=question,
@@ -560,8 +547,7 @@ def ask_codebase(
         {
             "statement": claim.statement,
             "citations": [
-                _citation_json(target, citation, sources)
-                for citation in claim.citations
+                _citation_json(target, citation, sources) for citation in claim.citations
             ],
         }
         for claim, sources in grounded
@@ -580,9 +566,7 @@ def ask_codebase(
         "status": "insufficient_evidence" if insufficient else "grounded",
         "answer": answer,
         "claims": [] if insufficient else claims_json,
-        "sources": [
-            _source_json(target, source) for source in evidence_sources
-        ],
+        "sources": [_source_json(target, source) for source in evidence_sources],
         "provenance": {
             "promptVersion": CODE_QUERY_PROMPT_VERSION,
             "model": model,

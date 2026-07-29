@@ -7,7 +7,7 @@
 <p align="center">
   <strong>Code review for the age of AI.</strong>
   <br>
-  Self-hosted, codebase-aware review that keeps your source and your workflow under your control.
+  Self-hosted review with always-on GitHub integration and a local source boundary.
 </p>
 
 <p align="center">
@@ -29,9 +29,13 @@ passes, then publishes commit-pinned findings directly to GitHub. It learns from
 inspectable team feedback, carries context across repositories, and exposes the
 same intelligence through its CLI, REST API, and MCP server.
 
-You run the API, workers, PostgreSQL/pgvector, repository storage, and model
-connections inside infrastructure you control. There is no hosted control plane
-and no Diffuse account to create.
+You run the review engine, PostgreSQL/pgvector, repository storage, and model
+connections inside infrastructure you control. Diffuse's hosted integration
+relay keeps the shared GitHub App callbacks online, buffers events while your
+node is unavailable, and brokers short-lived installation credentials. It does
+not clone repositories or run models. Raw callback bodies—which can contain
+repository metadata and human-authored text—are erased after node
+acknowledgement.
 
 ## Why Diffuse
 
@@ -39,7 +43,7 @@ and no Diffuse account to create.
 | --- | --- |
 | **Review with context** | Understands symbols, imports, calls, inheritance, and related repositories instead of reviewing an isolated diff. |
 | **Find the signal** | Runs focused correctness, security, performance, and test passes, then independently verifies candidates before publishing. |
-| **Stay in control** | Keeps source-derived data in your environment unless you explicitly configure an external model or integration. |
+| **Stay in control** | Keeps repository contents, indexes, review history, and model credentials in your environment unless you explicitly configure an external model. |
 | **Improve with use** | Turns authorized replies and reactions into inspectable rule suggestions that require human approval before activation. |
 | **Meet developers where they work** | Publishes native GitHub reviews and checks, with the same review context available through CLI, REST, and MCP. |
 
@@ -58,36 +62,45 @@ Repository onboarding CLI or versioned REST API
   ├─ maintains a locked bare mirror
   └─ queues the exact default-branch commit for indexing
 
-GitHub push / PR / review-thread webhook and reaction ingestion
-  └─ service.webhook_server
-       ├─ verifies the webhook signature
-       ├─ normalizes an exact commit or PR revision
-       ├─ records authorized review replies as inspectable feedback
-       └─ transactionally deduplicates and queues review/conversation work
-            └─ service.worker
-                 ├─ leases the durable job
-                 ├─ fetches and indexes an exact commit in a disposable worktree
-                 ├─ resolves exact primary + related-repository snapshots
-                 ├─ retrieves graph + lexical + vector context with provenance
-                 ├─ runs specialized structured review passes plus verification
-                 ├─ reconciles authorized 👍/👎 reactions on finding comments
-                 ├─ infers evidence-cited rule suggestions for human moderation
-                 ├─ applies only approved learned-rule versions
-                 └─ publishes provider-native reviews and status idempotently
+Shared Diffuse GitHub App
+  └─ hosted integration relay
+       ├─ verifies and durably buffers the provider delivery
+       ├─ routes it by installation to a paired Diffuse node
+       └─ mints short-lived installation credentials
+            └─ outbound-only self-hosted node
+                 └─ service.webhook_server
+                      ├─ verifies the relay envelope
+                      ├─ normalizes an exact commit or PR revision
+                      ├─ records authorized review replies as inspectable feedback
+                      └─ transactionally deduplicates and queues review work
+                           └─ service.worker
+                                ├─ leases the durable job
+                                ├─ fetches and indexes the exact commit
+                                ├─ resolves primary + related-repository snapshots
+                                ├─ retrieves graph + lexical + vector context
+                                ├─ runs specialized review passes + verification
+                                ├─ reconciles authorized feedback
+                                ├─ proposes rules for human moderation
+                                └─ publishes reviews and status idempotently
 ```
 
-The webhook acknowledges work only after its delivery and review job are
-persisted. Workers use leases, bounded exponential retry, dead-letter state,
-revision deduplication, and queued-job supersession.
+The relay acknowledges GitHub only after buffering the delivery. The node
+acknowledges the relay only after its local webhook workflow accepts the event.
+Workers use leases, bounded exponential retry, dead-letter state, revision
+deduplication, and queued-job supersession.
 
 ## Deployment model
 
-Diffuse is self-hosted. You run the API, workers, PostgreSQL/pgvector,
-repository storage, and model connections in infrastructure you control. There
-is no Diffuse-hosted control plane, no account to create, and no managed
-service. Source-derived data does not leave your environment unless you
-explicitly configure an external model or integration, and the model
-credentials Diffuse uses are your own.
+Diffuse uses a hybrid boundary. You self-host the API, review workers,
+PostgreSQL/pgvector, repository mirrors, and model connections. Diffuse hosts
+only the shared provider App identities, GitHub installation
+authentication/setup and webhook callbacks, installation routing, a durable
+delivery queue, and short-lived credential brokering. A node connects outbound
+and can be offline without losing a queued callback. Source-derived data does
+not enter the relay.
+
+Standalone operation with an operator-owned GitHub App remains supported for
+air-gapped or fully independent deployments.
 
 Permitted self-hosted use requires no separate commercial agreement, license
 key, or registry credential. Diffuse contains no license-enforcement code.
@@ -101,7 +114,9 @@ may not offer it to third parties as a hosted service before the Change Date. Se
 
 The digest-pinned Compose profile and signature-verification instructions live
 in [`deploy/`](deploy/README.md); the root Compose file remains the
-source-workspace development profile.
+source-workspace development profile. Operating the public callback service is
+covered separately in the
+[integration relay deployment guide](docs/integration-relay-deployment.md).
 
 ## Local setup
 
@@ -109,14 +124,14 @@ Requirements:
 
 - Python 3.12+
 - Docker with Compose
-- a GitHub App installed on the target repositories, with its client/App ID,
-  installation ID, and private key available to Diffuse
+- the shared Diffuse GitHub App installed and a relay node credential, or an
+  operator-owned GitHub App for standalone operation
 - an embedding/model provider supported by LiteLLM
 
 ```bash
 cp .env.example .env
-# Fill in POSTGRES_PASSWORD, DIFFUSE_API_TOKEN, the model credentials,
-# and the GitHub App credentials and webhook secret.
+# Fill in POSTGRES_PASSWORD, DIFFUSE_API_TOKEN, model credentials, and the
+# DIFFUSE_RELAY_URL / DIFFUSE_RELAY_TOKEN returned by `diffuse relay pair`.
 
 docker compose up -d --build
 
@@ -212,8 +227,9 @@ common directory. `--resume` retries only if the repository, diff, base,
 untracked choice, index snapshot, policy fingerprint, model, and prompt version
 are unchanged; completed or drifted runs require a new review.
 
-`diffuse model` reports the selected LiteLLM provider, expected credential
-variable names, and readiness booleans without printing secret values.
+`diffuse model` reports the model executor (`litellm` in the current runtime),
+execution mode (`provider_api`), provider, authentication kind, expected
+credential variable names, and readiness booleans without printing secret values.
 `diffuse model --live` makes a small schema-validated request and should be run
 before onboarding the first review repository.
 
@@ -414,8 +430,22 @@ agent launch are not yet implemented. Diffuse already marks findings addressed
 or reopened from exact subsequent review diffs and projects GitHub thread
 state through the comment tools.
 
-Configure a GitHub webhook for `push`, `pull_request`, `issue_comment`, and
-`pull_request_review_comment` events at:
+With the hosted relay, install the shared Diffuse GitHub App and run the
+single-use command shown after installation:
+
+```bash
+diffuse relay pair \
+  --gateway https://integrations.diffuse.example \
+  --code <single-use-code>
+```
+
+Store the returned `gateway_url` and `node_token` as `DIFFUSE_RELAY_URL` and
+`DIFFUSE_RELAY_TOKEN`, then restart the app and worker. The worker polls
+outbound; no webhook port or App private key is required on the node.
+
+For standalone operation only, configure an operator-owned GitHub webhook for
+`push`, `pull_request`, `issue_comment`, and
+`pull_request_review_comment` at:
 
 ```text
 https://your-host.example/webhook/github
@@ -425,8 +455,9 @@ Use the same random value for the webhook's GitHub secret and
 `GITHUB_WEBHOOK_SECRET`. Diffuse refuses webhook requests when the secret is
 missing or the signature is invalid.
 
-GitHub installation tokens are minted from the configured App private key,
-cached in memory, and refreshed before their one-hour expiry. SCM tokens are
+In relay mode, the hosted gateway retains the App private key and gives the
+paired node one-hour installation tokens. In standalone mode, tokens are minted
+from the locally configured App private key. SCM tokens are
 passed to Git only through a non-interactive askpass
 environment. They are not embedded in clone URLs, job payloads, database rows,
 or command arguments. Repository onboarding accepts only the configured
@@ -434,8 +465,8 @@ primary origin or an exact entry in `GITHUB_ALLOWED_INSTANCES`, preventing an
 API request from redirecting askpass credentials to an arbitrary host. GitHub
 Enterprise is selected with `GITHUB_WEB_URL` and `GITHUB_API_URL`. Set
 `GITHUB_GRAPHQL_URL` when its GraphQL endpoint cannot be derived from the REST
-URL. This self-hosted profile still configures one GitHub App installation per
-Diffuse deployment; selecting installation identity per tenant is future work.
+URL. The relay MVP pairs one node to one GitHub App installation; one node
+serving several installations and node failover remain future work.
 
 The version-1 database schema expects 1,536-dimensional embeddings. A release
 that supports another stored dimension must add a numbered migration for both
@@ -443,7 +474,31 @@ that supports another stored dimension must add a numbered migration for both
 `EMBEDDING_DIMENSIONS` consistently, and schedule compatible re-indexing.
 Never edit the frozen baseline migration.
 
-`REVIEW_MODEL` accepts LiteLLM model identifiers. `REVIEW_VERIFIER_MODEL`
+### Model execution and credentials
+
+`REVIEW_EXECUTOR=litellm` remains the production runtime. It calls a configured
+provider API and supports `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, ambient cloud
+credentials, and operator-run OpenAI-compatible endpoints. Diffuse has no
+model-account sign-in callback and does not accept account access or refresh
+tokens.
+
+The backend-neutral execution contract, durable per-stage checkpoints, immutable
+execution-plan provenance, and permissioned local runner ship with production
+Codex and Claude adapters. At runner startup, each adapter must pass executable,
+flag-capability, version, and authentication probes before it appears healthy.
+The worker refuses to start when its selected adapter is not ready. The
+CLI—not Diffuse—owns login, refresh, and credential storage.
+
+| Execution choice | Current status | Credential owner |
+| --- | --- | --- |
+| OpenAI provider API | Available | `OPENAI_API_KEY` in the node's secret store |
+| Anthropic provider API | Available | `ANTHROPIC_API_KEY` in the node's secret store |
+| Other LiteLLM/ambient/self-hosted provider | Available | Provider or node |
+| Codex CLI | Available through the host runner | Codex CLI credential store |
+| Claude Code CLI | Available through the host runner | Claude Code credential store |
+
+`REVIEW_EXECUTOR` accepts `litellm`, `codex-cli`, or `claude-cli`.
+`REVIEW_MODEL` accepts an executor-specific model identifier. `REVIEW_VERIFIER_MODEL`
 optionally selects an independent verifier from another model family.
 OpenAI, Anthropic, Google Gemini, Azure, AWS Bedrock, Ollama, and other LiteLLM
 routes use their conventional provider configuration in the data plane. A
@@ -463,6 +518,23 @@ name or credential to the local endpoint.
 available and otherwise uses schema-constrained prompting with local Pydantic
 validation. Invalid model output fails the durable attempt and is never posted
 to the SCM.
+
+Review generation checkpoints each candidate pass/chunk, optional diagram, and
+verifier response. A retry reuses a step only when its exact Diffuse-prepared
+prompt, output schema, model target, and output limit still match and the stored
+response passes Pydantic validation. See
+[Model execution](docs/model-execution.md) for the content boundary and runner
+configuration.
+
+For a CLI-backed node, log in with `codex login` or `claude auth login` as the
+dedicated runner account, start `diffuse model-runner`, and opt the worker into
+the socket with `model-runner.compose.yaml`. Codex runs through one ephemeral
+app-server thread with an isolated auth-only `CODEX_HOME`, prohibited tool
+features disabled, web search off, an empty working directory, and a read-only
+sandbox (restricted readable roots when supported by the installed protocol).
+Claude runs in safe mode with settings sources, tools, skills, MCP, Chrome, and
+session persistence disabled. Neither receives a repository checkout or
+publication credential.
 
 Before generation, Diffuse deterministically inspects bounded pull-request
 commit metadata—authors, committers, bot identities, verification state, and Git
@@ -756,16 +828,17 @@ Diffuse currently:
   authorized feedback ingestion.
 
 It does not yet perform multi-hop retrieval, expose workflow administration,
-use stored SCM App/OAuth installation credentials, or answer top-level or
-arbitrary-line questions inside SCM threads. Top-level manual commands still
-trigger a full review rather than a focused instruction.
+support multi-installation relay nodes or Slack delivery, or answer top-level
+or arbitrary-line questions inside SCM threads. Top-level manual commands
+still trigger a full review rather than a focused instruction.
 Feedback-driven noise ranking, organization/team moderation APIs and UI, additional languages,
 generated summaries, richer usage/type edges, and retrieval-quality evaluation
 remain.
 
-Before a production deployment, add encrypted SCM App/OAuth installation
-onboarding, migration rollback/backup drills, workflow cancellation and
-operator visibility, tenant authorization, and operational metrics.
+Before public relay operation, move App signing to KMS/HSM and add queue
+retention, SLOs, failover, and operational metrics. Before a production review
+deployment, add migration rollback/backup drills, workflow cancellation and
+operator visibility, and tenant authorization.
 
 ## Licensing
 

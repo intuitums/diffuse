@@ -1,0 +1,75 @@
+name: diffuse-integration-relay
+
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg17@sha256:d2ef61f42ef767baa5a1475393303cc235bcd92febd9d7014eddb48b41f3bad0}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: diffuse_relay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: diffuse_relay
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U diffuse_relay -d diffuse_relay"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - relay_pgdata:/var/lib/postgresql/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  migrate:
+    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE}
+    restart: "no"
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command: ["database", "migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://diffuse_relay:${POSTGRES_PASSWORD}@db:5432/diffuse_relay
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+  gateway:
+    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command: ["gateway"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - ${DIFFUSE_GATEWAY_ENV_FILE:-gateway.env}
+    environment:
+      DATABASE_URL: postgresql://diffuse_relay:${POSTGRES_PASSWORD}@db:5432/diffuse_relay
+    volumes:
+      - ${DIFFUSE_GATEWAY_SECRETS_DIR:-/srv/diffuse-gateway/secrets}:/run/secrets/diffuse:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 30s
+
+volumes:
+  relay_pgdata:

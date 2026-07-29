@@ -1,11 +1,13 @@
-"""Browser-facing OAuth endpoints for the Diffuse CLI sign-in flow.
+"""Browser-facing GitHub OAuth endpoints for relay installation and node pairing.
 
-These three routes are the backend half of `diffuse login`:
+These three routes establish who installed the shared Diffuse GitHub App:
 
-* `/auth/cli` records where the CLI is listening and bounces to GitHub.
-* `/auth/github/callback` verifies the state, exchanges the code, and hands the
-  session token back to the CLI over loopback.
+* `/auth/github` creates server-owned state and redirects the browser to GitHub.
+* `/auth/github/callback` verifies the state and records the GitHub identity.
 * `/setup` links a GitHub App installation to the user who installed it.
+
+This is GitHub installation authentication, not model-provider authentication.
+Diffuse does not mint a CLI session or accept OpenAI/Anthropic account tokens.
 
 Unlike `/api/v1`, the caller here is a browser, so failures render HTML rather
 than problem+json. Error copy is deliberately vague about *why* a state failed:
@@ -16,7 +18,9 @@ from __future__ import annotations
 
 import html
 import logging
+import os
 from contextlib import closing
+from urllib.parse import urlsplit
 
 import anyio
 import psycopg2.errors
@@ -24,6 +28,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from indexer.store import get_conn
+from service.github_app import GitHubAppError, verify_installation
 from service.github_oauth import (
     GitHubOAuthConfigurationError,
     GitHubOAuthError,
@@ -34,19 +39,22 @@ from service.github_oauth import (
 )
 from service.oauth_store import (
     APP_INSTALL_PURPOSE,
-    CLI_LOGIN_PURPOSE,
-    build_loopback_redirect,
+    GITHUB_INSTALL_AUTH_PURPOSE,
     consume_oauth_state,
+    create_install_auth_state,
     create_install_state,
-    create_login_state,
-    create_session,
-    generate_session_token,
     generate_state,
-    parse_callback_port,
+    load_oauth_state,
     parse_installation_id,
+    record_user_installation,
     upsert_user,
-    validate_state,
 )
+from service.relay_store import (
+    InstallationOwnershipError,
+    authorize_installation_user,
+    create_pairing_code,
+)
+from service.scm import normalize_base_url
 
 LOGGER = logging.getLogger(__name__)
 
@@ -143,7 +151,7 @@ def _rejected_state_page() -> HTMLResponse:
         heading="This sign-in link is no longer valid",
         detail=(
             "The request could not be verified, or it has already been used. "
-            "Run `diffuse login` again to start over."
+            "Open the GitHub App connection page again to start over."
         ),
     )
 
@@ -154,6 +162,16 @@ def _bounded(value: str | None) -> str | None:
     if len(value) > MAX_QUERY_PARAMETER_CHARS:
         raise ValueError("Query parameter is too long")
     return value
+
+
+def gateway_public_url() -> str:
+    value = normalize_base_url(
+        os.environ.get("DIFFUSE_PUBLIC_URL", "").strip(),
+        field_name="DIFFUSE_PUBLIC_URL",
+    )
+    if urlsplit(value).path not in {"", "/"}:
+        raise ValueError("DIFFUSE_PUBLIC_URL must be an origin without a path")
+    return value.rstrip("/")
 
 
 async def _in_transaction(callback, /, **kwargs):
@@ -167,24 +185,12 @@ async def _in_transaction(callback, /, **kwargs):
 
 
 @router.get(
-    "/auth/cli",
-    summary="Start a CLI sign-in and redirect to GitHub",
+    "/auth/github",
+    summary="Authenticate a GitHub App installer",
     response_class=RedirectResponse,
 )
-async def start_cli_login(port: str | None = None, state: str | None = None):
-    try:
-        raw_port = _bounded(port)
-        raw_state = _bounded(state)
-        callback_port = None if raw_port is None else parse_callback_port(raw_port)
-        # A browser-initiated sign-in supplies no nonce, so Diffuse mints one.
-        nonce = generate_state() if raw_state is None else validate_state(raw_state)
-    except ValueError as error:
-        return _error_page(
-            status_code=400,
-            heading="That sign-in request is invalid",
-            detail=str(error),
-        )
-
+async def start_github_install_auth():
+    nonce = generate_state()
     try:
         authorize_url = build_authorize_url(state=nonce)
     except GitHubOAuthConfigurationError:
@@ -193,9 +199,8 @@ async def start_cli_login(port: str | None = None, state: str | None = None):
 
     try:
         await _in_transaction(
-            create_login_state,
+            create_install_auth_state,
             state=nonce,
-            callback_port=callback_port,
         )
     except psycopg2.errors.UniqueViolation:
         return _rejected_state_page()
@@ -209,8 +214,8 @@ async def start_cli_login(port: str | None = None, state: str | None = None):
 
 @router.get(
     "/auth/github/callback",
-    summary="Complete a GitHub authorization and hand the CLI its token",
-    response_class=RedirectResponse,
+    summary="Complete GitHub installer authentication",
+    response_class=HTMLResponse,
 )
 async def complete_github_callback(
     code: str | None = None,
@@ -222,7 +227,7 @@ async def complete_github_callback(
         return _error_page(
             status_code=400,
             heading="GitHub did not complete the sign-in",
-            detail="You can close this window and run `diffuse login` again.",
+            detail="Open the GitHub App connection page again to retry.",
         )
     try:
         raw_code = _bounded(code)
@@ -241,7 +246,7 @@ async def complete_github_callback(
     claimed = await _in_transaction(
         consume_oauth_state,
         state=raw_state,
-        purpose=CLI_LOGIN_PURPOSE,
+        purpose=GITHUB_INSTALL_AUTH_PURPOSE,
     )
     if claimed is None:
         return _rejected_state_page()
@@ -257,46 +262,34 @@ async def complete_github_callback(
         return _error_page(
             status_code=502,
             heading="GitHub could not confirm your identity",
-            detail="Close this window and run `diffuse login` again.",
+            detail="Open the GitHub App connection page again to retry.",
         )
 
-    # The GitHub token proved the identity and is deliberately never persisted.
-    session_token = generate_session_token()
-
-    def _establish_session(conn):
+    # The GitHub token proves installer identity and is deliberately never
+    # persisted. The next state is bound to that identity and can be used only
+    # for the GitHub App installation callback.
+    def _establish_install_auth(conn):
         user = upsert_user(
             conn,
             github_user_id=identity.github_user_id,
             login=identity.login,
             avatar_url=identity.avatar_url,
         )
-        create_session(conn, user_id=user.id, token=session_token)
-        install_state = None
-        if claimed.callback_port is None:
-            install_state = generate_state()
-            create_install_state(conn, state=install_state, user_id=user.id)
+        install_state = generate_state()
+        create_install_state(conn, state=install_state, user_id=user.id)
         return user, install_state
 
     try:
-        user, install_state = await _in_transaction(_establish_session)
+        user, install_state = await _in_transaction(_establish_install_auth)
     except ValueError:
         LOGGER.exception("GitHub returned an identity Diffuse cannot store")
         return _error_page(
             status_code=502,
             heading="GitHub could not confirm your identity",
-            detail="Close this window and run `diffuse login` again.",
+            detail="Open the GitHub App connection page again to retry.",
         )
 
-    if claimed.callback_port is None:
-        return _browser_success_page(login=user.login, install_state=install_state)
-
-    # The host is a constant, never a request parameter — the only redirect
-    # target Diffuse will ever emit here is loopback.
-    return RedirectResponse(
-        build_loopback_redirect(port=claimed.callback_port, token=session_token),
-        status_code=302,
-        headers=dict(_BROWSER_HEADERS),
-    )
+    return _browser_success_page(login=user.login, install_state=install_state)
 
 
 def _browser_success_page(*, login: str, install_state: str | None) -> HTMLResponse:
@@ -342,39 +335,83 @@ async def complete_app_setup(
     if not raw_state:
         return _unlinked_install_page()
 
-    claimed = await _in_transaction(
-        consume_oauth_state,
+    pending = await _in_transaction(
+        load_oauth_state,
         state=raw_state,
         purpose=APP_INSTALL_PURPOSE,
     )
-    if claimed is None or claimed.user_id is None:
+    if pending is None or pending.user_id is None:
         return _unlinked_install_page()
 
-    # The state proves *a* user started an install. It does NOT prove this
-    # `installation_id` is the one they installed — that value is a query
-    # parameter under the caller's control, and installation ids are small
-    # sequential integers. Anyone may sign in, so an attacker can mint a valid
-    # state of their own and then hand-craft this URL with a victim's id.
-    #
-    # Persisting that claim would seed the table tenancy is going to read
-    # (DEV-213) with an attacker-chosen row, so the linkage is deliberately not
-    # written until it can be verified against GitHub. Verification needs either
-    # an App JWT calling GET /app/installations/{id} — Diffuse holds no app
-    # private key today — or the HMAC-signed `installation.created` webhook,
-    # whose `sender` is authoritative and unspoofable. Tracked in DEV-226.
-    LOGGER.info(
-        "Received an unverified GitHub App setup redirect for installation %s; "
-        "not linking it to a user until the installer can be verified",
-        installation,
-    )
+    try:
+        verified = await anyio.to_thread.run_sync(verify_installation, installation)
+    except GitHubAppError as error:
+        LOGGER.error(
+            "Could not verify GitHub App installation %s: %s",
+            installation,
+            error,
+        )
+        return _error_page(
+            status_code=502,
+            heading="GitHub could not confirm this installation",
+            detail="Please retry the installation from Diffuse.",
+        )
+
+    def _link_and_issue_pairing_code(conn):
+        account_login = authorize_installation_user(
+            conn,
+            user_id=pending.user_id,
+            github_installation_id=verified.id,
+        )
+        claimed = consume_oauth_state(
+            conn,
+            state=raw_state,
+            purpose=APP_INSTALL_PURPOSE,
+        )
+        if claimed is None or claimed.user_id != pending.user_id:
+            return None
+        record_user_installation(
+            conn,
+            user_id=pending.user_id,
+            github_installation_id=verified.id,
+            account_login=account_login,
+        )
+        pairing_code = create_pairing_code(
+            conn, user_id=pending.user_id, github_installation_id=verified.id
+        )
+        return account_login, pairing_code
+
+    try:
+        linked = await _in_transaction(_link_and_issue_pairing_code)
+    except InstallationOwnershipError:
+        return _error_page(
+            status_code=409,
+            heading="The installation is still being confirmed",
+            detail=(
+                "Diffuse has not received GitHub's signed installation event yet. "
+                "Wait a moment and retry the installation from Diffuse."
+            ),
+        )
+    if linked is None:
+        return _unlinked_install_page()
+    account_login, pairing_code = linked
+    try:
+        gateway_url = gateway_public_url()
+    except ValueError:
+        LOGGER.exception("DIFFUSE_PUBLIC_URL is not configured for node pairing")
+        return _unavailable_page()
+    escaped_code = html.escape(pairing_code)
+    escaped_gateway = html.escape(gateway_url)
     return _page(
         status_code=200,
         title="Installed",
         heading="Installed",
         body=(
-            "<p>Diffuse has the installation. You can close this window.</p>"
-            "<p>Repository access is confirmed separately, so it may take a "
-            "moment to appear.</p>"
+            f"<p>Diffuse is connected to {html.escape(account_login)}.</p>"
+            "<p>Pair your self-hosted node within ten minutes:</p>"
+            "<p><code>diffuse relay pair "
+            f"--gateway {escaped_gateway} --code {escaped_code}</code></p>"
+            "<p>The pairing code is single-use. Repository code remains on your node.</p>"
         ),
     )
 
@@ -386,7 +423,7 @@ def _unlinked_install_page() -> HTMLResponse:
         status_code=400,
         heading="That installation could not be linked",
         detail=(
-            "Sign in with `diffuse login` first, then start the install from "
-            "Diffuse so it can be attributed to your account."
+            "Start from Diffuse's GitHub App connection page so the "
+            "installation can be attributed to your account."
         ),
     )

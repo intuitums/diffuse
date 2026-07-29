@@ -11,12 +11,13 @@ multi-tenant service.
 Provide:
 
 - a current Docker Engine with the Compose plugin;
-- a DNS name whose HTTPS traffic terminates at a reverse proxy;
 - outbound HTTPS access to GitHub and the configured model provider;
 - enough persistent disk for PostgreSQL and repository mirrors; and
 - host-level monitoring for disk, memory, container restarts, and backup age.
 
-Only SSH and the reverse proxy's HTTP/HTTPS ports should be public. Compose
+The recommended hosted-relay mode requires no inbound port or public DNS name.
+Add a DNS name and HTTPS reverse proxy only when exposing REST/MCP to remote
+clients or when using an operator-owned GitHub App in standalone mode. Compose
 binds PostgreSQL and Diffuse itself to `127.0.0.1`; keep those bindings private.
 
 ## Configure secrets
@@ -37,9 +38,10 @@ Put the generated values in `POSTGRES_PASSWORD` and `DIFFUSE_API_TOKEN`. Hex is
 recommended for `POSTGRES_PASSWORD` because Compose places it in a PostgreSQL
 URL. Also set:
 
-- `DIFFUSE_PUBLIC_URL=https://diffuse.example.com`;
-- `DIFFUSE_MCP_ALLOWED_HOSTS=diffuse.example.com`;
-- the GitHub integration, including a high-entropy webhook secret;
+- `DIFFUSE_PUBLIC_URL` and `DIFFUSE_MCP_ALLOWED_HOSTS` to the external origin
+  only if remote REST/MCP clients need one;
+- `DIFFUSE_RELAY_URL` and `DIFFUSE_RELAY_TOKEN` for the recommended shared App,
+  or the local GitHub App identity and webhook secret for standalone mode;
 - the GitHub web/API origins and the narrowest possible
   `GITHUB_ALLOWED_INSTANCES`; and
 - the model credentials or self-hosted model endpoint.
@@ -83,8 +85,10 @@ captured by a filesystem backup. Keep the mode at `600` and the owner at the
 account that runs Compose.
 
 Doppler's Developer plan is a right-sized example for a small internal
-deployment. Put the PEM in `GITHUB_APP_PRIVATE_KEY`; its Docker output format
-escapes PEM newlines, and Diffuse restores them before signing:
+deployment. In relay mode it stores the node credential alongside database,
+API, and model credentials; the GitHub App PEM stays on the hosted gateway. In
+standalone mode, put the PEM in `GITHUB_APP_PRIVATE_KEY`; Doppler's Docker
+output format escapes PEM newlines, and Diffuse restores them before signing:
 
 ```bash
 doppler secrets download --no-file --format docker > /run/diffuse/env
@@ -110,18 +114,44 @@ Two properties of Diffuse constrain how rotation works:
   `ALTER ROLE` against the running database as well. Choose it before the first
   `up`.
 
-Rotating `GITHUB_WEBHOOK_SECRET` has a delivery gap: the server verifies against
-exactly one secret, so deliveries signed with the old value are rejected from
-the moment the new one is live until GitHub's webhook configuration is updated.
-Rotate it during a quiet period and re-deliver anything GitHub records as
-failed.
+In standalone mode, rotating `GITHUB_WEBHOOK_SECRET` has a delivery gap: the
+server verifies against exactly one secret, so deliveries signed with the old
+value are rejected from the moment the new one is live until GitHub's webhook
+configuration is updated. Relay nodes do not hold this secret.
 
 Whatever the source of the values, the security property that matters is that
 the credential's home of record is somewhere with access control, an audit
 trail, and rotation — not a file that exists only on one host. `.env` on the
 server is a cache of that record, not the record itself.
 
-### Configure the GitHub App
+### Pair with the shared Diffuse GitHub App (recommended)
+
+Open the hosted relay's sign-in page, sign in with GitHub, and install the
+Diffuse App on the intended organization or repositories. The relay's setup
+page returns a single-use command containing its URL and a ten-minute pairing
+code:
+
+```bash
+docker compose run --rm worker relay pair \
+  --gateway https://integrations.diffuse.example \
+  --code <single-use-code>
+```
+
+The command prints a `node_token` exactly once. Store `gateway_url` as
+`DIFFUSE_RELAY_URL` and `node_token` as `DIFFUSE_RELAY_TOKEN`, then recreate
+the app and worker. Do not put the pairing code in the long-lived environment.
+
+The worker polls the relay over outbound HTTPS, durably ingests each routed
+GitHub delivery through the existing webhook workflow, and acknowledges it
+only after local acceptance. The relay buffers deliveries while this host is
+offline and brokers one-hour installation tokens. It does not clone
+repositories, run reviews, or receive model traffic.
+
+In this mode leave `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`,
+`GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_PRIVATE_KEY_FILE`, `GITHUB_TOKEN`, and
+`GITHUB_WEBHOOK_SECRET` empty.
+
+### Configure an operator-owned GitHub App (standalone alternative)
 
 Diffuse authenticates automation as a GitHub App installation. Do not mint an
 installation token by hand and do not create a PAT: installation tokens expire
@@ -159,26 +189,31 @@ GitHub permits overlapping App private keys. Rotate without downtime by
 generating a second key, replacing the secret-manager value, recreating app and
 worker, confirming a token can be minted, and only then deleting the old key.
 
-### Model credentials without a long-lived key
+### Model execution and credential ownership
 
-Two questions come up often enough to answer directly.
+Provider-API execution uses LiteLLM. Choose a provider API key, ambient cloud
+identity, or an operator-run compatible endpoint. The two primary provider-key
+configurations are:
 
-**Can Diffuse sign in with a ChatGPT account instead of an API key?** No, and
-not because Diffuse has not implemented it. The OpenAI Platform API has no
-authorization-code flow that mints platform access on a user's behalf;
-"Sign in with ChatGPT" covers apps *inside* ChatGPT and the Codex CLI, which is
-an interactive desktop session, not a headless worker. There is nothing for
-Diffuse to call.
+| Provider | Model setting | Credential |
+| --- | --- | --- |
+| OpenAI | `REVIEW_MODEL=openai/<model>` | `OPENAI_API_KEY` |
+| Anthropic | `REVIEW_MODEL=anthropic/<model>` | `ANTHROPIC_API_KEY` |
 
-**Can it use OpenAI workload identity federation?** That is the right shape —
-a workload exchanges an OIDC token from AWS, GCP, Azure, Kubernetes, or GitHub
-Actions for a short-lived OpenAI token, with no stored key — and the OpenAI
-Python SDK accepts a `workload_identity` client parameter. Diffuse cannot reach
-it today: every model call goes through LiteLLM, and LiteLLM has no passthrough
-for that parameter and no way to inject a pre-built client. The blocker is
-upstream.
+Diffuse does not run a model-account sign-in flow and does not accept model
+account access or refresh tokens. Codex CLI and Claude Code CLI execution uses
+an opt-in host runner: authenticate the selected CLI as a dedicated operating
+system account, start `diffuse model-runner`, and mount only its Unix-socket
+directory into the worker with `model-runner.compose.yaml`. The runner
+capability-gates the installed version and login before advertising an adapter;
+the worker refuses to start when its selected adapter is unavailable.
 
-Until that changes, the way to run Diffuse without an OpenAI credential is
+The CLI process receives only Diffuse-prepared prompts and a response schema in
+an empty temporary directory. It receives no checkout, GitHub/relay/database
+credential, provider API key, or publication authority. See
+[Model execution](model-execution.md) for the systemd and Compose setup.
+
+Today, the way to run Diffuse without an OpenAI embedding credential is
 `EMBEDDING_API_BASE` plus a non-OpenAI `REVIEW_MODEL`.
 
 The binding constraint is that the endpoint must return 1536-dimensional
@@ -246,19 +281,15 @@ endpoint specifically, and the only one that can prove keys are off by setting
 reach 1536 only through an `output_dimensionality` parameter that Diffuse does
 not send, so it is not usable here today even though the model supports it.
 
-### Browser sign-in is not usable yet
+### Do not configure browser sign-in on a review node
 
 Leave `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET_FILE`, and
 `GITHUB_APP_SLUG` unset, and do not create a secrets directory for them.
 
-The server half of GitHub browser sign-in is mounted — `/auth/cli`,
-`/auth/github/callback`, and `/setup` exist and will mint a session — but
-nothing consumes the result. There is no `diffuse login` command; the CLI's
-subcommands are `review`, `repository`, `cluster`, `learning`, `token`,
-`database`, `evaluate`, and `model`. No request authenticator reads a session:
-the API, MCP, and REST surfaces accept only `DIFFUSE_API_TOKEN` or a
-repository-scoped service token. Configuring OAuth today therefore places a
-GitHub client secret on the host and grants no access in return.
+The hosted relay owns those browser and App-installation callbacks. The review
+node's API, MCP, and REST surfaces continue to accept `DIFFUSE_API_TOKEN` or a
+repository-scoped service token; a relay credential does not authenticate
+those surfaces.
 
 Authenticate with `DIFFUSE_API_TOKEN` for bootstrap and recovery, and with
 `docker compose run --rm worker token add` service tokens for routine clients.
@@ -299,8 +330,9 @@ start. Both the API and worker share the repository-mirror volume. The API
 container has a readiness health check, and container logs rotate at bounded
 sizes.
 
-Terminate TLS in a reverse proxy on the same host. For example, a minimal Caddy
-site is:
+No reverse proxy is needed for relay delivery. If remote API or MCP clients
+must reach the node—or if this is a standalone GitHub App deployment—terminate
+TLS in a reverse proxy on the same host. For example, a minimal Caddy site is:
 
 ```caddyfile
 diffuse.example.com {
@@ -308,9 +340,8 @@ diffuse.example.com {
 }
 ```
 
-Point the GitHub webhook at
-`https://diffuse.example.com/webhook/github`. Enable exactly these four event
-types and no others:
+Only in standalone mode, point the GitHub webhook at
+`https://diffuse.example.com/webhook/github`. Enable these four event types:
 
 - `push`
 - `pull_request`

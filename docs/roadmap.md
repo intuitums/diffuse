@@ -245,14 +245,16 @@ expose control-plane credentials.
   entitlement or license-enforcement mechanism to build.
 - Add backups, restore drills, migration rollback, opt-in telemetry controls,
   structured observability, and safe data export.
+- Productionize the hosted integration relay with retention cleanup, metrics,
+  multi-installation nodes, node failover, repository-narrowed GitHub tokens,
+  and Slack App delivery on the provider-neutral queue.
 
-Exit: small and large self-hosted installations have documented SLOs,
-recoverability, upgrade paths, signed distribution, and security controls
-without a required Diffuse-hosted control plane.
+Exit: self-hosted review nodes and the hosted integration relay have documented
+SLOs, recoverability, upgrade paths, and security controls.
 
-Phase 6 is the last phase. Diffuse is self-hosted only, and there is no managed
-cloud service on the roadmap — see
-[ADR 0042](adr/0042-source-available-self-hosted-distribution.md).
+Phase 6 is the last phase. Diffuse does not offer hosted review execution; the
+managed surface is limited to the provider-integration relay described by
+[ADR 0044](adr/0044-hosted-integration-relay.md).
 
 ## Continuous workstreams
 

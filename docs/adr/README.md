@@ -68,6 +68,9 @@ These four carry the decisions the rest of the system is built on:
 | 0040 | [Proprietary self-hosted and managed-cloud distribution](0040-proprietary-self-hosted-and-managed-cloud-distribution.md) | Superseded by [0042](0042-source-available-self-hosted-distribution.md) |
 | 0041 | [GitHub as the only supported source-control provider](0041-github-only-source-control.md) | Accepted |
 | 0042 | [Source-available self-hosted distribution under BSL 1.1](0042-source-available-self-hosted-distribution.md) | Accepted |
+| 0043 | [Mint GitHub App installation tokens](0043-mint-github-app-installation-tokens.md) | Accepted, amended by [0044](0044-hosted-integration-relay.md) |
+| 0044 | [Hosted integration relay for self-hosted Diffuse nodes](0044-hosted-integration-relay.md) | Accepted |
+| 0045 | [Model execution is a constrained Diffuse subsystem](0045-model-execution-boundary.md) | Accepted |
 
 ## Superseded records
 
@@ -89,6 +92,8 @@ written. Their `Status` lines carry the detail:
   introduced still ship.
 - **0033** — its provider neutrality now spans exactly one provider. The
   authoritative-refetch decision it records still binds.
+- **0043** — standalone nodes still mint locally, while ADR 0044 moves the
+  shared App identity and per-installation token exchange to the hosted relay.
 
 Separately, these records remain correct in their own decisions but contain
 forward references to the superseded GitLab records (0030/0031/0032) as though

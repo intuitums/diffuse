@@ -82,13 +82,10 @@ services:
       DIFFUSE_PUBLIC_URL: ${DIFFUSE_PUBLIC_URL:?Set DIFFUSE_PUBLIC_URL in .env}
     ports:
       - "127.0.0.1:8000:8000"
-    # REMOVED: a read-only bind mount of ${DIFFUSE_SECRETS_DIR:-/srv/diffuse/secrets}.
-    # It existed for the browser sign-in client secret, and nothing reads a secret
-    # from there: there is no `diffuse login` subcommand, so the flow cannot be
-    # completed and operators are told to leave GITHUB_OAUTH_CLIENT_ID unset. An
-    # unconditional bind mount of a host path nobody is told to create is worse than
-    # useless - Compose silently creates it root-owned on first `up`. Reinstate it,
-    # with the variable, when sign-in actually ships.
+    # Browser sign-in and App installation run on the hosted relay, not on a
+    # review node. Keep OAuth client secrets out of this service; an
+    # unconditional bind mount would also create an undocumented host path
+    # root-owned on first `up`. See gateway.compose.yaml.
     volumes:
       - repository_data:/var/lib/diffuse/repositories
     tmpfs:

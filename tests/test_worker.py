@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -1483,6 +1484,7 @@ def test_hot_path_configuration_is_validated_before_any_job_is_claimed(monkeypat
         ("WORKFLOW_LEASE_SECONDS", "30"),
         ("EMBEDDING_DIMENSIONS", "wide"),
         ("SCM_API_TIMEOUT_SECONDS", "0"),
+        ("DIFFUSE_RELAY_POLL_SECONDS", "nan"),
     ],
 )
 def test_every_hot_path_variable_fails_startup_by_name(monkeypatch, name, value):
@@ -1736,4 +1738,35 @@ def test_missing_embedding_credential_is_not_a_configuration_parse_error(monkeyp
         worker.validate_worker_configuration()
 
     with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+        worker.validate_worker_credentials()
+
+
+def test_cli_runner_is_capability_gated_during_worker_startup(monkeypatch):
+    config = SimpleNamespace(
+        executor=worker.ModelExecutor.CODEX_CLI,
+        runner_socket=Path("/tmp/diffuse-model-runner.sock"),
+    )
+    monkeypatch.setattr(worker, "verify_embedding_credential", lambda: None)
+    monkeypatch.setattr(worker, "load_model_execution_config", lambda: config)
+    monkeypatch.setattr(
+        "service.model_runner_client.runner_health",
+        lambda socket_path: SimpleNamespace(supported_executors=["codex-cli"]),
+    )
+
+    worker.validate_worker_credentials()
+
+
+def test_worker_rejects_cli_adapter_that_failed_runner_probes(monkeypatch):
+    config = SimpleNamespace(
+        executor=worker.ModelExecutor.CLAUDE_CLI,
+        runner_socket=Path("/tmp/diffuse-model-runner.sock"),
+    )
+    monkeypatch.setattr(worker, "verify_embedding_credential", lambda: None)
+    monkeypatch.setattr(worker, "load_model_execution_config", lambda: config)
+    monkeypatch.setattr(
+        "service.model_runner_client.runner_health",
+        lambda socket_path: SimpleNamespace(supported_executors=["codex-cli"]),
+    )
+
+    with pytest.raises(ValueError, match="claude-cli.*not capability-gated"):
         worker.validate_worker_credentials()

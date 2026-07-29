@@ -9,6 +9,7 @@ from service.github_oauth import (
     exchange_code_for_token,
     fetch_authenticated_user,
     oauth_client_secret,
+    validate_gateway_oauth_configuration,
 )
 
 SECRET = "s" * 40
@@ -72,6 +73,15 @@ def test_authorize_and_install_urls_are_built_from_the_configured_host(
     assert build_app_install_url(state="n" * 43) == (
         f"https://github.com/apps/diffuse-review/installations/new?state={'n' * 43}"
     )
+
+
+def test_gateway_oauth_configuration_requires_the_app_slug(secret_file, monkeypatch):
+    monkeypatch.delenv("GITHUB_APP_SLUG", raising=False)
+    with pytest.raises(GitHubOAuthConfigurationError, match="GITHUB_APP_SLUG"):
+        validate_gateway_oauth_configuration()
+
+    monkeypatch.setenv("GITHUB_APP_SLUG", "diffuse-review")
+    validate_gateway_oauth_configuration()
 
 
 @pytest.mark.anyio

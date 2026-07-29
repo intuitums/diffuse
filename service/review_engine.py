@@ -16,6 +16,21 @@ from pydantic import BaseModel, ValidationError
 from repository_policy.resolve import ResolvedReviewPolicy, neutralize_prompt_delimiters
 from retriever.retrieve import RetrievedContext, format_as_extra_instructions
 from service.diff_parser import ParsedDiff, pack_diff_files, parse_unified_diff
+from service.model_config import DEFAULT_REVIEW_MODEL as DEFAULT_REVIEW_MODEL
+from service.model_config import (
+    ModelExecutor,
+    ModelTarget,
+    StructuredOutputMode,
+    load_model_execution_config,
+)
+from service.model_execution import (
+    ExecutorNotAuthenticatedError,
+    GenerationStepStore,
+    StructuredGenerationRequest,
+    StructuredGenerationResult,
+    StructuredGenerator,
+    StructuredOutputInvalidError,
+)
 from service.model_providers import resolve_provider
 from service.review_models import (
     CandidateBatch,
@@ -34,8 +49,7 @@ from service.workflow import NonRetryableError
 
 LOGGER = logging.getLogger(__name__)
 
-PROMPT_VERSION = "native-review-v6-review-diagrams"
-DEFAULT_REVIEW_MODEL = "anthropic/claude-sonnet-5"
+PROMPT_VERSION = "native-review-v7-durable-generation"
 DEFAULT_PASSES = ("correctness", "security", "performance", "tests")
 PASS_INSTRUCTIONS = {
     "correctness": (
@@ -88,15 +102,11 @@ class ModelConnectionProbe(BaseModel):
 
 
 def review_model() -> str:
-    value = os.environ.get("REVIEW_MODEL", DEFAULT_REVIEW_MODEL).strip()
-    if not value:
-        raise ValueError("REVIEW_MODEL cannot be empty")
-    return value
+    return load_model_execution_config().review_model
 
 
 def review_verifier_model() -> str:
-    value = os.environ.get("REVIEW_VERIFIER_MODEL", "").strip()
-    return value or review_model()
+    return load_model_execution_config().verifier_model
 
 
 def review_provenance_minimum_confidence() -> float:
@@ -203,17 +213,203 @@ def _usage_value(response: object, name: str) -> int:
 
 
 def _supports_json_schema(model: str) -> bool:
-    mode = os.environ.get("REVIEW_STRUCTURED_OUTPUT_MODE", "auto").strip().lower()
-    if mode not in {"auto", "schema", "prompt"}:
-        raise ValueError("REVIEW_STRUCTURED_OUTPUT_MODE must be auto, schema, or prompt")
-    if mode == "schema":
+    mode = load_model_execution_config().structured_output_mode
+    if mode is StructuredOutputMode.SCHEMA:
         return True
-    if mode == "prompt":
+    if mode is StructuredOutputMode.PROMPT:
         return False
     try:
         return bool(litellm.supports_response_schema(model=model))
     except Exception:
         return False
+
+
+class LiteLLMStructuredGenerator:
+    """The existing provider path behind the backend-neutral contract."""
+
+    def generate[T: BaseModel](
+        self,
+        request: StructuredGenerationRequest[T],
+    ) -> StructuredGenerationResult[T]:
+        if request.target.executor is not ModelExecutor.LITELLM:
+            raise ValueError("LiteLLM generator received a non-LiteLLM target")
+        schema = json.dumps(request.response_model.model_json_schema(), separators=(",", ":"))
+        supports_schema = _supports_json_schema(request.target.requested_model)
+        schema_instruction = (
+            "\nReturn only one JSON object conforming exactly to this JSON Schema. "
+            f"Do not use Markdown fences.\nJSON Schema:\n{schema}"
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": request.system_prompt + ("" if supports_schema else schema_instruction),
+            },
+            {"role": "user", "content": request.user_prompt},
+        ]
+        arguments: dict[str, object] = {
+            "model": request.target.requested_model,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": request.max_output_tokens,
+            "timeout": request.timeout_seconds,
+            "num_retries": model_retries(),
+        }
+        api_key = _model_api_key(request.target.requested_model)
+        if api_key:
+            arguments["api_key"] = api_key
+        api_base = _model_api_base(request.target.requested_model)
+        if api_base:
+            arguments["api_base"] = api_base
+        if supports_schema:
+            arguments["response_format"] = request.response_model
+
+        try:
+            response = litellm.completion(**arguments)
+        except (AuthenticationError, PermissionDeniedError) as error:
+            raise ExecutorNotAuthenticatedError(
+                f"Model provider rejected the credential for "
+                f"{request.target.requested_model!r}: {error}"
+            ) from error
+        prompt_tokens = _usage_value(response, "prompt_tokens")
+        completion_tokens = _usage_value(response, "completion_tokens")
+        try:
+            value = request.response_model.model_validate_json(_message_content(response))
+        except (ValidationError, RuntimeError) as error:
+            raise StructuredOutputInvalidError(
+                "Review model returned invalid structured output",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            ) from error
+        return StructuredGenerationResult(
+            value=value,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            resolved_model=request.target.requested_model,
+        )
+
+
+def _generation_request[T: BaseModel](
+    response_model: type[T],
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model_name: str | None,
+    max_tokens: int | None,
+    timeout_seconds: int | None,
+    workload: str,
+    request_id: str | None,
+    cancellation_check: Callable[[], bool] | None,
+) -> StructuredGenerationRequest[T]:
+    config = load_model_execution_config()
+    model = model_name or config.review_model
+    identity = (
+        request_id
+        or hashlib.sha256(
+            "\0".join((workload, model, system_prompt, user_prompt)).encode()
+        ).hexdigest()
+    )
+    return StructuredGenerationRequest(
+        request_id=identity,
+        workload=workload,
+        response_model=response_model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        target=ModelTarget(
+            executor=config.executor,
+            requested_model=model,
+            structured_output_mode=config.structured_output_mode,
+        ),
+        max_output_tokens=(
+            max_tokens
+            if max_tokens is not None
+            else _positive_int("REVIEW_MAX_OUTPUT_TOKENS", 5000)
+        ),
+        timeout_seconds=(
+            timeout_seconds
+            if timeout_seconds is not None
+            else _positive_int("REVIEW_MODEL_TIMEOUT_SECONDS", 180)
+        ),
+        idempotency_key=identity,
+        cancellation_check=cancellation_check,
+    )
+
+
+def generate_structured[T: BaseModel](
+    response_model: type[T],
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model_name: str | None = None,
+    max_tokens: int | None = None,
+    timeout_seconds: int | None = None,
+    workload: str = "review",
+    request_id: str | None = None,
+    generator: StructuredGenerator | None = None,
+    step_store: GenerationStepStore | None = None,
+    step_key: str | None = None,
+    cancellation_check: Callable[[], bool] | None = None,
+) -> tuple[StructuredGenerationRequest[T], StructuredGenerationResult[T]]:
+    request = _generation_request(
+        response_model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_name=model_name,
+        max_tokens=max_tokens,
+        timeout_seconds=timeout_seconds,
+        workload=workload,
+        request_id=request_id,
+        cancellation_check=cancellation_check,
+    )
+    if (step_store is None) != (step_key is None):
+        raise ValueError("step_store and step_key must be supplied together")
+    if step_store is not None and step_key is not None:
+        stored = step_store.load(
+            step_key=step_key,
+            request_fingerprint=request.fingerprint,
+        )
+        if stored is not None:
+            try:
+                value = response_model.model_validate(stored.response)
+            except ValidationError:
+                # A schema/prompt change already changes the request fingerprint.
+                # Treat corruption as a cache miss so it cannot poison a retry.
+                LOGGER.warning("Discarding invalid persisted generation step %s", step_key)
+            else:
+                return request, StructuredGenerationResult(
+                    value=value,
+                    prompt_tokens=stored.prompt_tokens,
+                    completion_tokens=stored.completion_tokens,
+                    resolved_model=stored.resolved_model,
+                    executor_version=stored.executor_version,
+                    metadata={"cache_hit": True},
+                )
+    if generator is not None:
+        selected_generator = generator
+    elif request.target.executor is ModelExecutor.LITELLM:
+        selected_generator = LiteLLMStructuredGenerator()
+    else:
+        # Imported lazily so provider-only deployments do not initialize any
+        # socket/runner code and to keep the execution contract acyclic.
+        from service.model_runner_client import RunnerStructuredGenerator
+
+        selected_generator = RunnerStructuredGenerator(load_model_execution_config().runner_socket)
+    try:
+        result = selected_generator.generate(request)
+    except ExecutorNotAuthenticatedError as error:
+        raise NonRetryableError(str(error)) from error
+    except StructuredOutputInvalidError as error:
+        raise StructuredOutputValidationError(
+            prompt_tokens=error.prompt_tokens,
+            completion_tokens=error.completion_tokens,
+        ) from error
+    if step_store is not None and step_key is not None:
+        step_store.save(
+            step_key=step_key,
+            request_fingerprint=request.fingerprint,
+            response_schema=f"{response_model.__module__}.{response_model.__qualname__}",
+            result=result,
+        )
+    return request, result
 
 
 def _call_structured[T: BaseModel](
@@ -224,76 +420,36 @@ def _call_structured[T: BaseModel](
     model_name: str | None = None,
     max_tokens: int | None = None,
     timeout_seconds: int | None = None,
+    workload: str = "review",
+    request_id: str | None = None,
+    generator: StructuredGenerator | None = None,
+    step_store: GenerationStepStore | None = None,
+    step_key: str | None = None,
+    cancellation_check: Callable[[], bool] | None = None,
 ) -> tuple[T, int, int]:
-    model = model_name or review_model()
-    schema = json.dumps(response_model.model_json_schema(), separators=(",", ":"))
-    schema_instruction = (
-        "\nReturn only one JSON object conforming exactly to this JSON Schema. "
-        f"Do not use Markdown fences.\nJSON Schema:\n{schema}"
-    )
-    messages = [
-        {"role": "system", "content": system_prompt + schema_instruction},
-        {"role": "user", "content": user_prompt},
-    ]
-    arguments: dict[str, object] = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.1,
-        "max_tokens": (
-            max_tokens
-            if max_tokens is not None
-            else _positive_int("REVIEW_MAX_OUTPUT_TOKENS", 5000)
-        ),
-        "timeout": (
-            timeout_seconds
-            if timeout_seconds is not None
-            else _positive_int("REVIEW_MODEL_TIMEOUT_SECONDS", 180)
-        ),
-        # A review is up to REVIEW_PASSES x REVIEW_MAX_DIFF_CHUNKS calls plus a
-        # verifier, and the workflow's unit of retry is the whole review. Without
-        # this, one 429 in the last pass discards every pass that already
-        # succeeded, re-pays for them on the next attempt, and consumes one of
-        # only five attempts. LiteLLM retries transient statuses only -- an
-        # authentication or bad-request failure is raised immediately.
-        "num_retries": model_retries(),
-    }
-    if int(arguments["max_tokens"]) <= 0 or int(arguments["timeout"]) <= 0:
-        raise ValueError("Structured model limits must be positive")
-    api_key = _model_api_key(model)
-    if api_key:
-        arguments["api_key"] = api_key
-    api_base = _model_api_base(model)
-    if api_base:
-        arguments["api_base"] = api_base
-    if _supports_json_schema(model):
-        arguments["response_format"] = response_model
+    """Compatibility wrapper for non-review consumers during executor migration."""
 
-    try:
-        response = litellm.completion(**arguments)
-    except (AuthenticationError, PermissionDeniedError) as error:
-        # Permanent, and every attempt re-runs the passes that already
-        # succeeded. NonRetryableError subclasses ValueError, which is what
-        # `run_once` classifies as terminal, so this dead-letters on the first
-        # attempt and reports the provider's reason instead of a fifth timeout.
-        raise NonRetryableError(
-            f"Model provider rejected the credential for {model!r}: {error}"
-        ) from error
-    prompt_tokens = _usage_value(response, "prompt_tokens")
-    completion_tokens = _usage_value(response, "completion_tokens")
-    try:
-        value = response_model.model_validate_json(_message_content(response))
-    except (ValidationError, RuntimeError) as error:
-        # Empty model content raises RuntimeError; schema drift raises ValidationError.
-        # Both are transient structured-output faults and must remain retryable.
-        raise StructuredOutputValidationError(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-        ) from error
-    return (
-        value,
-        prompt_tokens,
-        completion_tokens,
+    _, result = generate_structured(
+        response_model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_name=model_name,
+        max_tokens=max_tokens,
+        timeout_seconds=timeout_seconds,
+        workload=workload,
+        request_id=request_id,
+        generator=generator,
+        step_store=step_store,
+        step_key=step_key,
+        cancellation_check=cancellation_check,
     )
+    return result.value, result.prompt_tokens, result.completion_tokens
+
+
+# Public compatibility surface for workloads that have not yet adopted the
+# richer request/result objects directly. New orchestration should use
+# ``generate_structured``.
+call_structured = _call_structured
 
 
 def verify_model_connection(model_name: str | None = None) -> None:
@@ -378,9 +534,7 @@ def _security_policy_text(policy: ResolvedReviewPolicy | None) -> str:
             "paths": {
                 item.file_path: {
                     "preventative": item.preventative_security,
-                    "minimum_confidence": (
-                        item.preventative_security_minimum_confidence
-                    ),
+                    "minimum_confidence": (item.preventative_security_minimum_confidence),
                 }
                 for item in policy.paths
                 if item.reviewable
@@ -403,13 +557,10 @@ def _normalize_security_candidate(
             }
         )
         classification = SecurityClassification.VULNERABILITY
-    if (
-        classification is SecurityClassification.PREVENTATIVE
-        and (
-            policy is None
-            or not policy.allows_preventative_security(candidate.file_path)
-            or candidate.severity in {Severity.CRITICAL, Severity.HIGH}
-        )
+    if classification is SecurityClassification.PREVENTATIVE and (
+        policy is None
+        or not policy.allows_preventative_security(candidate.file_path)
+        or candidate.severity in {Severity.CRITICAL, Severity.HIGH}
     ):
         return None
     return candidate
@@ -527,13 +678,10 @@ def _risk_floor(findings: list[ReviewFinding]) -> float:
 
 def _diagram_would_help(parsed_diff: ParsedDiff) -> bool:
     changed_lines = sum(
-        entry.marker in {"+", "-"}
-        for file in parsed_diff.files
-        for entry in file.entries
+        entry.marker in {"+", "-"} for file in parsed_diff.files for entry in file.entries
     )
     return changed_lines >= MIN_DIAGRAM_CHANGED_LINES or (
-        len(parsed_diff.files) >= 2
-        and changed_lines >= MIN_MULTI_FILE_DIAGRAM_CHANGED_LINES
+        len(parsed_diff.files) >= 2 and changed_lines >= MIN_MULTI_FILE_DIAGRAM_CHANGED_LINES
     )
 
 
@@ -542,11 +690,7 @@ def _diagram_prompt(
     diff_chunks: list[str],
     context_text: str,
 ) -> str:
-    changed_paths = tuple(
-        file.comment_path
-        for file in parsed_diff.files
-        if file.comment_path
-    )
+    changed_paths = tuple(file.comment_path for file in parsed_diff.files if file.comment_path)
     diff_limit = _positive_int("REVIEW_DIAGRAM_DIFF_CHARS", 40_000)
     context_limit = _positive_int("REVIEW_DIAGRAM_CONTEXT_CHARS", 16_000)
     return (
@@ -580,11 +724,12 @@ def _generate_diagram(
     policy: ResolvedReviewPolicy | None,
     *,
     model_name: str | None = None,
+    step_store: GenerationStepStore | None = None,
+    generator: StructuredGenerator | None = None,
+    cancellation_check: Callable[[], bool] | None = None,
+    request_namespace: str | None = None,
 ) -> tuple[ReviewDiagram | None, int, int]:
-    if (
-        (policy is not None and not policy.diagram_included)
-        or not _diagram_would_help(parsed_diff)
-    ):
+    if (policy is not None and not policy.diagram_included) or not _diagram_would_help(parsed_diff):
         return None, 0, 0
     try:
         proposal, prompt_tokens, completion_tokens = _call_structured(
@@ -597,6 +742,12 @@ def _generate_diagram(
             user_prompt=_diagram_prompt(parsed_diff, diff_chunks, context_text),
             model_name=model_name,
             max_tokens=_positive_int("REVIEW_DIAGRAM_MAX_OUTPUT_TOKENS", 2500),
+            workload="review_diagram",
+            request_id=f"{request_namespace}:diagram" if request_namespace else None,
+            generator=generator,
+            step_store=step_store,
+            step_key="diagram" if step_store is not None else None,
+            cancellation_check=cancellation_check,
         )
     except StructuredOutputValidationError as error:
         # The diagram is an optional enrichment and its safety rules are
@@ -618,12 +769,15 @@ def review_confidence_score(
     """Map verified review evidence to an explainable 0-5 readiness score."""
     if not 0 <= risk_score <= 10:
         raise ValueError("Review risk score must be between 0 and 10")
-    if min(
-        finding_count,
-        diff_file_count,
-        reviewed_file_count,
-        ignored_file_count,
-    ) < 0:
+    if (
+        min(
+            finding_count,
+            diff_file_count,
+            reviewed_file_count,
+            ignored_file_count,
+        )
+        < 0
+    ):
         raise ValueError("Review confidence inputs cannot be negative")
     if risk_score == 0:
         score = 5
@@ -687,6 +841,10 @@ def generate_review(
     policy: ResolvedReviewPolicy | None = None,
     candidate_model: str | None = None,
     verifier_model: str | None = None,
+    generator: StructuredGenerator | None = None,
+    step_store: GenerationStepStore | None = None,
+    cancellation_check: Callable[[], bool] | None = None,
+    request_namespace: str | None = None,
 ) -> ReviewReport:
     selected_candidate_model = candidate_model or review_model()
     selected_verifier_model = verifier_model or review_verifier_model()
@@ -735,7 +893,7 @@ def generate_review(
 
     selected_passes = policy.passes if policy is not None else review_passes()
     for pass_name in selected_passes:
-        for chunk in chunks:
+        for chunk_index, chunk in enumerate(chunks):
             if progress_callback:
                 progress_callback()
             batch, input_tokens, output_tokens = _call_structured(
@@ -749,6 +907,18 @@ def generate_review(
                     security_policy_text,
                 ),
                 model_name=selected_candidate_model,
+                workload="review_candidate",
+                request_id=(
+                    f"{request_namespace}:candidate/{pass_name}/{chunk_index}"
+                    if request_namespace
+                    else None
+                ),
+                generator=generator,
+                step_store=step_store,
+                step_key=(
+                    f"candidate/{pass_name}/{chunk_index}" if step_store is not None else None
+                ),
+                cancellation_check=cancellation_check,
             )
             prompt_tokens += input_tokens
             completion_tokens += output_tokens
@@ -763,6 +933,10 @@ def generate_review(
         context_text,
         policy,
         model_name=selected_candidate_model,
+        step_store=step_store,
+        generator=generator,
+        cancellation_check=cancellation_check,
+        request_namespace=request_namespace,
     )
     prompt_tokens += diagram_prompt_tokens
     completion_tokens += diagram_completion_tokens
@@ -805,6 +979,12 @@ def generate_review(
         ),
         user_prompt=_verification_prompt(candidates, parsed_diff, policy_text),
         model_name=selected_verifier_model,
+        workload="review_verifier",
+        request_id=f"{request_namespace}:verifier" if request_namespace else None,
+        generator=generator,
+        step_store=step_store,
+        step_key="verifier" if step_store is not None else None,
+        cancellation_check=cancellation_check,
     )
     prompt_tokens += input_tokens
     completion_tokens += output_tokens
@@ -824,12 +1004,9 @@ def generate_review(
         decision = decisions.get(candidate_id)
         if (
             policy is not None
-            and candidate.security_classification
-            is SecurityClassification.PREVENTATIVE
+            and candidate.security_classification is SecurityClassification.PREVENTATIVE
         ):
-            threshold = policy.preventative_security_threshold_for(
-                candidate.file_path
-            )
+            threshold = policy.preventative_security_threshold_for(candidate.file_path)
         else:
             threshold = (
                 policy.threshold_for(candidate.file_path)
@@ -847,8 +1024,7 @@ def generate_review(
         body = decision.revised_body or candidate.body
         severity = decision.revised_severity or candidate.severity
         if (
-            candidate.security_classification
-            is SecurityClassification.PREVENTATIVE
+            candidate.security_classification is SecurityClassification.PREVENTATIVE
             and severity in {Severity.CRITICAL, Severity.HIGH}
         ):
             continue

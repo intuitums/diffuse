@@ -8,6 +8,12 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from service.model_config import (
+    ModelExecutionPlan,
+    ModelExecutor,
+    ModelTarget,
+    StructuredOutputMode,
+)
 from service.model_providers import model_family as resolve_model_family
 
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
@@ -172,12 +178,35 @@ class ReviewModelPlan:
     verifier_model: str
     reason_code: str
     detected_family: str | None
+    executor: str = "litellm"
+    structured_output_mode: str = "auto"
+    runner_protocol_version: str = "diffuse-model-runner-v1"
 
     def __post_init__(self) -> None:
         if not self.candidate_model.strip() or not self.verifier_model.strip():
             raise ValueError("Review model plan requires candidate and verifier models")
         if not re.fullmatch(r"[a-z0-9_]{1,64}", self.reason_code):
             raise ValueError("Review model routing reason is invalid")
+        ModelExecutor(self.executor)
+        StructuredOutputMode(self.structured_output_mode)
+
+    @property
+    def execution_plan(self) -> ModelExecutionPlan:
+        executor = ModelExecutor(self.executor)
+        mode = StructuredOutputMode(self.structured_output_mode)
+        return ModelExecutionPlan(
+            candidate=ModelTarget(
+                executor=executor,
+                requested_model=self.candidate_model,
+                structured_output_mode=mode,
+            ),
+            verifier=ModelTarget(
+                executor=executor,
+                requested_model=self.verifier_model,
+                structured_output_mode=mode,
+            ),
+            runner_protocol_version=self.runner_protocol_version,
+        )
 
     @property
     def fingerprint(self) -> str:
@@ -187,6 +216,7 @@ class ReviewModelPlan:
                 self.verifier_model,
                 self.reason_code,
                 self.detected_family or "",
+                self.execution_plan.fingerprint,
             )
         )
         return hashlib.sha256(value.encode()).hexdigest()
@@ -266,9 +296,7 @@ def _trailer_signal(
 ) -> ProvenanceSignal | None:
     email_match = EMAIL_PATTERN.search(value)
     email = email_match.group("email") if email_match else ""
-    display_name = (
-        value[: email_match.start()].strip() if email_match else value.strip()
-    )
+    display_name = value[: email_match.start()].strip() if email_match else value.strip()
     source = f"commit_trailer_{key.casefold().replace('-', '_')}"
     identity = _identity_signal(
         name=display_name,
@@ -391,9 +419,7 @@ def classify_pull_request_provenance(
         name="",
         email="",
         login=pull_request_author,
-        actor_type=(
-            "bot" if pull_request_author.strip().casefold().endswith("[bot]") else ""
-        ),
+        actor_type=("bot" if pull_request_author.strip().casefold().endswith("[bot]") else ""),
         source="pull_request_author",
         commit_sha="",
         verified=False,
@@ -403,9 +429,7 @@ def classify_pull_request_provenance(
 
     if not all_signals:
         return PullRequestProvenance(
-            classification=(
-                "human_or_undetected" if commit_set.commits else "unknown"
-            ),
+            classification=("human_or_undetected" if commit_set.commits else "unknown"),
             model_family=None,
             tool=None,
             confidence=0,
@@ -425,24 +449,17 @@ def classify_pull_request_provenance(
     # to keep their own model family in the candidate position. When no asserted
     # identity exists, retain the existing conservative treatment of weak signals.
     asserted_signals = [
-        signal
-        for signal in all_signals
-        if signal.strength > UNVERIFIED_IDENTITY_MAX_STRENGTH
+        signal for signal in all_signals if signal.strength > UNVERIFIED_IDENTITY_MAX_STRENGTH
     ]
     classification_signals = asserted_signals or all_signals
-    families = {
-        signal.model_family
-        for signal in classification_signals
-        if signal.model_family
-    }
+    families = {signal.model_family for signal in classification_signals if signal.model_family}
     tools = {signal.tool for signal in classification_signals}
     unknown_family_tools = {
-        signal.tool
-        for signal in classification_signals
-        if signal.model_family is None
+        signal.tool for signal in classification_signals if signal.model_family is None
     }
     direct_agent_identity = any(
-        signal.source in {
+        signal.source
+        in {
             "commit_author",
             "commit_committer",
             "pull_request_author",
@@ -468,12 +485,7 @@ def classify_pull_request_provenance(
     confidence = max(signal.strength for signal in classification_signals)
     if not commit_set.complete:
         confidence *= 0.75
-    evidence = sorted(
-        {
-            f"{signal.source}:{signal.tool}"
-            for signal in all_signals
-        }
-    )
+    evidence = sorted({f"{signal.source}:{signal.tool}" for signal in all_signals})
     if not commit_set.complete:
         evidence.append("incomplete_commit_metadata")
     return PullRequestProvenance(
@@ -504,6 +516,8 @@ def select_review_model_plan(
     candidate_model: str,
     verifier_model: str,
     minimum_confidence: float = PROVENANCE_CONFIDENCE_DEFAULT,
+    executor: str = "litellm",
+    structured_output_mode: str = "auto",
 ) -> ReviewModelPlan:
     """Choose an opposing family when provenance is strong enough."""
 
@@ -513,11 +527,7 @@ def select_review_model_plan(
     if any(not model for model in configured):
         raise ValueError("Configured review models cannot be empty")
 
-    origin = (
-        provenance.model_family
-        if provenance.confidence >= minimum_confidence
-        else None
-    )
+    origin = provenance.model_family if provenance.confidence >= minimum_confidence else None
     if origin is not None:
         opposing = tuple(
             model
@@ -537,12 +547,16 @@ def select_review_model_plan(
                 verifier_model=remaining[0] if remaining else selected,
                 reason_code=f"opposing_{origin}_reviewer",
                 detected_family=origin,
+                executor=executor,
+                structured_output_mode=structured_output_mode,
             )
         return ReviewModelPlan(
             candidate_model=candidate_model,
             verifier_model=verifier_model,
             reason_code="opposing_model_unavailable",
             detected_family=origin,
+            executor=executor,
+            structured_output_mode=structured_output_mode,
         )
 
     if provenance.classification in {
@@ -562,4 +576,6 @@ def select_review_model_plan(
         verifier_model=verifier_model,
         reason_code=reason,
         detected_family=provenance.model_family,
+        executor=executor,
+        structured_output_mode=structured_output_mode,
     )

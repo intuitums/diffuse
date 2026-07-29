@@ -17,6 +17,8 @@ APP_ENVIRONMENT = (
     "GITHUB_APP_PRIVATE_KEY_FILE",
     "GITHUB_APP_PRIVATE_KEY",
     "GITHUB_TOKEN",
+    "DIFFUSE_RELAY_URL",
+    "DIFFUSE_RELAY_TOKEN",
 )
 
 
@@ -237,3 +239,37 @@ def test_worker_configuration_names_partial_app_authentication(monkeypatch):
 
     with pytest.raises(ValueError, match="GitHub App authentication is invalid"):
         worker.validate_worker_configuration()
+
+
+def test_gateway_identity_does_not_require_one_configured_installation(
+    monkeypatch,
+    private_key,
+):
+    monkeypatch.setenv("GITHUB_APP_ID", "Iv1.test-client-id")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY", private_key)
+
+    github_app.validate_gateway_app_configuration()
+
+
+def test_node_fetches_and_caches_its_github_token_from_the_relay(monkeypatch):
+    monkeypatch.setenv("DIFFUSE_RELAY_URL", "https://relay.diffuse.example")
+    monkeypatch.setenv("DIFFUSE_RELAY_TOKEN", "n" * 43)
+    monkeypatch.setattr(github_app.time, "monotonic", lambda: 100.0)
+    requests = []
+
+    def post(url, *, headers, timeout):
+        requests.append((url, headers, timeout))
+        return httpx.Response(
+            200,
+            json={"token": "installation-token", "expiresIn": 3600},
+        )
+
+    monkeypatch.setattr(github_app.httpx, "post", post)
+
+    assert github_app.github_token() == "installation-token"
+    assert github_app.github_token() == "installation-token"
+    assert len(requests) == 1
+    assert requests[0][0] == (
+        "https://relay.diffuse.example/relay/v1/github/token"
+    )
+    assert requests[0][1]["Authorization"] == "Bearer " + "n" * 43
