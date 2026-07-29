@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "triggers": {
+    "review_updates": true,
+    "status_check": true
+  },
+  "review": {
+    "ignored_paths": ["requirements*.lock"]
+  },
+  "auto_approval": {
+    "enabled": false
+  }
+}

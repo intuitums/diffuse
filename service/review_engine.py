@@ -36,6 +36,7 @@ LOGGER = logging.getLogger(__name__)
 
 PROMPT_VERSION = "native-review-v6-review-diagrams"
 DEFAULT_REVIEW_MODEL = "anthropic/claude-sonnet-5"
+REVIEW_TEMPERATURE = 0.1
 DEFAULT_PASSES = ("correctness", "security", "performance", "tests")
 PASS_INSTRUCTIONS = {
     "correctness": (
@@ -216,6 +217,36 @@ def _supports_json_schema(model: str) -> bool:
         return False
 
 
+def _accepts_temperature(model: str) -> bool:
+    """Whether ``model`` accepts a non-default ``temperature``.
+
+    Claude Sonnet 5, Opus 4.7/4.8, and Fable 5 removed the sampling
+    parameters; anything other than the default is refused. LiteLLM raises
+    ``UnsupportedParamsError`` client-side before any request is sent, and
+    that is neither an authentication failure nor a ``ValueError`` — so an
+    unconditional temperature makes `run_once` treat a permanent
+    misconfiguration as retryable, burning five attempts per review and
+    posting a failure notice on every pull request.
+
+    Probe LiteLLM's parameter mapping rather than hardcoding model names, so
+    a newer restricted model needs no code change and providers that still
+    honor the parameter keep it. Dropping the parameter is the safe
+    direction — the model falls back to its own default — so any probe
+    failure declines to send it.
+    """
+
+    try:
+        resolved, provider, _, _ = litellm.get_llm_provider(model=model)
+        litellm.utils.get_optional_params(
+            model=resolved,
+            custom_llm_provider=provider,
+            temperature=REVIEW_TEMPERATURE,
+        )
+    except Exception:
+        return False
+    return True
+
+
 def _call_structured[T: BaseModel](
     response_model: type[T],
     *,
@@ -238,11 +269,18 @@ def _call_structured[T: BaseModel](
     arguments: dict[str, object] = {
         "model": model,
         "messages": messages,
-        "temperature": 0.1,
+        # Recent Anthropic models refuse a non-default temperature outright,
+        # so send it only where it is honored. See `_accepts_temperature`.
         "max_tokens": (
             max_tokens
             if max_tokens is not None
-            else _positive_int("REVIEW_MAX_OUTPUT_TOKENS", 5000)
+            # Models that think before answering bill those tokens against
+            # `max_tokens`, and Sonnet 5 -- the default -- thinks adaptively
+            # whenever the request omits a thinking configuration, as this
+            # one does. Too small a budget is spent reasoning and truncates
+            # the JSON, which surfaces as a retryable structured-output
+            # fault rather than as the limit it actually is.
+            else _positive_int("REVIEW_MAX_OUTPUT_TOKENS", 16000)
         ),
         "timeout": (
             timeout_seconds
@@ -259,6 +297,8 @@ def _call_structured[T: BaseModel](
     }
     if int(arguments["max_tokens"]) <= 0 or int(arguments["timeout"]) <= 0:
         raise ValueError("Structured model limits must be positive")
+    if _accepts_temperature(model):
+        arguments["temperature"] = REVIEW_TEMPERATURE
     api_key = _model_api_key(model)
     if api_key:
         arguments["api_key"] = api_key
@@ -303,7 +343,10 @@ def verify_model_connection(model_name: str | None = None) -> None:
         system_prompt="You are a connectivity probe for Diffuse code review.",
         user_prompt='Return {"ready": true}.',
         model_name=model_name,
-        max_tokens=32,
+        # The probe's answer needs a handful of tokens, but a thinking model
+        # spends its budget before emitting any, and a probe that truncates
+        # reports a broken connection to an operator whose setup is fine.
+        max_tokens=2048,
         timeout_seconds=min(_positive_int("REVIEW_MODEL_TIMEOUT_SECONDS", 180), 30),
     )
 
