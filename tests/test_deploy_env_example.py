@@ -90,6 +90,15 @@ def test_release_bundle_ships_the_customer_env_example():
     assert "deploy/env.example" in workflow
 
 
+def test_release_artifacts_ship_the_license():
+    """Both public distribution formats must carry the BSL text."""
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "release.yml").read_text()
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
+    assert "cp LICENSE deploy/README.md" in workflow
+    assert "COPY --chown=diffuse:diffuse LICENSE /opt/diffuse/LICENSE" in dockerfile
+    assert "test -f /opt/diffuse/LICENSE" in dockerfile
+
+
 def test_release_requires_public_oci_artifacts():
     """A release must prove operators can pull both artifacts anonymously."""
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "release.yml").read_text()

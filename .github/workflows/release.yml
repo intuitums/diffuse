@@ -220,7 +220,7 @@ jobs:
           DIGEST: ${{ steps.manifest.outputs.digest }}
         run: |
           mkdir -p release/diffuse
-          cp deploy/README.md deploy/compose.yaml deploy/env.example release/diffuse/
+          cp LICENSE deploy/README.md deploy/compose.yaml deploy/env.example release/diffuse/
           sed -i "s|^DIFFUSE_IMAGE=.*|DIFFUSE_IMAGE=${IMAGE}@${DIGEST}|" \
             release/diffuse/env.example
           cp docs/deployment.md release/diffuse/OPERATIONS.md
