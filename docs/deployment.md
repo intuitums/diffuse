@@ -126,11 +126,42 @@ for that parameter and no way to inject a pre-built client. The blocker is
 upstream.
 
 Until that changes, the way to run Diffuse without an OpenAI credential is
-`EMBEDDING_API_BASE` plus a non-OpenAI `REVIEW_MODEL`. The embedding endpoint
-must return 1536-dimensional vectors, which rules out the most common local
-choices — `nomic-embed-text` is 768 and `mxbai-embed-large` is 1024. Models that
-are natively 1536 include `BAAI/bge-code-v1`, `jinaai/jina-code-embeddings-1.5b`,
-and `Alibaba-NLP/gte-Qwen2-1.5B-instruct`.
+`EMBEDDING_API_BASE` plus a non-OpenAI `REVIEW_MODEL`.
+
+The binding constraint is that the endpoint must return 1536-dimensional
+vectors, because the schema pins the column at `VECTOR(1536)`. That rules out the
+most common local choices — `nomic-embed-text` is 768 and `mxbai-embed-large` is
+1024, and either fails every index job with "Embedding model returned N
+dimensions; expected 1536". Options that do fit:
+
+| Endpoint | Model | How it reaches 1536 |
+| --- | --- | --- |
+| Self-hosted (vLLM, TEI, Ollama) | `BAAI/bge-code-v1` | native |
+| Self-hosted | `jinaai/jina-code-embeddings-1.5b` | native |
+| Self-hosted | `Alibaba-NLP/gte-Qwen2-1.5B-instruct` | native |
+| `https://api.mistral.ai/v1` | `codestral-embed` | default output dimension |
+| `https://api.jina.ai/v1` | `jina-embeddings-v4` | `dimensions: 1536` (native 2048) |
+
+The 1536-native self-hosted models are all code-retrieval models, which is not a
+coincidence: 1536 is the hidden size of the Qwen2-1.5B backbone they share. That
+suits reviewing code, but do not assume it behaves like `text-embedding-3-small`
+on prose.
+
+The two hosted rows are OpenAI-compatible and take a bearer token, so they work
+through `EMBEDDING_API_BASE` with `OPENAI_API_KEY` set to that provider's key —
+a way to avoid an OpenAI account without running an inference server. Neither
+has been exercised against a live key here, and Mistral's own documentation
+contradicts itself on whether `codestral-embed` returns 1536 or 1553, so confirm
+the width on the first call rather than trusting the table:
+
+```bash
+docker compose run --rm worker repository sync <repository-id>
+docker compose logs worker | grep "expected 1536"
+```
+
+An index job that completes has already agreed with the constraint; one that
+prints that line disagrees, and no repository will be reviewable until the model
+changes.
 
 For the cloud providers, ambient credential chains already work and are
 preferable to a stored key: `bedrock/…` resolves the AWS chain (so an instance
