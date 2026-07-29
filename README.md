@@ -11,11 +11,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/intuitumxyz/diffuse/actions/workflows/verify.yml"><img src="https://img.shields.io/github/actions/workflow/status/intuitumxyz/diffuse/verify.yml?branch=main&amp;style=flat-square&amp;label=verify&amp;labelColor=0C0C11&amp;color=EAFF49" alt="Verify status"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSL%201.1-EAFF49?style=flat-square&amp;labelColor=0C0C11" alt="License: BSL 1.1"></a>
-</p>
-
-<p align="center">
   <a href="#why-diffuse">Why Diffuse</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#local-setup">Get started</a> ·
