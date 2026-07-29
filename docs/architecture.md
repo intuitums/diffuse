@@ -52,45 +52,29 @@ GitHub / CLI / MCP / Web app
 
 ## Deployment and ownership boundary
 
-Diffuse uses one PostgreSQL-backed data plane in two operating models:
+Diffuse uses one PostgreSQL-backed data plane, self-hosted by the operator:
 
 ```text
-Proprietary self-hosted
-  Customer operator
+Self-hosted
+  Operator
         |
   Diffuse API + workers + web app
         |
-  Customer PostgreSQL/pgvector + repository storage
-
-Managed cloud
-  Diffuse cloud control plane
-    accounts / billing / entitlements / provisioning / fleet projections
-        |
-  Managed Diffuse API + workers + web app
-        |
-  Managed PostgreSQL/pgvector + repository storage
+  Operator PostgreSQL/pgvector + repository storage
 ```
 
-The managed service runs the same application and migration artifacts as the
-self-hosted product. PostgreSQL remains authoritative for repository,
-source-derived, review, workflow, feedback, and learning state in both modes.
-A future cloud control plane may use Convex or another application backend for
-cloud-only concerns, but standalone installations do not depend on it.
+There is no Diffuse-hosted control plane and no managed service; see
+[ADR 0042](adr/0042-source-available-self-hosted-distribution.md).
+PostgreSQL remains authoritative for repository, source-derived, review,
+workflow, feedback, and learning state. Self-hosted telemetry and diagnostic
+upload are opt-in.
 
-Connected installations communicate with a cloud control plane through signed,
-versioned, idempotent commands and events. Cloud status and fleet views are
-rebuildable projections, never a second source of truth. Source, diffs,
-embeddings, prompts, evidence, findings, and learned rules are excluded from
-that control-plane contract. Self-hosted telemetry and diagnostic upload are
-opt-in.
-
-Proprietary releases are delivered as authenticated, signed, digest-pinned
-artifacts built from the private source repository. Runtime images omit the
-source checkout and build-only material and may compile the Python application
-to avoid shipping plain source files. This raises the cost of inspection but
-does not claim to prevent a customer who controls the host from reverse
-engineering an executable. ADR 0040 records the distribution and ownership
-decision.
+Releases are delivered as signed, digest-pinned artifacts. Runtime images omit
+the build-only material and compile the Python application rather than shipping
+plain source files — a packaging and image-size decision, not a secrecy one:
+the source is published under BSL 1.1.
+[ADR 0042](adr/0042-source-available-self-hosted-distribution.md) records the
+distribution decision.
 
 ### Control plane
 
@@ -111,9 +95,6 @@ decision.
   rules, model settings, audit events, analytics, and operational state will be
   the control plane's resources. Repositories, policies, rules, model settings,
   and audit events are durable today; the tenancy model above them is not.
-- In managed cloud, a separate provider-operated control plane owns
-  subscriptions, entitlements, provisioning, deployment registry, and fleet
-  operations without owning source-derived data-plane state.
 
 ### SCM adapters
 
@@ -682,7 +663,7 @@ history, and artifacts according to configured retention policy.
 > **Target, not current state.** Only the Developer profile and a single-node
 > Compose profile exist. The shipped Compose topology is four services — `db`,
 > `migrate`, `app`, `worker` — as defined in `docker-compose.yml` (development)
-> and `deploy/compose.yaml` (customer, digest-pinned). Split index/review
+> and `deploy/compose.yaml` (release, digest-pinned). Split index/review
 > workers, a Redis-compatible cache, S3-compatible object storage, and the
 > Kubernetes profile are not implemented; there is no Helm chart or Kubernetes
 > manifest in the repository.

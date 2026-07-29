@@ -21,7 +21,7 @@ These four carry the decisions the rest of the system is built on:
 - [0001](0001-immutable-index-snapshots.md) — immutable commit-pinned index snapshots
 - [0002](0002-postgres-workflow-queue.md) — PostgreSQL as the workflow queue
 - [0036](0036-transactional-versioned-database-migrations.md) — transactional versioned migrations
-- [0040](0040-proprietary-self-hosted-and-managed-cloud-distribution.md) — proprietary self-hosted and managed-cloud distribution
+- [0042](0042-source-available-self-hosted-distribution.md) — source-available self-hosted distribution under BSL 1.1
 
 ## All records
 
@@ -65,8 +65,9 @@ These four carry the decisions the rest of the system is built on:
 | 0037 | [Repository-authorized versioned REST API](0037-repository-authorized-rest-api.md) | Accepted |
 | 0038 | [Idempotent REST review trigger](0038-idempotent-rest-review-trigger.md) | Accepted |
 | 0039 | [Idempotent repository onboarding and indexing API](0039-idempotent-repository-onboarding-and-indexing-api.md) | Accepted |
-| 0040 | [Proprietary self-hosted and managed-cloud distribution](0040-proprietary-self-hosted-and-managed-cloud-distribution.md) | Accepted |
+| 0040 | [Proprietary self-hosted and managed-cloud distribution](0040-proprietary-self-hosted-and-managed-cloud-distribution.md) | Superseded by [0042](0042-source-available-self-hosted-distribution.md) |
 | 0041 | [GitHub as the only supported source-control provider](0041-github-only-source-control.md) | Accepted |
+| 0042 | [Source-available self-hosted distribution under BSL 1.1](0042-source-available-self-hosted-distribution.md) | Accepted |
 
 ## Superseded records
 

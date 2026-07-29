@@ -13,9 +13,8 @@ Email **security@intuitum.xyz**. Include:
 - reproduction steps or a proof of concept; and
 - the impact you believe it has.
 
-Diffuse's source repository is private, so there is no public advisory database
-to file against. Customers under a commercial agreement should also notify their
-support contact, which is the channel with a response commitment attached.
+Report privately rather than opening a public issue, so a fix can ship before
+the details are public.
 
 ## What to expect
 
@@ -23,10 +22,10 @@ support contact, which is the channel with a response commitment attached.
 - An initial assessment, including whether we consider it in scope, within
   10 business days.
 - Progress updates until the issue is resolved or closed.
-- Attribution in the customer-facing release note, unless you ask us not to.
+- Attribution in the public release note, unless you ask us not to.
 
 Diffuse has no paid bug bounty. Coordinated disclosure is expected: please give
-us a reasonable opportunity to ship a fix and notify affected customers before
+us a reasonable opportunity to ship a fix and notify affected operators before
 disclosing publicly.
 
 ## Scope
@@ -101,14 +100,12 @@ The following are explicitly **in scope**:
 
 ## Supported versions
 
-Diffuse is pre-1.0. Fixes land on `main` and reach customers as authenticated,
-signed, digest-pinned release artifacts; there are no maintained release
-branches, and self-hosted customers cannot track `main` because the source
-repository is private. Upgrade to the latest signed release to receive security
-fixes. See [`deploy/README.md`](deploy/README.md) for signature verification and
-[ADR 0040](docs/adr/0040-proprietary-self-hosted-and-managed-cloud-distribution.md)
-for the distribution model.
+Diffuse is pre-1.0. Fixes land on `main` and ship as signed, digest-pinned
+release artifacts; there are no maintained release branches, so security fixes
+are not backported. Upgrade to the latest release to receive them. See
+[`deploy/README.md`](deploy/README.md) for signature verification and
+[ADR 0042](docs/adr/0042-source-available-self-hosted-distribution.md) for the
+distribution model.
 
 Because operators control their own hosts, a fix is only effective once the
-operator upgrades. Security releases are announced through the support channel
-in the commercial agreement rather than a public feed.
+operator upgrades.

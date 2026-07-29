@@ -1,17 +1,22 @@
 # Diffuse self-hosted release
 
-This bundle installs a proprietary Diffuse release without access to the
-private source repository. It contains the deployment manifest and operational
-documentation, not the application source.
+This bundle installs a tagged Diffuse release from published images. It
+contains the deployment manifest and operational documentation; the application
+source lives in the Diffuse repository under the
+[Business Source License 1.1](https://github.com/intuitumxyz/diffuse/blob/main/LICENSE).
+
+Diffuse is proprietary, source-available software, not open source. You may run
+it in production and inside a commercial organization; you may not offer it to
+third parties as a hosted, managed, or embedded service, or otherwise sell
+access to its functionality. Permitted self-hosted use requires no separate
+commercial agreement, license key, entitlement file, or registry credential.
 
 ## Install
 
-1. Obtain read access to the private `ghcr.io/intuitumxyz/diffuse` package and
-   authenticate Docker using the customer credential supplied by Diffuse.
-2. Copy `env.example` to `.env`, restrict it with `chmod 600 .env`, and fill
+1. Copy `env.example` to `.env`, restrict it with `chmod 600 .env`, and fill
    every required value. Release bundles already pin `DIFFUSE_IMAGE` to the
    immutable release digest.
-3. Verify the image signature before starting it:
+2. Verify the image signature before starting it:
 
    ```bash
    image_ref="$(sed -n 's/^DIFFUSE_IMAGE=//p' .env)"
@@ -22,7 +27,7 @@ documentation, not the application source.
      "$image_ref"
    ```
 
-4. Pull and start the migration-gated stack:
+3. Pull and start the migration-gated stack:
 
    ```bash
    docker compose --env-file .env pull
@@ -31,7 +36,7 @@ documentation, not the application source.
    curl --fail http://127.0.0.1:8000/ready
    ```
 
-5. Create the GitHub webhook, pointing it at
+4. Create the GitHub webhook, pointing it at
    `https://your-diffuse-host/webhook/github` with the `GITHUB_WEBHOOK_SECRET`
    from `.env`. Enable exactly these four event types and no others:
 
@@ -40,7 +45,7 @@ documentation, not the application source.
    - `issue_comment`
    - `pull_request_review_comment`
 
-6. Onboard each repository you want reviewed. **Nothing is reviewed until you
+5. Onboard each repository you want reviewed. **Nothing is reviewed until you
    do this**, and a webhook for a repository that was never onboarded is
    refused with HTTP 409 — which reads exactly like the webhook not being
    delivered at all. See the "When nothing appears to happen" section of
@@ -60,7 +65,7 @@ documentation, not the application source.
    initial index to finish before expecting a review: a repository whose index
    has not been built yet cannot be reviewed.
 
-7. Open a pull request to confirm the path end to end. Note that by default
+6. Open a pull request to confirm the path end to end. Note that by default
    Diffuse reviews a pull request when it opens but **not** when you push
    further commits to it, and publishes no status check. Both are opt-in per
    repository through `.diffuse/config.json`; see `CONFIGURATION.md`, included
@@ -82,9 +87,7 @@ subcommands are `review`, `repository`, `cluster`, `learning`, `token`,
 
 ## Obtaining this bundle and later ones
 
-Every release publishes this bundle as an OCI artifact in the same private
-registry as the image, so it needs the credential you already have and no access
-to the Diffuse source repository:
+Every release publishes this bundle as an OCI artifact alongside the image:
 
 ```bash
 oras pull ghcr.io/intuitumxyz/diffuse-self-host:vX.Y.Z
@@ -92,11 +95,9 @@ sha256sum --check diffuse-self-host.tar.gz.sha256
 tar -xzf diffuse-self-host.tar.gz
 ```
 
-Ask Diffuse for read access to the `diffuse-self-host` package alongside the
-`diffuse` package. Artifacts are immutable and are not garbage collected, so an
-older release stays retrievable at its own tag; the `DIFFUSE_IMAGE` digest each
-bundle pins is also recorded in the artifact's
-`xyz.intuitum.diffuse.image` annotation:
+Artifacts are immutable and are not garbage collected, so an older release
+stays retrievable at its own tag; the `DIFFUSE_IMAGE` digest each bundle pins
+is also recorded in the artifact's `xyz.intuitum.diffuse.image` annotation:
 
 ```bash
 oras manifest fetch --pretty ghcr.io/intuitumxyz/diffuse-self-host:vX.Y.Z
@@ -113,5 +114,5 @@ database volume exists.
 Read `OPERATIONS.md`, included alongside this file in the release bundle, before
 onboarding production repositories. (It is not present in the source
 repository — the release build generates it from `docs/deployment.md`.) Back up
-PostgreSQL before every upgrade. Never share the registry credential, `.env`,
-SCM credentials, or model credentials with Diffuse support.
+PostgreSQL before every upgrade. Never share `.env`, SCM credentials, or model
+credentials with anyone, including Diffuse support.

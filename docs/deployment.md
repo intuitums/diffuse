@@ -3,8 +3,8 @@
 This profile is for one trusted operator or a small trusted team on a Linux
 server. Diffuse is still a foundation release: it does not yet provide
 multi-tenant isolation, encrypted per-installation SCM credentials, operational
-metrics, connected/offline entitlement enforcement, or automated backup
-retention. Do not expose it as an untrusted multi-tenant service.
+metrics, or automated backup retention. Do not expose it as an untrusted
+multi-tenant service.
 
 ## Host preparation
 
@@ -24,9 +24,9 @@ binds PostgreSQL and Diffuse itself to `127.0.0.1`; keep those bindings private.
 Create the deployment environment and restrict it to the operator:
 
 ```bash
-# Customer release bundle:
+# Published release bundle:
 cp env.example .env
-# Private source workspace instead:
+# Source checkout instead:
 # cp .env.example .env
 chmod 600 .env
 openssl rand -hex 32
@@ -86,7 +86,7 @@ these to the signed release digest.
 
 ## Start and expose the service
 
-Pull and start a customer release bundle's digest-pinned, migration-gated
+Pull and start a release bundle's digest-pinned, migration-gated
 stack:
 
 ```bash
@@ -96,9 +96,9 @@ docker compose ps
 curl --fail http://127.0.0.1:8000/ready
 ```
 
-(Maintainers building from the private source workspace use
-`docker compose up -d --build` against the repository's own `docker-compose.yml`
-and `.env.example` instead. Neither file is part of this bundle.)
+(Building from a source checkout instead uses `docker compose up -d --build`
+against the repository's own `docker-compose.yml` and `.env.example`. Neither
+file is part of this bundle.)
 
 The `migrate` container must finish successfully before `app` and `worker`
 start. Both the API and worker share the repository-mirror volume. The API
@@ -235,11 +235,8 @@ For every upgrade:
 2. retrieve the new bundle with
    `oras pull ghcr.io/intuitumxyz/diffuse-self-host:vX.Y.Z`, check it with
    `sha256sum --check diffuse-self-host.tar.gz.sha256`, and unpack it beside —
-   not over — the running deployment. The registry is the customer channel: it
-   needs only the GHCR credential already issued for the `diffuse` image. The
-   same two files are also attached to the tagged GitHub Release, but that page
-   requires read access to the private source repository, so it is the
-   staff and support channel rather than the customer one;
+   not over — the running deployment. The same two files are also attached to
+   the tagged GitHub Release;
 3. copy the new `compose.yaml` into place and carry your existing `.env`
    forward, taking only the new release's `DIFFUSE_IMAGE` digest from its
    `env.example`;
