@@ -101,9 +101,10 @@ distribution decision.
 - One normalized interface for GitHub Cloud and GitHub Enterprise.
 - SCM credentials are never placed in clone URLs, subprocess arguments,
   database rows, job payloads, or logs; they reach Git only through a
-  non-interactive askpass environment. Encryption at rest is a target: the
-  installation reads one process-level `GITHUB_TOKEN`, there are no
-  per-installation credentials, and nothing in the codebase encrypts them.
+  non-interactive askpass environment. The self-hosted profile reads one
+  process-level GitHub App identity, mints short-lived installation tokens, and
+  keeps them only in memory. Per-tenant installation selection and encrypted
+  database-backed credentials remain targets.
 - Normalized repositories, commits, diffs, checks, reviews, inline threads,
   reactions, pull requests, and webhook events.
 - Every event has a provider delivery ID and an idempotency record.

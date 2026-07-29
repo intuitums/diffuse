@@ -14,8 +14,10 @@ commercial agreement, license key, entitlement file, or registry credential.
 ## Install
 
 1. Copy `env.example` to `.env`, restrict it with `chmod 600 .env`, and fill
-   every required value. Release bundles already pin `DIFFUSE_IMAGE` to the
-   immutable release digest.
+   every required value. Configure the GitHub App ID, installation ID, private
+   key, and webhook secret; Diffuse mints and refreshes installation tokens, so
+   do not paste a one-hour token into `GITHUB_TOKEN`. Release bundles already
+   pin `DIFFUSE_IMAGE` to the immutable release digest.
 2. Verify the image signature before starting it:
 
    ```bash
@@ -36,7 +38,7 @@ commercial agreement, license key, entitlement file, or registry credential.
    curl --fail http://127.0.0.1:8000/ready
    ```
 
-4. Create the GitHub webhook, pointing it at
+4. Configure the GitHub App webhook, pointing it at
    `https://your-diffuse-host/webhook/github` with the `GITHUB_WEBHOOK_SECRET`
    from `.env`. Enable exactly these four event types and no others:
 

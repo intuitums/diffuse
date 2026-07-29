@@ -108,6 +108,7 @@ from service.github import (
     fetch_pull_request_diff,
     fetch_pull_request_update_diff,
 )
+from service.github_app import validate_app_configuration
 from service.github_approval import (
     publish_github_approval,
 )
@@ -2404,6 +2405,7 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("RULE_LEARNING_BATCH_SIZE", partial(_probe_int, "RULE_LEARNING_BATCH_SIZE")),
     ("GITHUB_API_URL", partial(_probe_base_url, "GITHUB_API_URL", "https://api.github.com")),
     ("GITHUB_WEB_URL", partial(_probe_base_url, "GITHUB_WEB_URL", "https://github.com")),
+    ("GitHub App authentication", validate_app_configuration),
 )
 
 
