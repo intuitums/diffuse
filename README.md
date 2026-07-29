@@ -1,28 +1,58 @@
-# Diffuse
+<p align="center">
+  <img src="assets/logo/mark-black-on-acid-rounded.svg" width="120" height="120" alt="Diffuse">
+</p>
 
-AI writes most code now. Diffuse is the review agent that makes sure nothing
-slips through the cracks — and it runs entirely inside infrastructure you
-control, instead of behind someone else's subscription.
+<h1 align="center">Diffuse</h1>
 
-It is a self-hostable code-intelligence and review platform: graph-aware
-repository understanding, high-signal pull-request reviews, learning from team
-feedback, cross-repository context, and developer tools, without source code
-leaving the operator's environment.
+<p align="center">
+  <strong>Code review for the age of AI.</strong>
+  <br>
+  Self-hosted, codebase-aware review that keeps your source and your workflow under your control.
+</p>
 
-The current code is the first foundation, not the finished product. It indexes
-tracked source files, combines graph and semantic retrieval, runs a native
-structured review engine, and publishes commit-pinned GitHub reviews and status
-checks. It supports durable finding threads, grounded clarification replies,
-inspectable feedback, authorized manual reruns, and conservative exact-head
-automatic approval. The capability ledger distinguishes this working foundation
-from the remaining product surface.
+<p align="center">
+  <a href="https://github.com/intuitumxyz/diffuse/actions/workflows/verify.yml"><img src="https://img.shields.io/github/actions/workflow/status/intuitumxyz/diffuse/verify.yml?branch=main&amp;style=flat-square&amp;label=verify&amp;labelColor=0C0C11&amp;color=EAFF49" alt="Verify status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSL%201.1-EAFF49?style=flat-square&amp;labelColor=0C0C11" alt="License: BSL 1.1"></a>
+</p>
 
-See:
+<p align="center">
+  <a href="#why-diffuse">Why Diffuse</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#local-setup">Get started</a> ·
+  <a href="docs/configuration.md">Configuration</a> ·
+  <a href="DEVELOPMENT.md">Development</a>
+</p>
 
-- [Capability ledger](docs/capabilities.md)
-- [Target architecture](docs/architecture.md)
-- [Delivery roadmap](docs/roadmap.md)
-- [Single-server deployment](docs/deployment.md)
+---
+
+AI can write code faster than teams can confidently review it. Diffuse closes
+that gap with repository-aware pull-request review grounded in the exact code
+being changed and the wider system around it.
+
+Diffuse combines graph, lexical, and semantic retrieval with structured review
+passes, then publishes commit-pinned findings directly to GitHub. It learns from
+inspectable team feedback, carries context across repositories, and exposes the
+same intelligence through its CLI, REST API, and MCP server.
+
+You run the API, workers, PostgreSQL/pgvector, repository storage, and model
+connections inside infrastructure you control. There is no hosted control plane
+and no Diffuse account to create.
+
+## Why Diffuse
+
+| | |
+| --- | --- |
+| **Review with context** | Understands symbols, imports, calls, inheritance, and related repositories instead of reviewing an isolated diff. |
+| **Find the signal** | Runs focused correctness, security, performance, and test passes, then independently verifies candidates before publishing. |
+| **Stay in control** | Keeps source-derived data in your environment unless you explicitly configure an external model or integration. |
+| **Improve with use** | Turns authorized replies and reactions into inspectable rule suggestions that require human approval before activation. |
+| **Meet developers where they work** | Publishes native GitHub reviews and checks, with the same review context available through CLI, REST, and MCP. |
+
+> [!NOTE]
+> Diffuse is a working foundation under active development. See the
+> [capability ledger](docs/capabilities.md) for what is implemented today, the
+> [target architecture](docs/architecture.md) for where it is headed, and the
+> [delivery roadmap](docs/roadmap.md) for the path between them.
 
 ## How it works
 

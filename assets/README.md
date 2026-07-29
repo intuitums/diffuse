@@ -20,6 +20,7 @@ Fixed-color variants, for contexts that cannot set `color`:
 | `logo/mark-black.svg` | `#000000` on transparent |
 | `logo/mark-acid.svg` | `#EAFF49` on transparent — for placing on ink |
 | `logo/mark-black-on-acid.svg` | avatar / social / favicon source |
+| `logo/mark-black-on-acid-rounded.svg` | rounded black-on-acid lockup for the repository README |
 | `logo/mark-acid-on-ink.svg` | inverse, on a dark field |
 
 Each has a `-1024.png` export alongside for raster-only channels. Prefer SVG
