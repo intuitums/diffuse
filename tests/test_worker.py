@@ -1482,7 +1482,19 @@ def test_hot_path_configuration_is_validated_before_any_job_is_claimed(monkeypat
         ("MIN_CONTEXT_SIMILARITY", "2"),
         ("WORKFLOW_LEASE_SECONDS", "30"),
         ("EMBEDDING_DIMENSIONS", "wide"),
+        # Parseable, positive, and unstorable: code_chunks.embedding is
+        # VECTOR(1536) and pgvector's VECTOR is fixed-width, so this used to
+        # reach pgvector on the first insert of the first index job instead of
+        # stopping the worker. See .context/w2.2-dimension-analysis.md.
+        ("EMBEDDING_DIMENSIONS", "768"),
         ("SCM_API_TIMEOUT_SECONDS", "0"),
+        # `indexer` cannot import service.scm, so embedding_api_base() only
+        # trims the value. Without a probe here a malformed endpoint reaches
+        # LiteLLM as a connection error on every index job instead of stopping
+        # the worker with the variable's name.
+        ("EMBEDDING_API_BASE", "ollama.internal:11434"),
+        ("EMBEDDING_API_BASE", "https://user:pass@embeddings.internal/v1"),
+        ("EMBEDDING_API_BASE", "http://embeddings.internal/v1"),
     ],
 )
 def test_every_hot_path_variable_fails_startup_by_name(monkeypatch, name, value):
