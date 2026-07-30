@@ -439,6 +439,16 @@ def compare_to_golden(
     for case_id in sorted(golden_cases.keys() & observed_cases.keys()):
         observed = observed_cases[case_id]
         reference = golden_cases[case_id]
+        labeled = observed.true_positives + observed.false_negatives
+        if labeled != reference.expected_finding_count:
+            # Editing a fixture's labels after capture silently rebases the
+            # comparison: drop a label the engine kept missing and recall
+            # "improves" without the engine changing at all.
+            regressions.append(
+                f"case {case_id!r} now carries {labeled} labels but the golden was "
+                f"captured against {reference.expected_finding_count}; recapture the "
+                f"golden (see evals/CAPTURE.md)"
+            )
         if observed.false_negatives > reference.false_negatives:
             regressions.append(
                 f"case {case_id!r} missed {observed.false_negatives} labeled findings, "

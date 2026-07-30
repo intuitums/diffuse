@@ -580,6 +580,21 @@ def test_tolerance_absorbs_a_small_aggregate_drop_but_not_a_case_regression():
     assert any("case 'delta' missed" in line for line in regressions)
 
 
+def test_editing_a_fixtures_labels_after_capture_is_reported():
+    """Dropping a stubbornly-missed label would otherwise 'improve' recall."""
+
+    golden = eval_harness.golden_from_score(
+        score_evaluation(_suite(observed_per_case={"alpha": [_finding()]}))
+    )
+    relabeled = _suite(observed_per_case={"alpha": [_finding()]})
+    relabeled.cases[0].expected = []
+    relabeled.cases[0].observed = []
+
+    regressions = eval_harness.compare_to_golden(score_evaluation(relabeled), golden)
+
+    assert any("now carries 0 labels" in line for line in regressions)
+
+
 def test_a_fixture_with_no_golden_entry_is_reported():
     golden = eval_harness.golden_from_score(
         score_evaluation(_suite(observed_per_case={"alpha": [_finding()]}))

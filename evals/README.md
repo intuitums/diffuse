@@ -145,8 +145,13 @@ threshold change in `review_engine.py` actually moves.
 
 `check` fails when any case gets worse (more misses, or more unlabeled
 findings), when an aggregate metric drops by more than `--tolerance`, when a
-golden case did not run, when a fixture has no golden entry, or when the golden
-was captured against a different model.
+golden case did not run, when a fixture has no golden entry, when a fixture's
+label set changed since capture, or when the golden was captured against a
+different model.
+
+That second-to-last one matters: editing labels after capture silently rebases
+the comparison. Drop a label the engine kept missing and recall "improves"
+without the engine changing at all.
 
 ## Known limits
 
