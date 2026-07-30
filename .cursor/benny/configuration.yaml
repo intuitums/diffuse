@@ -5,8 +5,8 @@ automations:
   reproduce_name: "benny-reproduce"
 
 slack:
-  # REQUIRED — fill before enabling automations
-  source_channel_id: ""
+  # Source: #issues-diffuse. Triage identity = Cursor Slack bot that posts [benny:*] markers.
+  source_channel_id: "C0BLUEBFPD1"
   operations_channel_id: ""
   triage_identity_user_id: ""
   read_action: "configured-slack-read-action"
@@ -27,16 +27,15 @@ repository:
 
 tracker:
   type: "linear"
-  # REQUIRED — Linear adapter + team/project/labels before triage creates issues
-  adapter_skill_name: ""
-  team: ""
-  project: ""
+  adapter_skill_name: "linear"
+  team: "Engineering"
+  project: "diffuse"
   labels:
-    bug: ""
-    performance: ""
+    bug: "Bug"
+    performance: "Improvement"
     intake: ""
     needs_repro: ""
-  status: ""
+  status: "Triage"
   source_link_title: "Slack report"
   require_compensation_action: true
 
