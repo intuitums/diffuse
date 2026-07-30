@@ -436,11 +436,26 @@ Enterprise is selected with `GITHUB_WEB_URL` and `GITHUB_API_URL`. Set
 URL. The process-level token and webhook credentials are still shared across
 configured GitHub instances pending encrypted per-installation credentials.
 
-The version-1 database schema expects 1,536-dimensional embeddings. A release
-that supports another stored dimension must add a numbered migration for both
-`VECTOR(1536)` and the snapshot dimension constraint, set
-`EMBEDDING_DIMENSIONS` consistently, and schedule compatible re-indexing.
-Never edit the frozen baseline migration.
+The version-1 database schema stores 1,536-dimensional embeddings, and that is
+a requirement rather than a default. `EMBEDDING_DIMENSIONS` set to any other
+value now stops the worker at startup by name; previously it reached pgvector
+as a type error on the first insert of the first index job. pgvector's
+`VECTOR(n)` is a fixed-dimension type — one column cannot hold mixed widths,
+and an unsized `vector` column, which can, cannot carry an HNSW or IVFFlat
+index at all. A release that supports another stored dimension must therefore
+add a numbered migration for both `VECTOR(1536)` and the snapshot dimension
+constraint, and re-index every repository from scratch: changing the column's
+width with rows present is a hard error, so it is a truncate-and-rebuild rather
+than a setting. Never edit the frozen baseline migration.
+
+`EMBEDDING_API_BASE` points embeddings at an OpenAI-compatible endpoint you run
+— Ollama, vLLM, LM Studio, Text Embeddings Inference, or a LiteLLM proxy — and
+makes `OPENAI_API_KEY` optional. Anthropic publishes no embeddings API, so
+without it a deployment that connected only Anthropic had a review model and no
+way to index anything. It is passed per call, so unlike the ambient
+`OPENAI_BASE_URL` that LiteLLM would also honour, it moves embeddings only and
+never redirects an OpenAI `REVIEW_MODEL`. The endpoint must still return 1,536
+dimensions.
 
 `REVIEW_MODEL` accepts LiteLLM model identifiers. `REVIEW_VERIFIER_MODEL`
 optionally selects an independent verifier from another model family.

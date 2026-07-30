@@ -20,6 +20,22 @@ from .index_version import INDEX_FORMAT_VERSION
 
 DEFAULT_DATABASE_URL = "postgresql://diffuse:diffuse-dev@localhost:5432/diffuse"
 DEFAULT_SCM_BASE_URL = "https://github.com"
+# The width the storage layer can actually hold. `code_chunks.embedding` is
+# declared `VECTOR(1536)` and `index_snapshots.embedding_dimensions` carries
+# `CHECK (embedding_dimensions = 1536)` in the frozen version-1 baseline, so
+# `EMBEDDING_DIMENSIONS` is configurable in name only.
+#
+# pgvector's `VECTOR(n)` is a fixed-dimension type: one column cannot hold
+# vectors of mixed width, and an unsized `vector` column -- which can -- cannot
+# carry an HNSW or IVFFlat index at all ("column does not have dimensions"),
+# which would replace every retrieval with a sequential scan. Making this
+# configurable is therefore a schema-shape decision, not a variable. See
+# `.context/w2.2-dimension-analysis.md`.
+#
+# This constant exists so `service.worker` can reject a mismatch at startup by
+# name. Without it the first index job fails inside pgvector on the first
+# insert, after the mirror has been cloned and the tree parsed.
+SCHEMA_EMBEDDING_DIMENSIONS = 1536
 GRAPH_RELATIONSHIP_KINDS = ("calls", "imports", "inherits", "implements")
 LEXICAL_TERM_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{1,127}$")
 

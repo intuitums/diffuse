@@ -14,13 +14,14 @@ from functools import partial
 import anyio
 
 from indexer.embed import (
+    embedding_api_base,
     embedding_batch_size,
     embedding_dimensions,
     embedding_model,
     verify_embedding_credential,
 )
 from indexer.index_repo import index_repo
-from indexer.store import get_conn
+from indexer.store import SCHEMA_EMBEDDING_DIMENSIONS, get_conn
 from repository_policy.models import RepositoryPolicySnapshot, validate_repo_path
 from repository_policy.resolve import (
     PullRequestTriggerContext,
@@ -2315,6 +2316,47 @@ def _probe_base_url(name: str, default: str) -> None:
     normalize_base_url(os.environ.get(name, default), field_name=name)
 
 
+def _probe_embedding_dimensions() -> None:
+    """Reject a width the schema cannot store, at startup rather than at insert.
+
+    `EMBEDDING_DIMENSIONS` parses fine at any positive value, but
+    `code_chunks.embedding` is `VECTOR(1536)` and pgvector's fixed-dimension
+    type rejects anything else. That rejection currently arrives on the first
+    `upsert_chunks` of the first index job -- after the mirror has been cloned
+    and the whole tree parsed -- as a pgvector type error that names neither the
+    variable nor the constraint, and it repeats for every repository in the
+    fleet.
+
+    Changing the stored width is a schema-shape decision, not a configuration
+    one; `.context/w2.2-dimension-analysis.md` records why. Until that decision
+    is made, the honest behaviour is to stop here with the variable's name.
+    """
+    configured = embedding_dimensions()
+    if configured != SCHEMA_EMBEDDING_DIMENSIONS:
+        raise ValueError(
+            f"EMBEDDING_DIMENSIONS is {configured}, but the database schema "
+            f"stores {SCHEMA_EMBEDDING_DIMENSIONS}-dimensional vectors and "
+            "pgvector's VECTOR type is fixed-width. Every index job would fail "
+            "on its first insert. Set EMBEDDING_DIMENSIONS back to "
+            f"{SCHEMA_EMBEDDING_DIMENSIONS} and choose an EMBEDDING_MODEL that "
+            "returns that width."
+        )
+
+
+def _probe_embedding_api_base() -> None:
+    """Validate ``EMBEDDING_API_BASE`` here rather than in ``indexer``.
+
+    ``indexer`` does not import from ``service``, so ``embedding_api_base`` can
+    only trim the value; the scheme, credential, and plaintext-origin checks
+    live in ``service.scm``. Running them at startup means a malformed endpoint
+    stops the worker with the variable's name instead of surfacing as a LiteLLM
+    connection error on every index job.
+    """
+    configured = embedding_api_base()
+    if configured is not None:
+        normalize_base_url(configured, field_name="EMBEDDING_API_BASE")
+
+
 # Every configuration value the worker reads once a job has been claimed, in one
 # place. `run_once` classifies ValueError as non-retryable -- deliberately, since
 # NonRetryableError subclasses it -- so a bare env-parsing ValueError raised
@@ -2326,8 +2368,9 @@ def _probe_base_url(name: str, default: str) -> None:
 _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("WORKFLOW_LEASE_SECONDS", _lease_seconds),
     ("EMBEDDING_MODEL", embedding_model),
-    ("EMBEDDING_DIMENSIONS", embedding_dimensions),
+    ("EMBEDDING_DIMENSIONS", _probe_embedding_dimensions),
     ("EMBEDDING_BATCH_SIZE", embedding_batch_size),
+    ("EMBEDDING_API_BASE", _probe_embedding_api_base),
     ("MAX_CONTEXT_CHUNKS", max_context_chunks),
     ("MAX_CONTEXT_CHARS", max_context_chars),
     ("MIN_CONTEXT_SIMILARITY", minimum_similarity),
