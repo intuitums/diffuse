@@ -566,6 +566,7 @@ def test_progress_is_written_only_to_stderr_of_an_interactive_terminal(monkeypat
 
 
 def test_review_passes_a_progress_callback_into_the_review_engine(tmp_path, monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     root = _local_git_repository(tmp_path)
     captured: dict[str, object] = {}
 

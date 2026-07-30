@@ -442,8 +442,22 @@ that supports another stored dimension must add a numbered migration for both
 `EMBEDDING_DIMENSIONS` consistently, and schedule compatible re-indexing.
 Never edit the frozen baseline migration.
 
-`REVIEW_MODEL` accepts LiteLLM model identifiers. `REVIEW_VERIFIER_MODEL`
-optionally selects an independent verifier from another model family.
+`REVIEW_MODEL` is required and accepts LiteLLM model identifiers. There is no
+built-in default: Diffuse will not assume you hold a credential for a provider
+you never named, so an unset `REVIEW_MODEL` stops the worker at startup with an
+error naming the variable rather than failing every pull request against a
+provider you may not have an account with. `REVIEW_VERIFIER_MODEL`
+optionally selects an independent verifier from another model family, and
+falls back to `REVIEW_MODEL` when unset.
+
+`REVIEW_EFFORT` optionally sets how hard the model thinks before answering:
+`low`, `medium`, `high`, `xhigh`, or `max`. Unset sends nothing and leaves the
+model on its own default; `xhigh` is the recommendation for repositories where
+a missed defect costs more than the tokens. It maps to LiteLLM's
+`reasoning_effort`, so it reaches the routes that expose one (current
+`anthropic/`, `gemini/`, `ollama/`, and the OpenAI reasoning models) and is
+dropped with a logged warning on a model that has none. Thinking tokens are
+billed against `REVIEW_MAX_OUTPUT_TOKENS`, so raise it alongside.
 OpenAI, Anthropic, Google Gemini, Azure, AWS Bedrock, Ollama, and other LiteLLM
 routes use their conventional provider configuration in the data plane. A
 provider prefix Diffuse does not name explicitly—`mistral/…`, `groq/…`,

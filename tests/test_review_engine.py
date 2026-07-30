@@ -119,6 +119,7 @@ def _candidate(
 
 
 def test_review_generation_grounds_deduplicates_and_verifies_findings(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setenv("REVIEW_PASSES", "security")
     progress: list[None] = []
     calls: list[type] = []
@@ -240,6 +241,7 @@ def test_review_generation_uses_selected_candidate_and_verifier_models(monkeypat
 
 
 def test_repository_minimum_severity_filters_verified_findings(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     policy = resolve_review_policy(
         RepositoryPolicySnapshot(
             layers=(
@@ -357,6 +359,7 @@ def test_review_confidence_score_is_explainable_and_coverage_aware(
 
 
 def test_nontrivial_review_can_generate_one_grounded_diagram(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setenv("REVIEW_PASSES", "correctness")
     calls: list[type] = []
 
@@ -396,6 +399,7 @@ def test_nontrivial_review_can_generate_one_grounded_diagram(monkeypatch):
 
 
 def test_repository_policy_can_disable_diagram_generation(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     policy = resolve_review_policy(
         RepositoryPolicySnapshot(
             layers=(
@@ -451,6 +455,7 @@ def test_repository_policy_can_disable_diagram_generation(monkeypatch):
 def test_preventative_security_is_opt_in_and_rejected_before_verification(
     monkeypatch,
 ):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     policy = resolve_review_policy(
         RepositoryPolicySnapshot(),
         {"app.py"},
@@ -490,6 +495,7 @@ def test_preventative_security_is_opt_in_and_rejected_before_verification(
 def test_preventative_security_uses_cascading_confidence_floor_and_classification(
     monkeypatch,
 ):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     policy = resolve_review_policy(
         RepositoryPolicySnapshot(
             layers=(
@@ -618,6 +624,7 @@ def test_security_classification_is_rejected_on_nonsecurity_findings():
 
 
 def test_review_generation_skips_verifier_when_no_grounded_candidates(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setenv("REVIEW_PASSES", "correctness")
     calls = 0
 
@@ -797,6 +804,7 @@ def test_review_api_base_applies_to_a_hosted_vllm_model(monkeypatch):
 def test_repository_policy_filters_diff_controls_passes_and_enforces_threshold(
     monkeypatch,
 ):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     policy = resolve_review_policy(
         RepositoryPolicySnapshot(
             layers=(
@@ -885,6 +893,7 @@ def test_repository_policy_filters_diff_controls_passes_and_enforces_threshold(
 
 
 def test_repository_policy_can_disable_review_without_model_calls(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     policy = resolve_review_policy(
         RepositoryPolicySnapshot(
             layers=(
@@ -1177,11 +1186,47 @@ def test_every_module_that_frames_a_prompt_region_also_neutralizes_it():
     )
 
 
-def test_default_review_model_is_a_frontier_model(monkeypatch):
+def test_unset_review_model_refuses_with_an_actionable_error(monkeypatch):
+    """There is no default review model, deliberately.
+
+    The old fallback was a hardcoded `anthropic/claude-sonnet-5`, which assumes
+    the operator holds an Anthropic credential they never named -- so an
+    operator who had configured only OPENAI_API_KEY got an authentication
+    failure against a provider they had never heard of, on every pull request.
+    Substituting some other model would be the same bug with a different name,
+    so the refusal has to carry everything needed to fix it.
+    """
     monkeypatch.delenv("REVIEW_MODEL", raising=False)
 
-    assert review_engine.review_model() == review_engine.DEFAULT_REVIEW_MODEL
-    assert review_engine.DEFAULT_REVIEW_MODEL == "anthropic/claude-sonnet-5"
+    with pytest.raises(ValueError) as failure:
+        review_engine.review_model()
+
+    message = str(failure.value)
+    assert "REVIEW_MODEL" in message
+    # Points at the setup path rather than leaving the operator to find it.
+    assert "diffuse init" in message
+    # And shows the identifier format, which "REVIEW_MODEL is unset" does not.
+    assert "anthropic/claude-sonnet-5" in message
+
+
+def test_no_default_review_model_is_exported(monkeypatch):
+    """A reintroduced module-level default would silently restore the guess."""
+    assert not hasattr(review_engine, "DEFAULT_REVIEW_MODEL")
+
+
+def test_empty_review_model_refuses_the_same_way(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "   ")
+
+    with pytest.raises(ValueError, match="REVIEW_MODEL"):
+        review_engine.review_model()
+
+
+def test_verifier_model_still_derives_from_the_review_model(monkeypatch):
+    """A derived value is not a guess about credentials, so it keeps falling back."""
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.delenv("REVIEW_VERIFIER_MODEL", raising=False)
+
+    assert review_engine.review_verifier_model() == "openai/gpt-4.1-mini"
 
 
 @pytest.mark.parametrize(
@@ -1271,6 +1316,7 @@ def test_model_calls_retry_transient_failures(monkeypatch):
     already succeeded, re-pays for them on the next attempt, and spends one of
     only five workflow attempts.
     """
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     batch = CandidateBatch(analysis_summary="No issue.", findings=[])
     arguments: list[dict] = []
 
@@ -1309,6 +1355,7 @@ def test_rejected_model_credential_is_non_retryable(monkeypatch):
     dead-letter on the first one and report the provider's own reason.
     """
 
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     def reject(**_kwargs):
         raise review_engine.AuthenticationError(
             message="invalid x-api-key",

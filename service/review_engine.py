@@ -35,7 +35,12 @@ from service.workflow import NonRetryableError
 LOGGER = logging.getLogger(__name__)
 
 PROMPT_VERSION = "native-review-v6-review-diagrams"
-DEFAULT_REVIEW_MODEL = "anthropic/claude-sonnet-5"
+REVIEW_TEMPERATURE = 0.1
+# LiteLLM's vocabulary for `reasoning_effort`. `minimal` and `none` are accepted
+# by LiteLLM too but are not offered: Diffuse's product direction is correctness
+# over token cost, and an effort setting that suppresses reasoning is better
+# expressed by leaving REVIEW_EFFORT unset.
+REVIEW_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_PASSES = ("correctness", "security", "performance", "tests")
 PASS_INSTRUCTIONS = {
     "correctness": (
@@ -88,15 +93,52 @@ class ModelConnectionProbe(BaseModel):
 
 
 def review_model() -> str:
-    value = os.environ.get("REVIEW_MODEL", DEFAULT_REVIEW_MODEL).strip()
+    """The configured review model. There is deliberately no default.
+
+    Diffuse used to fall back to a hardcoded `anthropic/claude-sonnet-5`, which
+    assumes the operator holds an Anthropic credential they never named. An
+    operator who configured only, say, `OPENAI_API_KEY` got an authentication
+    failure against a provider they had never heard of, on every pull request.
+    The guess is the bug, not the particular model guessed, so nothing is
+    substituted here: refusing with the variable's name is strictly more useful
+    than any default could be.
+    """
+
+    value = os.environ.get("REVIEW_MODEL", "").strip()
     if not value:
-        raise ValueError("REVIEW_MODEL cannot be empty")
+        raise ValueError(
+            "REVIEW_MODEL is not set. Diffuse has no default review model on purpose: "
+            "it will not assume you hold a credential for a provider you never named. "
+            "Set REVIEW_MODEL to a LiteLLM model identifier (for example "
+            "'anthropic/claude-sonnet-5', 'openai/gpt-5', or 'ollama/<model>' with "
+            "REVIEW_API_BASE for a self-hosted route), together with that provider's "
+            "API key. Run `diffuse init` to be walked through it, or `diffuse model` "
+            "to check the result."
+        )
     return value
 
 
 def review_verifier_model() -> str:
     value = os.environ.get("REVIEW_VERIFIER_MODEL", "").strip()
     return value or review_model()
+
+
+def review_effort() -> str | None:
+    """How hard the model should think, or `None` to leave it to the model.
+
+    Maps to LiteLLM's `reasoning_effort`, which the anthropic route renders as
+    `output_config.effort` on models that expose it and as an explicit thinking
+    budget on the older ones. Deliberately has no default: sending an effort the
+    operator did not ask for changes both the bill and the latency of every
+    review.
+    """
+
+    value = os.environ.get("REVIEW_EFFORT", "").strip().lower()
+    if not value:
+        return None
+    if value not in REVIEW_EFFORT_LEVELS:
+        raise ValueError(f"REVIEW_EFFORT must be one of {', '.join(REVIEW_EFFORT_LEVELS)}")
+    return value
 
 
 def review_provenance_minimum_confidence() -> float:
@@ -216,6 +258,36 @@ def _supports_json_schema(model: str) -> bool:
         return False
 
 
+def _maps_parameter(model: str, name: str, value: object) -> bool:
+    """Whether `model` accepts `name=value`, asked of LiteLLM rather than guessed.
+
+    Claude Sonnet 5, Opus 4.7/4.8, and Fable 5 removed the sampling parameters:
+    anything other than the default temperature is refused. LiteLLM raises
+    `UnsupportedParamsError` client-side, before any request is sent, and that
+    is neither an authentication failure nor a `ValueError` -- so an
+    unconditional temperature made `run_once` treat a permanent
+    misconfiguration as retryable, burning five attempts per review and posting
+    a failure notice on every pull request.
+
+    This probes LiteLLM's public parameter mapping instead of hardcoding model
+    names, so a newer restricted model needs no code change and the providers
+    that still honor a parameter keep it. Omitting a parameter is the safe
+    direction -- the model falls back to its own default -- so any probe failure
+    declines to send it.
+    """
+
+    try:
+        resolved, provider, _, _ = litellm.get_llm_provider(model=model)
+        litellm.utils.get_optional_params(
+            model=resolved,
+            custom_llm_provider=provider,
+            **{name: value},
+        )
+    except Exception:
+        return False
+    return True
+
+
 def _call_structured[T: BaseModel](
     response_model: type[T],
     *,
@@ -238,11 +310,18 @@ def _call_structured[T: BaseModel](
     arguments: dict[str, object] = {
         "model": model,
         "messages": messages,
-        "temperature": 0.1,
+        # Sampling and reasoning parameters are added below, and only where the
+        # model accepts them. See `_maps_parameter`.
         "max_tokens": (
             max_tokens
             if max_tokens is not None
-            else _positive_int("REVIEW_MAX_OUTPUT_TOKENS", 5000)
+            # Models that think before answering bill those tokens against
+            # `max_tokens`, and the current frontier models think adaptively
+            # whenever the request omits a thinking configuration, as this one
+            # does. Too small a budget is spent reasoning and truncates the
+            # JSON, which surfaces as a retryable structured-output fault
+            # rather than as the limit it actually is.
+            else _positive_int("REVIEW_MAX_OUTPUT_TOKENS", 16000)
         ),
         "timeout": (
             timeout_seconds
@@ -259,6 +338,22 @@ def _call_structured[T: BaseModel](
     }
     if int(arguments["max_tokens"]) <= 0 or int(arguments["timeout"]) <= 0:
         raise ValueError("Structured model limits must be positive")
+    if _maps_parameter(model, "temperature", REVIEW_TEMPERATURE):
+        arguments["temperature"] = REVIEW_TEMPERATURE
+    effort = review_effort()
+    if effort is not None:
+        if _maps_parameter(model, "reasoning_effort", effort):
+            arguments["reasoning_effort"] = effort
+        else:
+            # Warn rather than raise: the operator asked for something this
+            # model cannot do, but a review that still runs beats a fleet-wide
+            # outage, and a candidate/verifier pair may legitimately straddle
+            # one model that supports effort and one that does not.
+            LOGGER.warning(
+                "REVIEW_EFFORT=%s is not supported by %s and was not sent.",
+                effort,
+                model,
+            )
     api_key = _model_api_key(model)
     if api_key:
         arguments["api_key"] = api_key
@@ -303,7 +398,10 @@ def verify_model_connection(model_name: str | None = None) -> None:
         system_prompt="You are a connectivity probe for Diffuse code review.",
         user_prompt='Return {"ready": true}.',
         model_name=model_name,
-        max_tokens=32,
+        # The probe's answer needs a handful of tokens, but a thinking model
+        # spends its budget before emitting any, and a probe that truncates
+        # reports a broken connection to an operator whose setup is fine.
+        max_tokens=2048,
         timeout_seconds=min(_positive_int("REVIEW_MODEL_TIMEOUT_SECONDS", 180), 30),
     )
 

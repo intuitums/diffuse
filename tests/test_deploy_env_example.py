@@ -132,8 +132,17 @@ def test_customer_env_example_ships_the_same_model_defaults():
         )
 
 
-def test_shipped_review_model_matches_the_code_default():
-    """The env files and the code must not drift apart either."""
-    from service.review_engine import DEFAULT_REVIEW_MODEL
+def test_no_code_default_can_drift_from_the_shipped_env_files():
+    """The drift this used to check for is now impossible by construction.
 
-    assert _declared_values(CUSTOMER_ENV)["REVIEW_MODEL"] == DEFAULT_REVIEW_MODEL
+    This test used to assert `deploy/env.example` matched a
+    `DEFAULT_REVIEW_MODEL` constant in the code. That constant is gone:
+    guessing a provider the operator never named was the defect, not the
+    particular model guessed. `REVIEW_MODEL` in the env files is a
+    recommendation an operator edits, not a fallback anything reads, so the two
+    can no longer disagree. The sibling test above still keeps the two env
+    files themselves in sync, which is the drift a customer can actually feel.
+    """
+    from service import review_engine
+
+    assert not hasattr(review_engine, "DEFAULT_REVIEW_MODEL")
