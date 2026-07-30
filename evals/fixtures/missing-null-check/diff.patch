@@ -1,0 +1,27 @@
+diff --git a/accounts/notifications.py b/accounts/notifications.py
+index f3396e1..f992a6e 100644
+--- a/accounts/notifications.py
++++ b/accounts/notifications.py
+@@ -7,19 +7,15 @@ from accounts.directory import Directory
+ 
+ def notification_subject(account_name: str) -> str:
+     return f"Activity on {account_name}"
+ 
+ 
+-def owner_email(directory: Directory, account_id: str) -> str | None:
+-    """The lower-cased owner address, or None when the account has no owner."""
++def owner_email(directory: Directory, account_id: str) -> str:
++    """The lower-cased owner address."""
+     owner = directory.lookup_owner(account_id)
+-    if owner is None:
+-        return None
+-    return owner.email.lower()
++    return owner.email.strip().lower()
+ 
+ 
+ def notify_owner(directory: Directory, account_id: str, body: str) -> bool:
+     address = owner_email(directory, account_id)
+-    if address is None:
+-        return False
+     directory.deliver(address, body)
+     return True

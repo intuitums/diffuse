@@ -1,0 +1,19 @@
+diff --git a/web/attachments.py b/web/attachments.py
+index 079713a..42c754f 100644
+--- a/web/attachments.py
++++ b/web/attachments.py
+@@ -12,10 +12,9 @@ def tenant_root(tenant_id: str) -> Path:
+     return ATTACHMENT_ROOT / tenant_id
+ 
+ 
+ def read_attachment(tenant_id: str, requested_name: str) -> bytes:
+     """Return the bytes of an attachment owned by ``tenant_id``."""
+-    root = tenant_root(tenant_id).resolve()
+-    target = (root / requested_name).resolve()
+-    if not target.is_relative_to(root):
+-        raise PermissionError("attachment outside the tenant directory")
+-    return target.read_bytes()
++    root = tenant_root(tenant_id)
++    target = os.path.join(str(root), requested_name)
++    with open(target, "rb") as handle:
++        return handle.read()

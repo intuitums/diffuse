@@ -1,0 +1,26 @@
+{
+  "schema_version": "diffuse-eval-fixture-v1",
+  "case_id": "sql-injection-sort-column",
+  "description": "The column allowlist and the bound parameters are both replaced by an f-string, so a caller-supplied tenant id and sort column are interpolated straight into SQL. Cross-tenant read and arbitrary SQL execution.",
+  "diff_path": "diff.patch",
+  "expected": [
+    {
+      "finding_id": "sort-column-interpolated-into-sql",
+      "file_path": "reports/query.py",
+      "line": 23,
+      "category": "security",
+      "line_tolerance": 3
+    }
+  ],
+  "addressed_finding_ids": [],
+  "contexts": [
+    {
+      "path": "context/reports_http.py",
+      "file_path": "reports/http.py",
+      "symbol_name": "invoices_endpoint",
+      "retrieval_reason": "graph_caller",
+      "relevance_score": 0.9,
+      "similarity": 0.83
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+diff --git a/config/settings.py b/config/settings.py
+index 7b49a2f..0e86a64 100644
+--- a/config/settings.py
++++ b/config/settings.py
+@@ -3,23 +3,21 @@
+ from __future__ import annotations
+ 
+ import os
+ 
+ 
+-def read_timeout_seconds() -> int:
+-    raw = os.environ.get("HTTP_TIMEOUT_SECONDS", "").strip()
++def _positive_int(name: str, default: int) -> int:
++    raw = os.environ.get(name, "").strip()
+     if not raw:
+-        return 30
++        return default
+     value = int(raw)
+     if value <= 0:
+-        raise ValueError("HTTP_TIMEOUT_SECONDS must be positive")
++        raise ValueError(f"{name} must be positive")
+     return value
+ 
+ 
++def read_timeout_seconds() -> int:
++    return _positive_int("HTTP_TIMEOUT_SECONDS", 30)
++
++
+ def read_batch_size() -> int:
+-    raw = os.environ.get("BATCH_SIZE", "").strip()
+-    if not raw:
+-        return 100
+-    value = int(raw)
+-    if value <= 0:
+-        raise ValueError("BATCH_SIZE must be positive")
+-    return value
++    return _positive_int("BATCH_SIZE", 100)

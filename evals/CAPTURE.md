@@ -1,0 +1,144 @@
+# Capturing the review-quality goldens
+
+**No golden is committed, and the regression gate in `scripts/eval.sh` is
+therefore not live.** A golden records what a real model actually found in the
+fixtures, so producing one requires live model calls. It cannot be derived,
+mocked, or reasoned out — and a fabricated one would be worse than none, because
+every later phase of the rebuild diffs against it.
+
+This document is the exact procedure to run once a credential exists.
+
+## 1. What you need
+
+| Requirement | Why |
+| --- | --- |
+| `REVIEW_MODEL` | The candidate model. There is no default; the run refuses without it. |
+| That provider's API key | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, … as `service/model_providers.py` resolves it. |
+| `REVIEW_VERIFIER_MODEL` *(optional)* | Defaults to `REVIEW_MODEL`. If you set it to a different model you must also pass its rate card — see step 3. |
+| `REVIEW_EFFORT` *(optional)* | Costs real money. Whatever you choose, the golden is only valid for that value; record it. |
+
+**No database is needed.** The harness calls `generate_review` directly with
+fixture-supplied context, so it does not touch Postgres, the indexer, or the
+retriever. That is deliberate: a golden that depended on the state of an index
+snapshot would drift for reasons unrelated to review quality.
+
+## 2. Capture
+
+```sh
+export REVIEW_MODEL='anthropic/claude-sonnet-5'   # or whatever you hold a key for
+export ANTHROPIC_API_KEY='...'                    # that provider's key
+
+python -m service.eval_harness run \
+  --fixtures evals/fixtures \
+  --output /tmp/suite.json
+
+python -m service.eval_harness capture \
+  --suite /tmp/suite.json \
+  --golden evals/golden/review-baseline.json
+```
+
+`run` is the only command that calls a model. `capture` and `check` are pure
+functions of `/tmp/suite.json`, so you can re-score and re-compare as often as
+you like without paying again. **Keep `/tmp/suite.json`** — it holds the actual
+findings, which the golden deliberately does not.
+
+## 3. Pricing, if you want a cost figure
+
+`estimated_cost_usd` is 0 unless you supply rates. Nothing guesses them:
+
+```sh
+python -m service.eval_harness run \
+  --fixtures evals/fixtures --output /tmp/suite.json \
+  --input-usd-per-million 3 --output-usd-per-million 15
+```
+
+If `REVIEW_VERIFIER_MODEL` differs from `REVIEW_MODEL`, the two bill at
+different rates and `service/evaluation.py` refuses a suite that prices them the
+same. The harness checks this **before** the first model call, so the refusal
+costs nothing:
+
+```sh
+  --verifier-input-usd-per-million 0.8 --verifier-output-usd-per-million 4
+```
+
+## 4. Expected cost and duration
+
+Measured from the committed fixtures, not estimated from memory. Every fixture
+packs into a single diff chunk, and none is large enough to trigger the diagram
+stage, so a full capture is:
+
+- 8 fixtures x (4 candidate passes + 1 verification) = **40 model calls**
+- **≈ 50,000 input tokens** total (measured: ~46k for the candidate prompts plus
+  the verification prompts)
+- **≈ 40,000 output tokens** at default effort. With `REVIEW_EFFORT=xhigh`,
+  reasoning tokens bill as output and this is the term that explodes — budget
+  **250,000–600,000 output tokens**.
+
+Worked at an example **$3 / $15 per million** rate card — *confirm your
+provider's current rates, do not trust this number*:
+
+| Setting | Cost per capture | Wall clock (serial) |
+| --- | --- | --- |
+| default effort | **≈ $0.75** | 7–20 min |
+| `REVIEW_EFFORT=xhigh` | **≈ $4–5** | 40–80 min |
+
+On a small model (an example $0.40 / $1.60 rate card) the same run is under
+**$0.10**. Capturing on a cheap model first to shake out the plumbing, then
+recapturing on the model you actually ship, is the sensible order.
+
+The harness reviews fixtures serially. There is no parallelism, on purpose:
+concurrency would make the recorded `latency_ms` meaningless.
+
+## 5. Verify the golden before committing it
+
+A golden is the standard every later phase defends. Committing a bad one locks
+in whatever it recorded. Check all of these:
+
+1. **Read the scores.** `capture` prints precision, recall and F1. Recall near
+   0 does not mean the fixtures are wrong; it means the review engine did not
+   find bugs that are unambiguously present, and that is a finding about the
+   product, not a reason to weaken the labels. **Do not adjust a fixture to make
+   the numbers look better.** Report the number.
+2. **Read the findings**, in `/tmp/suite.json`, not just the scores. For each
+   fixture, is the observed finding the labeled bug, or a different issue that
+   happens to sit within the line tolerance? A coincidental match inflates
+   recall and is invisible in the score.
+3. **Check `clean-settings-refactor`.** It has no labeled defect. Every finding
+   it produces is a false positive. If it produces several, the confidence
+   threshold is too low, and that is exactly the constant this harness exists to
+   measure.
+4. **Check the category column.** `service/evaluation.py` matches on category
+   equality, so a real detection filed under `reliability` where the label says
+   `correctness` scores as *both* a false negative and a false positive. If you
+   see that pattern, the label is arguably wrong — fix the label, and say so in
+   the commit.
+5. **Run it twice.** These models are not deterministic. If two consecutive
+   captures disagree by more than a few points, commit the *worse* run as the
+   golden and set a non-zero `EVAL_TOLERANCE`, rather than committing a lucky
+   run that every later change appears to regress against.
+6. **Record the configuration** in the commit message: model, verifier model,
+   `REVIEW_EFFORT`, `MIN_REVIEW_CONFIDENCE`, `REVIEW_PASSES`, and the date. The
+   golden stores the model names and refuses a comparison across models, but it
+   does not store the rest, and all of them move the score.
+
+Then commit `evals/golden/review-baseline.json` and confirm the gate is live:
+
+```sh
+./scripts/eval.sh                      # runs, scores, compares. Exit 0 = no regression.
+EVAL_SUITE=/tmp/suite.json ./scripts/eval.sh   # re-compare without paying again
+```
+
+## 6. Prove the gate actually catches something
+
+Do not take a green run as evidence that the gate works. Seed a regression and
+watch it fail — the plan's acceptance criterion for this unit:
+
+```sh
+# In service/review_engine.py, raise the confidence floor:
+#   minimum_review_confidence()  ->  return 0.99
+python -m service.eval_harness run --fixtures evals/fixtures --output /tmp/regressed.json
+EVAL_SUITE=/tmp/regressed.json ./scripts/eval.sh    # must exit 1
+```
+
+Revert the change afterwards. Until this has been done once, the gate is
+unproven even with a golden committed.
