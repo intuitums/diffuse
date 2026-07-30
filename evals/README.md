@@ -24,8 +24,8 @@ than accepted as a gate that can never fail.
 is what performs one — see **The fixture harness** below. Everything above
 describes the scorer, which is unchanged.
 
-Start by copying `baseline.example.json`, replacing the illustrative cases with
-real reviewed pull requests, and filling `observed` from a Diffuse run:
+To score a suite you already have — one the harness produced, or one you wrote
+by hand from a reviewed pull request:
 
 ```sh
 diffuse evaluate evals/baseline.example.json
