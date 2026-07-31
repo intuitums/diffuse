@@ -140,7 +140,8 @@ a `diffuse-database-status-v1` document; a successful run ends with
 pytest -m integration
 ```
 
-Roughly 18 seconds. `tests/integration/conftest.py` copies
+A few seconds -- 21 tests in under 3 s against a local container.
+`tests/integration/conftest.py` copies
 `POSTGRES_TEST_DATABASE_URL` into `DATABASE_URL`, so application code under
 test connects to the same disposable database. If
 `POSTGRES_TEST_DATABASE_URL` is unset, every integration test is skipped rather

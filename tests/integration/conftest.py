@@ -3,7 +3,7 @@
 Every test under this directory is an integration test and every one of them
 needs `POSTGRES_TEST_DATABASE_URL`. Marking that once here means a new test file
 cannot forget it. The previous arrangement repeated a byte-identical
-`pytestmark` block in all ten modules, and a file that omitted it would have run
+`pytestmark` block in every module, and a file that omitted it would have run
 against whatever `DATABASE_URL` happened to be set -- which, for a developer with
 a local stack running, is their real database.
 """
