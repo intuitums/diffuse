@@ -7,14 +7,14 @@ from collections.abc import Callable
 
 from repository_policy.resolve import neutralize_prompt_delimiters
 from retriever.retrieve import RetrievedContext, format_as_extra_instructions
-from service.conversation_models import (
+from service.models.conversation import (
     ConversationReference,
     ConversationResponse,
     ConversationTurn,
     GeneratedConversationAnswer,
 )
-from service.review_engine import _call_structured, review_model
-from service.review_models import ReviewFinding
+from service.models.review import ReviewFinding
+from service.review.engine import _call_structured, review_model
 from service.scm import ReviewConversationEvent
 
 CONVERSATION_PROMPT_VERSION = "review-conversation-v1-grounded"

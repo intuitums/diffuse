@@ -12,9 +12,19 @@ import psycopg2
 import psycopg2.errors
 import pytest
 
-from service import cluster_cli, learning_cli, repository_cli, review_cli
-from service.repositories import RegisteredRepository
-from service.review_cli import (
+from service.cli import (
+    cluster as cluster_cli,
+)
+from service.cli import (
+    learning as learning_cli,
+)
+from service.cli import (
+    repository as repository_cli,
+)
+from service.cli import (
+    review as review_cli,
+)
+from service.cli.review import (
     CliReviewState,
     LocalDiff,
     LocalReviewResult,
@@ -28,7 +38,8 @@ from service.review_cli import (
     render_json,
     select_registered_repository,
 )
-from service.review_models import Category, ReviewFinding, ReviewReport, Severity
+from service.models.review import Category, ReviewFinding, ReviewReport, Severity
+from service.repositories import RegisteredRepository
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -241,8 +252,8 @@ def test_unified_cli_routes_operator_commands():
     """`diffuse` is the only entry point; every operator command routes through it.
 
     The sub-CLI modules used to each carry a standalone `_parser()` and `main()`
-    so they could be run as `python -m service.cluster_cli`. Those are gone: only
-    `service.review_cli:main` is declared in `[project.scripts]`, four of the
+    so they could be run as `python -m service.cli.cluster`. Those are gone: only
+    `service.cli.review:main` is declared in `[project.scripts]`, four of the
     seven sub-CLIs never had them, the packaged image contains no Python
     interpreter at all (CI asserts `test ! -e /usr/local/bin/python`), and they
     bypassed the exit-code contract, secret redaction, and psycopg2 handling that

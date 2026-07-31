@@ -12,7 +12,7 @@ import argparse
 
 import pytest
 
-from service import repository_cli
+from service.cli import repository as repository_cli
 
 
 class _Repository:

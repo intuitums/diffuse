@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # RepositoryPolicySnapshot.__post_init__ raises, and that ValueError is
 # classified non-retryable -- so every configured repository's next review fails
 # terminally instead of taking the documented reindex path.
-POLICY_SCHEMA_VERSION = "repository-policy-v12-failure-comment"
+POLICY_SCHEMA_VERSION = "repository-policy-v13-auto-approval-allowlist"
 REVIEW_PASS_NAMES = ("correctness", "security", "performance", "tests")
 ReviewPassName = Literal["correctness", "security", "performance", "tests"]
 SeverityName = Literal["critical", "high", "medium", "low"]
@@ -333,6 +333,14 @@ class SecuritySettingsPatch(StrictPolicyModel):
 
 
 class AutoApprovalFiltersPatch(StrictPolicyModel):
+    # Approving is a write action, so the paths it may touch are named by the operator
+    # rather than left to a denylist Diffuse maintains on their behalf. A denylist has
+    # to anticipate every sensitive directory in every repository Diffuse is installed
+    # on: `**/auth/**` never catches `internal/perms/`, `lib/rbac/`, or `pkg/tenancy/`,
+    # and the resulting miss silently approves. Only the operator knows which of those
+    # their repository has, so an unnamed path is not consent. Omitting this key leaves
+    # the scope approving nothing; an empty list says the same thing explicitly.
+    allow_paths: tuple[str, ...] | None = Field(default=None, max_length=100)
     exclude_paths: tuple[str, ...] | None = Field(default=None, max_length=100)
     include_authors: tuple[str, ...] | None = Field(default=None, max_length=100)
     exclude_authors: tuple[str, ...] | None = Field(default=None, max_length=100)
@@ -346,9 +354,9 @@ class AutoApprovalFiltersPatch(StrictPolicyModel):
     include_repositories: tuple[str, ...] | None = Field(default=None, max_length=100)
     exclude_repositories: tuple[str, ...] | None = Field(default=None, max_length=100)
 
-    @field_validator("exclude_paths")
+    @field_validator("allow_paths", "exclude_paths")
     @classmethod
-    def valid_exclude_paths(
+    def valid_path_globs(
         cls,
         value: tuple[str, ...] | None,
     ) -> tuple[str, ...] | None:
@@ -356,7 +364,7 @@ class AutoApprovalFiltersPatch(StrictPolicyModel):
             return None
         normalized = tuple(validate_repo_glob(item) for item in value)
         if len(set(normalized)) != len(normalized):
-            raise ValueError("auto-approval excluded paths must be unique")
+            raise ValueError("auto-approval path globs must be unique")
         return normalized
 
     @field_validator(

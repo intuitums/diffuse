@@ -16,7 +16,7 @@ classifiers = ["Private :: Do Not Upload"]
 dynamic = ["dependencies"]
 
 [project.scripts]
-diffuse = "service.review_cli:main"
+diffuse = "service.cli.review:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

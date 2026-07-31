@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from service.auto_approval import AutoApprovalDecision, AutoApprovalRisk
-from service.github_approval import (
+from service.github.approval import (
     ApprovalNotCurrentError,
     publish_github_approval,
 )

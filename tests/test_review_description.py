@@ -1,6 +1,6 @@
 import pytest
 
-from service.review_description import (
+from service.review.description import (
     DESCRIPTION_END_MARKER,
     DESCRIPTION_START_MARKER,
     is_managed_review_description_change,

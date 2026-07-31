@@ -993,9 +993,9 @@ def test_policy_schema_version_tracks_the_config_model_shape():
     )
     digest = hashlib.sha256(shape.encode()).hexdigest()[:16]
 
-    assert digest == "b473a8ba14146963", (
+    assert digest == "a8ade5ab117ba516", (
         "RepositoryConfig changed shape. Bump POLICY_SCHEMA_VERSION so existing "
         "snapshots are rebuilt through the index-format path, then update the "
         f"expected digest here to {digest}."
     )
-    assert POLICY_SCHEMA_VERSION == "repository-policy-v12-failure-comment"
+    assert POLICY_SCHEMA_VERSION == "repository-policy-v13-auto-approval-allowlist"

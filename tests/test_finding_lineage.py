@@ -1,7 +1,7 @@
 import hashlib
 
 from service.finding_lineage import HistoricalFinding, classify_finding_lineage
-from service.review_models import (
+from service.models.review import (
     Category,
     ReviewFinding,
     SecurityClassification,

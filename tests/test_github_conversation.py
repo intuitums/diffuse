@@ -4,12 +4,12 @@ import re
 import httpx
 import pytest
 
-from service.conversation_models import ConversationReference
-from service.github_conversation import (
+from service.github.conversation import (
     MAX_CONVERSATION_REPLY_CHARS,
     format_conversation_reply,
     publish_github_conversation_reply,
 )
+from service.models.conversation import ConversationReference
 from service.scm import ReviewConversationEvent
 
 

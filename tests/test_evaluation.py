@@ -5,13 +5,13 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from service import evaluation_cli
+from service.cli import evaluation as evaluation_cli
 from service.evaluation import (
     MAX_LINE_TOLERANCE,
     EvaluationSuite,
     score_evaluation,
 )
-from service.review_models import Category
+from service.models.review import Category
 
 
 def test_evaluation_scores_quality_latency_cost_and_addressed_findings() -> None:
