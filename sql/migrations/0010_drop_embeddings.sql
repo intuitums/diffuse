@@ -26,6 +26,24 @@ ALTER TABLE index_snapshots
     DROP COLUMN IF EXISTS embedding_model,
     DROP COLUMN IF EXISTS embedding_dimensions;
 
+-- The old unique key included embedding_model and embedding_dimensions, so two
+-- building rows for the same revision were legal when the embedder changed
+-- mid-crash. The rebuilt index below does not; leave those rows and CREATE
+-- UNIQUE INDEX fails and rolls the whole upgrade back, including the column
+-- drop. Building snapshots are incomplete by definition -- fail every duplicate
+-- and keep the newest id per revision so the narrower uniqueness can land.
+UPDATE index_snapshots
+SET status = 'failed',
+    failure_code = 'duplicate_build_before_embedding_drop',
+    updated_at = now()
+WHERE status = 'building'
+  AND id NOT IN (
+    SELECT DISTINCT ON (repository_id, commit_sha, index_format_version) id
+    FROM index_snapshots
+    WHERE status = 'building'
+    ORDER BY repository_id, commit_sha, index_format_version, id DESC
+  );
+
 CREATE UNIQUE INDEX IF NOT EXISTS index_snapshots_one_build_per_revision_idx
     ON index_snapshots (
         repository_id,
