@@ -89,7 +89,7 @@ and Anthropic-only installations work. The database is plain PostgreSQL.
 **This is a judgment call with no instrument, and the instrument is not
 coming.** `service/eval_harness.py` reads context verbatim from fixture files —
 `FixtureContext` becomes `RetrievedContext` — so the harness measures the review
-engine, not retrieval. No golden, present or future, would detect a
+engine, not retrieval. No baseline, present or future, would detect a
 retrieval-quality regression from this change. It was accepted on the reasoning
 above; git makes it reversible. **If review quality visibly drops after this
 lands, suspect this first.**

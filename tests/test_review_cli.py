@@ -12,10 +12,18 @@ import psycopg2
 import psycopg2.errors
 import pytest
 
-from service.cli import cluster as cluster_cli
-from service.cli import learning as learning_cli
-from service.cli import repository as repository_cli
-from service.cli import review as review_cli
+from service.cli import (
+    cluster as cluster_cli,
+)
+from service.cli import (
+    learning as learning_cli,
+)
+from service.cli import (
+    repository as repository_cli,
+)
+from service.cli import (
+    review as review_cli,
+)
 from service.cli.review import (
     CliReviewState,
     LocalDiff,

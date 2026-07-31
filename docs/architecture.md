@@ -142,10 +142,9 @@ distribution decision.
 3. Assign stable IDs to files, symbols, and relationships.
 4. Store graph nodes/edges and symbol-aware code chunks.
 5. Generate file/symbol/repository summaries.
-6. Embed code, docs, paths, summaries, and rules through the model gateway.
-7. Link imports, calls, inheritance, usage, tests, schemas, and cross-repo
+6. Link imports, calls, inheritance, usage, tests, schemas, and cross-repo
    contracts.
-8. Atomically activate the completed index snapshot.
+7. Atomically activate the completed index snapshot.
 
 An index snapshot records an index-format identifier derived from the adapter
 schema, Python runtime, Tree-sitter runtime, and every installed grammar
@@ -199,7 +198,7 @@ graph edges remain future work.
 
 Before retrieval, the worker resolves root-to-leaf policy for every changed
 path from that pinned snapshot. Disabled and ignored files are removed before
-the retrieval query is embedded. Review passes, confidence floors, custom
+the retrieval query is built. Review passes, confidence floors, custom
 rules, and guidance remain path-scoped; summary-only mode is conservative
 across the review. The review-run identity fingerprints the snapshot plus the
 effective path policy, making retries and publications reproducible. A review
@@ -420,6 +419,15 @@ a successful status check alone does not authorize it. Diffuse resolves
 auto-approval policy for every old and new changed path. Every scope must
 enable the action, the strictest risk ceiling and smallest file limit win,
 exclusions accumulate, and each applicable inclusion set must match.
+
+Eligibility is opt-in per path: a changed path must be named by an
+`allow_paths` allowlist in every `.diffuse` scope that governs it, so a
+repository that enables the action without allowlisting anything approves
+nothing. The allowlist is resolved from the indexed default-branch snapshot,
+never from the pull-request head, which is what keeps a pull request from
+granting itself eligibility. The built-in critical-surface patterns are a floor
+beneath it rather than the whole gate: an allowlist adds a required condition
+and cannot remove one.
 
 Eligibility requires authoritative metadata, a complete diff, full review
 coverage with no ignored files, zero current findings and risk, and no active
