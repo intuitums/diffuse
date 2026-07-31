@@ -58,6 +58,10 @@ async def test_mcp_initializes_lists_only_durable_tools_and_calls_one(
     monkeypatch,
 ):
     monkeypatch.setenv("DIFFUSE_API_TOKEN", API_TOKEN)
+    # This is the only test that enters the app's lifespan, which now validates
+    # the hot-path configuration the way the worker does. REVIEW_MODEL has no
+    # default by design, so the API refuses to start without one.
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setattr(webhook_server, "_verify_database_schema", lambda: None)
     calls = []
     query_calls = []
