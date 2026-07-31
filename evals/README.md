@@ -15,12 +15,36 @@ entirely, which pays only the false negative. Category disagreement is a real
 signal — a reviewer that consistently miscategorises injections is telling you
 something about its prompt — but it is a signal about taxonomy, not about
 whether the bug was found, so it is reported beside precision and recall rather
-than folded into them. `severity` keeps gating because a label opts into it by
-stating one; leaving it unset is the default.
+than folded into them.
 
-`line_tolerance` defaults to 3 and is capped at 10. Since location is the whole
-match gate, that cap is the only bound on how much of a file one label can
-absorb, and a span wide enough to swallow a function has stopped naming a place.
+**`severity` keeps gating, and it is not free.** A label opts into severity by
+stating one, and leaving it unset is the default — that opt-out is the whole
+reason for the asymmetry with category. But when a label *does* state a
+severity and the reviewer grades the defect differently, the label is charged as
+a false negative **and** the observation that located it as a false positive:
+exactly the double charge that was removed from category. That is deliberate
+policy — stating `critical` is a claim that a review calling the defect `high`
+has not really found it — but it is expensive, and in the totals alone it is
+indistinguishable from a defect nobody noticed plus an unrelated finding.
+`severity_mismatches` and the `severity_confusion` table name each one so the
+cost is visible. **Do not state a severity on a label unless the grade is part
+of the claim you are making.**
+
+`category_mismatches` is a *preference*, not a minimum. The matcher prefers an
+observation that agrees on category when a label could be satisfied either way,
+but minimising mismatches across all maximum matchings is a min-cost assignment
+problem it does not solve, so the reported table can be larger than necessary.
+It is order-independent — the same inputs give the same table whatever order the
+observations arrive in — but read it as a signal, not as an exact count.
+
+`line_tolerance` defaults to 3, is capped at 10, and **every committed fixture
+uses 1**. Since location is the whole match gate, that span is the only
+discriminator there is: any finding inside it is credited as having found the
+labeled defect, whatever it was actually about. Every label here sits exactly on
+a changed line, so none of them needs more slack than one line, and the tightest
+honest span is the right one. Measured across the corpus, the labels' spans
+cover 21 of 44 commentable lines; at the previous tolerances they covered 38 of
+45, and three fixtures were at 100%.
 
 Matching is one-to-one in both directions. One observation can never satisfy two
 labels, and one label can never absorb two observations — a second finding
@@ -31,7 +55,15 @@ findings the reviewer actually reported.
 Each case records expected bugs, observed findings, developer-addressed label
 IDs, latency, and token usage. The resulting JSON reports precision, recall,
 F1, false positives, false negatives, addressed findings, category mismatches,
-median latency, and estimated model cost.
+severity mismatches, median latency, and estimated model cost.
+
+The suite schema is `diffuse-evaluation-v2` and the score schema is
+`diffuse-evaluation-score-v4`. The input version moved with `line_tolerance`'s
+accepted range, which narrowed from 0..50 to 0..10: a v1 suite using a wide
+tolerance is now refused rather than merely unfashionable, so it could not keep
+the old version name. A suite the harness produced also carries a
+`run_configuration` block; one written by hand from a reviewed pull request has
+no run to describe and omits it.
 
 Candidate and verification tokens are counted and priced separately, because a
 cross-family pair does not share a rate card. `prompt_tokens` and
@@ -79,6 +111,7 @@ included. Nothing is transcribed by hand any more.
 
 ```sh
 python -m service.eval_harness run --fixtures evals/fixtures --output /tmp/suite.json
+python -m service.eval_harness run --output /tmp/suite.json --resume   # after a failure
 python -m service.eval_harness capture --suite /tmp/suite.json   # write a golden
 python -m service.eval_harness check   --suite /tmp/suite.json   # exit 1 on a regression
 ./scripts/eval.sh                                                # run + check
@@ -86,6 +119,12 @@ python -m service.eval_harness check   --suite /tmp/suite.json   # exit 1 on a r
 
 Only `run` calls a model. `capture` and `check` are pure functions of a suite
 file.
+
+`run` rewrites `--output` after every fixture rather than only at the end, so a
+provider error partway through leaves the completed cases on disk and `--resume`
+picks up from them. A full capture is 40 serial model calls; losing the seventh
+of eight used to discard the other 35. A case whose fixture changed since is
+re-run rather than reused.
 
 > **Goldens are not committed and the regression gate is not live.** Capturing
 > one requires live model calls. `scripts/eval.sh` exits non-zero with
@@ -152,30 +191,85 @@ Every fixture here:
 - **includes a negative control.** `clean-settings-refactor` has no defect and
   no labels. Without it, precision is unmeasurable, and the whole harness could
   be gamed by lowering the confidence threshold until recall hit 1.0.
+- **labels every defect its diff introduces.** `unhandled-error-path` and
+  `missing-null-check` each remove two behaviours, so each carries two labels.
+  Matching is injective: with one label, a reviewer that correctly reports both
+  defects is charged a false positive for the second, which raises that case's
+  false-positive floor permanently and weakens the precision half of the gate.
+  For the same reason `path-traversal-attachment` introduces exactly one defect
+  — an earlier revision also swapped `Path` for `os.path.join` without importing
+  `os`, which bought no extra signal and charged a reviewer that correctly
+  flagged the missing import.
 
-Coverage: off-by-one, missing null check, unhandled error path, SQL injection,
-path traversal, a check-then-act race, an N+1 query, and the clean control.
+Coverage: off-by-one, missing null check plus its unguarded caller, an unhandled
+error path plus a swallowed rollback, SQL injection, path traversal, a
+check-then-act race, an N+1 query, and the clean control. Eight fixtures, nine
+labels, and the count is pinned by a test — a directory without a `case.json` is
+an error rather than a silent skip.
 
 ## What a golden records
 
-Scores, not prose. Per case: true positives, false positives, false negatives.
-Aggregate: precision, recall, F1, plus the model and verifier model it was
-captured against.
+Scores, not prose — plus every condition those scores are only a standard
+under. Schema `diffuse-eval-golden-v2`.
+
+| Field | |
+| --- | --- |
+| `suite_name` | |
+| `model`, `verifier_model` | the pair the scores were produced by |
+| `run_configuration.prompt_version` | `review_engine.PROMPT_VERSION` |
+| `run_configuration.min_review_confidence` | `MIN_REVIEW_CONFIDENCE` |
+| `run_configuration.review_passes` | `REVIEW_PASSES` |
+| `run_configuration.requested_review_depth` | `REVIEW_DEPTH` / `REVIEW_EFFORT`, as an intent |
+| `run_configuration.depth_renderings` | per stage: what the model was **actually sent** |
+| `precision`, `recall`, `f1` | |
+| `category_mismatches` | recorded and reported as a delta, never gated |
+| `cases[].expected_finding_count` | the label count at capture |
+| `cases[].fixture_digest` | SHA-256 of `diff.patch` + `case.json` |
+| `cases[].true_positives`, `false_positives`, `false_negatives` | |
 
 Model output is not deterministic, so a byte comparison of titles and summaries
 would fail for reasons that have nothing to do with review quality — and a check
 that cries wolf gets deleted. Comparing through the scorer catches the thing a
 threshold change in `review_engine.py` actually moves.
 
+The configuration fields exist because the model name was previously the only
+thing pinned, and it is not the only thing that moves the score. Capture with
+`MIN_REVIEW_CONFIDENCE=0.99` left in a shell and the golden records near-zero
+recall and near-zero false positives that every later run at the default 0.75
+clears trivially, forever — with the precision guard pinned to a floor nobody
+chose. `review_cli.py` already treats a `PROMPT_VERSION` change as invalidating
+a stored run; a golden outlives many more of them.
+
+`depth_renderings` records the resolved depth, not just the requested one,
+because a route can be sent nothing at all whatever the request said.
+`openai/gpt-4.1-mini` — the model this document recommends capturing on first —
+has no reasoning control, so a run at `REVIEW_DEPTH=thorough` there sends no
+reasoning parameter. Recording only the request would let that defend a golden
+captured on a model that honoured it.
+
 `check` fails when any case gets worse (more misses, or more unlabeled
 findings), when an aggregate metric drops by more than `--tolerance`, when a
 golden case did not run, when a fixture has no golden entry, when a fixture's
-label set changed since capture, or when the golden was captured against a
-different model.
+label set changed since capture, when a fixture's **content** changed since
+capture, when the golden was captured against a different model, or when any
+`run_configuration` field differs.
 
-That second-to-last one matters: editing labels after capture silently rebases
-the comparison. Drop a label the engine kept missing and recall "improves"
-without the engine changing at all.
+The last three matter for the same reason: editing a fixture or a variable after
+capture silently rebases the comparison. Drop a label the engine kept missing
+and recall "improves" without the engine changing at all; make the bug more
+obvious in `diff.patch` and it improves without the labels changing at all, and
+the gate then measures an easier task than the one it was calibrated on.
+
+`check` does **not** fail on `category_mismatches`. The delta is printed, and
+`severity_mismatches` is called out separately, because that one is already
+inside precision and recall — twice.
+
+`capture` refuses a suite that found none of its labeled defects unless
+`--allow-zero-recall` is passed. Such a golden is structurally valid and passes
+against every later run, including one where the review engine returns nothing:
+`precision` is 1.0 when there is nothing to be precise about. A real zero is a
+finding about the review engine and worth recording deliberately; it must not
+happen by accident.
 
 ## Known limits
 
@@ -191,13 +285,19 @@ Stated plainly so nobody mistakes a green run for more than it is.
 - **A coincidental location match still reads as a true positive.** Category no
   longer gates the match, and there is no finding text in `ObservedFinding` to
   compare, so an unrelated finding that lands within a label's span is credited.
-  The span is deliberately small for exactly this reason, but the residual risk
-  is real: read the findings, not just the score. Carrying the finding title
+  Every label is at tolerance 1, which is the tightest span reachable without
+  making a label unmatchable, and that brings span coverage down from 84% of all
+  commentable lines to 48%. It does not remove the risk. On
+  `off-by-one-page-slice` the diff changes only two lines, so any commentable
+  finding at all is inside the span; on `path-traversal-attachment` three of
+  four. **Read the findings, not just the score.** Carrying the finding title
   into `ObservedFinding` and requiring textual overlap is the principled fix and
   is not in this schema yet.
-- **The golden does not record category mismatches.** They are in the score JSON
-  that `check` prints, so a systematic miscategorisation is visible, but it is
-  not gated. `Golden` would need a field.
+- **`category_mismatches` is a preference, not a minimum.** The matcher prefers
+  a category-agreeing observation but does not solve the min-cost assignment,
+  so the table can name a confusion a better assignment would have avoided. It
+  is stable under reordering of the observed list, and it is recorded in the
+  golden and reported as a delta — never gated.
 - **The candidate/verifier token split is observed, not reported.**
   `ReviewReport` carries one combined token pair, so the harness wraps
   `_call_structured` to attribute each call to its stage. The wrapper delegates

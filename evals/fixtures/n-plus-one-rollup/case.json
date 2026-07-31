@@ -9,7 +9,7 @@
       "file_path": "reports/rollup.py",
       "line": 16,
       "category": "performance",
-      "line_tolerance": 4
+      "line_tolerance": 1
     }
   ],
   "addressed_finding_ids": [],

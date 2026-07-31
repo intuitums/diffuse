@@ -1,4 +1,5 @@
 import argparse
+import itertools
 import json
 
 import pytest
@@ -16,7 +17,7 @@ from service.review_models import Category
 def test_evaluation_scores_quality_latency_cost_and_addressed_findings() -> None:
     suite = EvaluationSuite.model_validate(
         {
-            "schema_version": "diffuse-evaluation-v1",
+            "schema_version": "diffuse-evaluation-v2",
             "name": "unit baseline",
             "model": "openai/test",
             "pricing": {
@@ -86,7 +87,7 @@ def test_evaluation_scores_quality_latency_cost_and_addressed_findings() -> None
 def test_observed_finding_cannot_match_multiple_labels() -> None:
     suite = EvaluationSuite.model_validate(
         {
-            "schema_version": "diffuse-evaluation-v1",
+            "schema_version": "diffuse-evaluation-v2",
             "name": "duplicate guard",
             "model": "test",
             "cases": [
@@ -133,7 +134,7 @@ def _overlapping_suite(
 ) -> EvaluationSuite:
     return EvaluationSuite.model_validate(
         {
-            "schema_version": "diffuse-evaluation-v1",
+            "schema_version": "diffuse-evaluation-v2",
             "name": "overlapping labels",
             "model": "test",
             "cases": [
@@ -290,7 +291,7 @@ def test_candidate_and_verifier_tokens_are_priced_at_their_own_rates() -> None:
 
     suite = EvaluationSuite.model_validate(
         {
-            "schema_version": "diffuse-evaluation-v1",
+            "schema_version": "diffuse-evaluation-v2",
             "name": "cross-family cost",
             "model": "openai/candidate",
             "pricing": {
@@ -327,7 +328,7 @@ def test_candidate_and_verifier_tokens_are_priced_at_their_own_rates() -> None:
 def test_shared_verifier_model_reuses_the_candidate_rates() -> None:
     suite = EvaluationSuite.model_validate(
         {
-            "schema_version": "diffuse-evaluation-v1",
+            "schema_version": "diffuse-evaluation-v2",
             "name": "single model",
             "model": "openai/candidate",
             "pricing": {
@@ -366,7 +367,7 @@ def test_shared_verifier_model_reuses_the_candidate_rates() -> None:
 )
 def test_unpriceable_verifier_labels_are_rejected(override: dict) -> None:
     payload = {
-        "schema_version": "diffuse-evaluation-v1",
+        "schema_version": "diffuse-evaluation-v2",
         "name": "incomplete pricing",
         "model": "openai/candidate",
         "cases": [{"case_id": "one"}],
@@ -557,7 +558,7 @@ def test_category_confusion_aggregates_across_cases_by_frequency() -> None:
 
     suite = EvaluationSuite.model_validate(
         {
-            "schema_version": "diffuse-evaluation-v1",
+            "schema_version": "diffuse-evaluation-v2",
             "name": "confusion",
             "model": "test",
             "cases": [
@@ -802,7 +803,12 @@ def test_the_category_preference_never_costs_a_match() -> None:
 
 
 def test_a_severity_label_still_constrains_the_match() -> None:
-    """Severity stays a gate because, unlike category, a label can omit it."""
+    """A stated severity has to agree; an omitted one places no constraint.
+
+    Stating a severity the reviewer disagreed with costs the label its match
+    twice: the label is a false negative and the observation that located it is
+    a false positive.
+    """
 
     observed = {
         "file_path": "a.py",
@@ -822,6 +828,162 @@ def test_a_severity_label_still_constrains_the_match() -> None:
 
     assert (gated.true_positives, gated.false_negatives, gated.false_positives) == (0, 1, 1)
     assert (ungated.true_positives, ungated.false_negatives, ungated.false_positives) == (1, 0, 0)
+
+
+def test_a_severity_disagreement_is_named_rather_than_left_in_the_totals() -> None:
+    """The double charge the severity gate imposes is reported, not just paid.
+
+    A label the reviewer landed on and graded differently is counted as a false
+    negative and a false positive, which in the totals alone is indistinguishable
+    from a defect nobody noticed plus an unrelated finding.
+    """
+
+    score = score_evaluation(
+        _overlapping_suite(
+            [
+                {
+                    "finding_id": "graded",
+                    "file_path": "a.py",
+                    "line": 10,
+                    "category": "security",
+                    "severity": "critical",
+                }
+            ],
+            [
+                {
+                    "file_path": "a.py",
+                    "line": 10,
+                    "category": "security",
+                    "severity": "high",
+                }
+            ],
+        )
+    )
+
+    assert (score.false_negatives, score.false_positives) == (1, 1)
+    assert score.severity_mismatches == 1
+    assert [
+        (item.expected.value, item.observed.value, item.count)
+        for item in score.severity_confusion
+    ] == [("critical", "high", 1)]
+    assert score.cases[0].severity_mismatches[0].finding_id == "graded"
+
+
+def test_a_label_with_no_severity_reports_no_severity_mismatch() -> None:
+    score = score_evaluation(
+        _overlapping_suite(
+            [
+                {
+                    "finding_id": "ungraded",
+                    "file_path": "a.py",
+                    "line": 10,
+                    "category": "security",
+                }
+            ],
+            [
+                {
+                    "file_path": "a.py",
+                    "line": 10,
+                    "category": "security",
+                    "severity": "low",
+                }
+            ],
+        )
+    )
+
+    assert score.true_positives == 1
+    assert score.severity_mismatches == 0
+
+
+def test_the_category_confusion_table_does_not_depend_on_observed_order() -> None:
+    """Which mismatch is reported must not be decided by list position.
+
+    `CAPTURE.md` tells the capturer to reconsider a label when this table shows a
+    repeated confusion, so a table that names `security` on one ordering and
+    `performance` on the reverse would send them to edit the fixture on the
+    strength of an artifact. Found by search against the previous tie-break,
+    which fell through to the observation's index.
+    """
+
+    labels = [
+        {
+            "finding_id": "near",
+            "file_path": "a.py",
+            "line": 11,
+            "category": "correctness",
+            "line_tolerance": 0,
+        },
+        {
+            "finding_id": "far",
+            "file_path": "a.py",
+            "line": 10,
+            "category": "performance",
+            "line_tolerance": 0,
+        },
+    ]
+    security = {
+        "file_path": "a.py",
+        "line": 11,
+        "category": "security",
+        "severity": "high",
+    }
+    performance = {
+        "file_path": "a.py",
+        "line": 11,
+        "category": "performance",
+        "severity": "high",
+    }
+
+    forward = score_evaluation(_overlapping_suite(labels, [security, performance]))
+    reverse = score_evaluation(_overlapping_suite(labels, [performance, security]))
+
+    def table(score) -> list[tuple[str, str, str]]:
+        return sorted(
+            (mismatch.finding_id, mismatch.expected.value, mismatch.observed.value)
+            for case in score.cases
+            for mismatch in case.category_mismatches
+        )
+
+    assert table(forward) == table(reverse)
+    assert (forward.true_positives, forward.false_positives, forward.false_negatives) == (
+        reverse.true_positives,
+        reverse.false_positives,
+        reverse.false_negatives,
+    )
+
+
+def test_the_category_confusion_table_survives_every_observed_permutation() -> None:
+    """Not just the two-element swap: every ordering has to agree."""
+
+    labels = [
+        {
+            "finding_id": f"label-{index}",
+            "file_path": "a.py",
+            "line": 10 + index,
+            "category": category,
+            "line_tolerance": 1,
+        }
+        for index, category in enumerate(("correctness", "security", "performance"))
+    ]
+    observed = [
+        {"file_path": "a.py", "line": line, "category": category, "severity": "high"}
+        for line, category in ((10, "security"), (11, "performance"), (12, "security"))
+    ]
+
+    tables = {
+        tuple(
+            sorted(
+                (mismatch.finding_id, mismatch.expected.value, mismatch.observed.value)
+                for case in score_evaluation(
+                    _overlapping_suite(labels, list(ordering))
+                ).cases
+                for mismatch in case.category_mismatches
+            )
+        )
+        for ordering in itertools.permutations(observed)
+    }
+
+    assert len(tables) == 1
 
 
 @pytest.mark.parametrize("tolerance", (11, 50))
@@ -849,6 +1011,25 @@ def test_a_label_cannot_claim_more_of_a_file_than_the_ceiling(tolerance: int) ->
     assert MAX_LINE_TOLERANCE == 10
 
 
+def test_a_suite_written_against_the_previous_schema_is_refused() -> None:
+    """The narrowed tolerance ceiling makes some v1 suites invalid, so v1 ends.
+
+    A `line_tolerance` of 50 was accepted under `diffuse-evaluation-v1` and is
+    refused now. Silently reading such a file under the old version name would
+    report a schema error about a field the author was entitled to use.
+    """
+
+    with pytest.raises(ValidationError):
+        EvaluationSuite.model_validate(
+            {
+                "schema_version": "diffuse-evaluation-v1",
+                "name": "old",
+                "model": "test",
+                "cases": [{"case_id": "one"}],
+            }
+        )
+
+
 def _evaluate_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="diffuse evaluate")
     evaluation_cli.configure_parser(parser)
@@ -872,7 +1053,7 @@ def test_valid_thresholds_still_gate_a_measured_score(tmp_path, capsys) -> None:
     suite.write_text(
         json.dumps(
             {
-                "schema_version": "diffuse-evaluation-v1",
+                "schema_version": "diffuse-evaluation-v2",
                 "name": "gate",
                 "model": "openai/test",
                 "cases": [
