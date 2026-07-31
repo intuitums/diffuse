@@ -36,11 +36,6 @@ LOGGER = logging.getLogger(__name__)
 
 PROMPT_VERSION = "native-review-v6-review-diagrams"
 REVIEW_TEMPERATURE = 0.1
-# LiteLLM's vocabulary for `reasoning_effort`. `minimal` and `none` are accepted
-# by LiteLLM too but are not offered: Diffuse's product direction is correctness
-# over token cost, and an effort setting that suppresses reasoning is better
-# expressed by leaving REVIEW_EFFORT unset.
-REVIEW_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_PASSES = ("correctness", "security", "performance", "tests")
 PASS_INSTRUCTIONS = {
     "correctness": (
@@ -121,24 +116,6 @@ def review_model() -> str:
 def review_verifier_model() -> str:
     value = os.environ.get("REVIEW_VERIFIER_MODEL", "").strip()
     return value or review_model()
-
-
-def review_effort() -> str | None:
-    """How hard the model should think, or `None` to leave it to the model.
-
-    Maps to LiteLLM's `reasoning_effort`, which the anthropic route renders as
-    `output_config.effort` on models that expose it and as an explicit thinking
-    budget on the older ones. Deliberately has no default: sending an effort the
-    operator did not ask for changes both the bill and the latency of every
-    review.
-    """
-
-    value = os.environ.get("REVIEW_EFFORT", "").strip().lower()
-    if not value:
-        return None
-    if value not in REVIEW_EFFORT_LEVELS:
-        raise ValueError(f"REVIEW_EFFORT must be one of {', '.join(REVIEW_EFFORT_LEVELS)}")
-    return value
 
 
 def review_provenance_minimum_confidence() -> float:
@@ -310,8 +287,8 @@ def _call_structured[T: BaseModel](
     arguments: dict[str, object] = {
         "model": model,
         "messages": messages,
-        # Sampling and reasoning parameters are added below, and only where the
-        # model accepts them. See `_maps_parameter`.
+        # The sampling temperature is added below, and only where the model
+        # accepts it. See `_maps_parameter`.
         "max_tokens": (
             max_tokens
             if max_tokens is not None
@@ -340,20 +317,6 @@ def _call_structured[T: BaseModel](
         raise ValueError("Structured model limits must be positive")
     if _maps_parameter(model, "temperature", REVIEW_TEMPERATURE):
         arguments["temperature"] = REVIEW_TEMPERATURE
-    effort = review_effort()
-    if effort is not None:
-        if _maps_parameter(model, "reasoning_effort", effort):
-            arguments["reasoning_effort"] = effort
-        else:
-            # Warn rather than raise: the operator asked for something this
-            # model cannot do, but a review that still runs beats a fleet-wide
-            # outage, and a candidate/verifier pair may legitimately straddle
-            # one model that supports effort and one that does not.
-            LOGGER.warning(
-                "REVIEW_EFFORT=%s is not supported by %s and was not sent.",
-                effort,
-                model,
-            )
     api_key = _model_api_key(model)
     if api_key:
         arguments["api_key"] = api_key
