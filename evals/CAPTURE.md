@@ -1,7 +1,7 @@
-# Capturing the review-quality goldens
+# Capturing the review-quality baselines
 
-**No golden is committed, and the regression gate in `scripts/eval.sh` is
-therefore not live.** A golden records what a real model actually found in the
+**No baseline is committed, and the regression gate in `scripts/eval.sh` is
+therefore not live.** A baseline records what a real model actually found in the
 fixtures, so producing one requires live model calls. It cannot be derived,
 mocked, or reasoned out — and a fabricated one would be worse than none, because
 every later phase of the rebuild diffs against it.
@@ -17,11 +17,12 @@ This document is the exact procedure to run once a credential exists.
 | `REVIEW_VERIFIER_MODEL` *(optional)* | Defaults to `REVIEW_MODEL`. If you set it to a different model you must also pass its rate card — see step 3. |
 | `REVIEW_DEPTH` *(optional)* | Costs real money. `diffuse model` shows what the depth actually becomes on your model before you spend anything. |
 
-The golden records all of these, plus `PROMPT_VERSION`, `MIN_REVIEW_CONFIDENCE`,
-`REVIEW_PASSES`, and — per stage — the reasoning parameter each model was
-**actually sent**. `check` refuses a comparison across any of them, exactly as it
-refuses one across models. You do not have to remember to write them down; you
-do have to make sure the shell you capture in holds the values you meant.
+The baseline records all of these, plus `PROMPT_VERSION`,
+`MIN_REVIEW_CONFIDENCE`, `REVIEW_PASSES`, and — per stage — the reasoning
+parameter each model was **actually sent**. `check` refuses a comparison across
+any of them, exactly as it refuses one across models. You do not have to
+remember to write them down; you do have to make sure the shell you capture in
+holds the values you meant.
 
 `run` resolves the requested depth against both configured models before the
 first call and refuses one the candidate cannot express, so a capture cannot
@@ -29,7 +30,7 @@ silently record a depth that was never sent.
 
 **No database is needed.** The harness calls `generate_review` directly with
 fixture-supplied context, so it does not touch Postgres, the indexer, or the
-retriever. That is deliberate: a golden that depended on the state of an index
+retriever. That is deliberate: a baseline that depended on the state of an index
 snapshot would drift for reasons unrelated to review quality.
 
 ## 2. Capture
@@ -44,13 +45,19 @@ python -m service.eval_harness run \
 
 python -m service.eval_harness capture \
   --suite /tmp/suite.json \
-  --golden evals/golden/review-baseline.json
+  --baseline evals/baselines/review-baseline.json
 ```
 
 `run` is the only command that calls a model. `capture` and `check` are pure
 functions of `/tmp/suite.json`, so you can re-score and re-compare as often as
 you like without paying again. **Keep `/tmp/suite.json`** — it holds the actual
-findings, which the golden deliberately does not.
+findings, which the baseline deliberately does not.
+
+Note the two similarly named files in `evals/`. `baselines/review-baseline.json`
+is the captured baseline this document is about. `baseline.example.json` is
+something else entirely: a hand-written example suite that shows the
+`diffuse evaluate` input format, committed and packaged for that purpose alone.
+Nothing here reads or writes it.
 
 `--output` is rewritten after every fixture, so if a provider errors partway
 through, the completed cases are already on disk. Resume with:
@@ -110,14 +117,14 @@ On a small model (an example $0.40 / $1.60 rate card) the same run is under
 **$0.10**. Capturing on a cheap model first to shake out the plumbing, then
 recapturing on the model you actually ship, is the sensible order. Note that
 `openai/gpt-4.1-mini` has no reasoning control at all, so `run` will refuse a
-`REVIEW_DEPTH` on it rather than capture a golden at a depth it never sent.
+`REVIEW_DEPTH` on it rather than capture a baseline at a depth it never sent.
 
 The harness reviews fixtures serially. There is no parallelism, on purpose:
 concurrency would make the recorded `latency_ms` meaningless.
 
-## 5. Verify the golden before committing it
+## 5. Verify the baseline before committing it
 
-A golden is the standard every later phase defends. Committing a bad one locks
+A baseline is the standard every later phase defends. Committing a bad one locks
 in whatever it recorded. Check all of these:
 
 1. **Read the scores.** `capture` prints precision, recall and F1. Recall near
@@ -125,9 +132,9 @@ in whatever it recorded. Check all of these:
    find bugs that are unambiguously present, and that is a finding about the
    product, not a reason to weaken the labels. **Do not adjust a fixture to make
    the numbers look better.** Report the number. A recall of *exactly* zero is
-   refused outright — such a golden passes against every later run, including
-   one where the engine returns nothing — and needs `--allow-zero-recall` to
-   record deliberately.
+   refused outright — such a baseline passes against every later run,
+   including one where the engine returns nothing — and needs
+   `--allow-zero-recall` to record deliberately.
 2. **Read the findings**, in `/tmp/suite.json`, not just the scores. For each
    fixture, is the observed finding the labeled bug, or a different issue that
    happens to sit within the line tolerance? A coincidental match inflates
@@ -141,7 +148,7 @@ in whatever it recorded. Check all of these:
    says `correctness` is one true positive and one entry in this table — it does
    not move precision or recall. Read the table anyway: a repeated confusion in
    one direction often means the label is the wrong one, and fixing a label
-   after capture invalidates the golden, so decide before you commit it.
+   after capture invalidates the baseline, so decide before you commit it.
 
    Two caveats before you change a label on the strength of it. The table is
    order-independent but **not minimal** — the matcher prefers a
@@ -154,18 +161,18 @@ in whatever it recorded. Check all of these:
    graded differently, charged as a false negative **and** a false positive. If
    this table is not empty, the question is whether the grade was really part of
    the claim — a label without a severity places no such constraint. Decide
-   before capture; changing a label afterwards invalidates the golden.
+   before capture; changing a label afterwards invalidates the baseline.
 6. **Run it twice.** These models are not deterministic. If two consecutive
    captures disagree by more than a few points, commit the *worse* run as the
-   golden and set a non-zero `EVAL_TOLERANCE`, rather than committing a lucky
+   baseline and set a non-zero `EVAL_TOLERANCE`, rather than committing a lucky
    run that every later change appears to regress against.
 7. **Record the configuration** in the commit message: model, verifier model,
    `REVIEW_DEPTH`, `MIN_REVIEW_CONFIDENCE`, `REVIEW_PASSES`, and the date. The
-   golden now stores all of these and refuses a comparison across any of them,
+   baseline now stores all of these and refuses a comparison across any of them,
    so this is for the reader rather than for the gate — but the date and the
    provider's model revision are still yours to record.
 
-Then commit `evals/golden/review-baseline.json` and confirm the gate is live:
+Then commit `evals/baselines/review-baseline.json` and confirm the gate is live:
 
 ```sh
 ./scripts/eval.sh                      # runs, scores, compares. Exit 0 = no regression.
@@ -178,7 +185,7 @@ Do not take a green run as evidence that the gate works. Seed a regression and
 watch it fail — the plan's acceptance criterion for this unit:
 
 ```sh
-# In service/review_engine.py, raise the effective confidence floor at the
+# In service/review/engine.py, raise the effective confidence floor at the
 # point it is applied, inside the candidate filter (~line 1048):
 #   min(candidate.confidence, decision.confidence) < threshold
 #   ->
@@ -188,11 +195,11 @@ EVAL_SUITE=/tmp/regressed.json ./scripts/eval.sh    # must exit 1
 ```
 
 **Seed it there, not in `minimum_review_confidence()`.** That function's value is
-recorded in the golden's `run_configuration`, so changing it makes `check` exit 1
-on a configuration mismatch — which is correct behaviour and proves nothing about
-review quality. The seed has to move the findings while leaving the recorded
-configuration alone, and then the failure you read must be a per-case miss and a
-recall drop.
+recorded in the baseline's `run_configuration`, so changing it makes `check`
+exit 1 on a configuration mismatch — which is correct behaviour and proves
+nothing about review quality. The seed has to move the findings while leaving
+the recorded configuration alone, and then the failure you read must be a
+per-case miss and a recall drop.
 
 Revert the change afterwards. Until this has been done once, the gate is
-unproven even with a golden committed.
+unproven even with a baseline committed.

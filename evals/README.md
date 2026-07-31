@@ -87,6 +87,12 @@ by hand from a reviewed pull request:
 diffuse evaluate evals/baseline.example.json
 ```
 
+Despite the name, `baseline.example.json` is not a captured baseline: it is a
+hand-written example of the *suite* format `diffuse evaluate` reads. The
+captured baseline the fixture harness compares against lives at
+`baselines/review-baseline.json` and is described under **What a baseline
+records** below.
+
 The shipped fixture records one expected finding and zero observed, so it
 scores 0% recall and exits non-zero under any recall gate. That is intentional
 — the thresholds below are an example of the syntax, not a passing invocation:
@@ -112,7 +118,7 @@ included. Nothing is transcribed by hand any more.
 ```sh
 python -m service.eval_harness run --fixtures evals/fixtures --output /tmp/suite.json
 python -m service.eval_harness run --output /tmp/suite.json --resume   # after a failure
-python -m service.eval_harness capture --suite /tmp/suite.json   # write a golden
+python -m service.eval_harness capture --suite /tmp/suite.json   # write a baseline
 python -m service.eval_harness check   --suite /tmp/suite.json   # exit 1 on a regression
 ./scripts/eval.sh                                                # run + check
 ```
@@ -126,14 +132,14 @@ picks up from them. A full capture is 40 serial model calls; losing the seventh
 of eight used to discard the other 35. A case whose fixture changed since is
 re-run rather than reused.
 
-> **Goldens are not committed and the regression gate is not live.** Capturing
+> **Baselines are not committed and the regression gate is not live.** Capturing
 > one requires live model calls. `scripts/eval.sh` exits non-zero with
 > instructions rather than passing vacuously. See [CAPTURE.md](CAPTURE.md).
 
 ## The fixture format
 
 One directory per case, under `fixtures/`. The directory name *is* the case id,
-so a golden entry cannot drift away from the fixture it scores.
+so a baseline entry cannot drift away from the fixture it scores.
 
 ```
 fixtures/<case-id>/
@@ -172,7 +178,7 @@ would be a second thing to keep in step.
 ## Why these fixtures, and why they are better than `baseline.example.json`
 
 The committed example labels `service/webhook.py:42` and ships **no diff at
-all**. `service/review_engine.py` drops any candidate that does not land on a
+all**. `service/review/engine.py` drops any candidate that does not land on a
 changed line, so that label is unmatchable by construction — which is why its
 recorded run scores 0% recall. It measures nothing.
 
@@ -207,16 +213,16 @@ check-then-act race, an N+1 query, and the clean control. Eight fixtures, nine
 labels, and the count is pinned by a test — a directory without a `case.json` is
 an error rather than a silent skip.
 
-## What a golden records
+## What a baseline records
 
 Scores, not prose — plus every condition those scores are only a standard
-under. Schema `diffuse-eval-golden-v2`.
+under. Schema `diffuse-eval-baseline-v2`.
 
 | Field | |
 | --- | --- |
 | `suite_name` | |
 | `model`, `verifier_model` | the pair the scores were produced by |
-| `run_configuration.prompt_version` | `review_engine.PROMPT_VERSION` |
+| `run_configuration.prompt_version` | `service.review.engine.PROMPT_VERSION` |
 | `run_configuration.min_review_confidence` | `MIN_REVIEW_CONFIDENCE` |
 | `run_configuration.review_passes` | `REVIEW_PASSES` |
 | `run_configuration.requested_review_depth` | `REVIEW_DEPTH` / `REVIEW_EFFORT`, as an intent |
@@ -230,29 +236,29 @@ under. Schema `diffuse-eval-golden-v2`.
 Model output is not deterministic, so a byte comparison of titles and summaries
 would fail for reasons that have nothing to do with review quality — and a check
 that cries wolf gets deleted. Comparing through the scorer catches the thing a
-threshold change in `review_engine.py` actually moves.
+threshold change in `service/review/engine.py` actually moves.
 
 The configuration fields exist because the model name was previously the only
 thing pinned, and it is not the only thing that moves the score. Capture with
-`MIN_REVIEW_CONFIDENCE=0.99` left in a shell and the golden records near-zero
+`MIN_REVIEW_CONFIDENCE=0.99` left in a shell and the baseline records near-zero
 recall and near-zero false positives that every later run at the default 0.75
 clears trivially, forever — with the precision guard pinned to a floor nobody
-chose. `review_cli.py` already treats a `PROMPT_VERSION` change as invalidating
-a stored run; a golden outlives many more of them.
+chose. `service/cli/review.py` already treats a `PROMPT_VERSION` change as invalidating
+a stored run; a baseline outlives many more of them.
 
 `depth_renderings` records the resolved depth, not just the requested one,
 because a route can be sent nothing at all whatever the request said.
 `openai/gpt-4.1-mini` — the model this document recommends capturing on first —
 has no reasoning control, so a run at `REVIEW_DEPTH=thorough` there sends no
-reasoning parameter. Recording only the request would let that defend a golden
+reasoning parameter. Recording only the request would let that defend a baseline
 captured on a model that honoured it.
 
 `check` fails when any case gets worse (more misses, or more unlabeled
 findings), when an aggregate metric drops by more than `--tolerance`, when a
-golden case did not run, when a fixture has no golden entry, when a fixture's
-label set changed since capture, when a fixture's **content** changed since
-capture, when the golden was captured against a different model, or when any
-`run_configuration` field differs.
+baseline case did not run, when a fixture has no baseline entry, when a
+fixture's label set changed since capture, when a fixture's **content** changed
+since capture, when the baseline was captured against a different model, or
+when any `run_configuration` field differs.
 
 The last three matter for the same reason: editing a fixture or a variable after
 capture silently rebases the comparison. Drop a label the engine kept missing
@@ -265,17 +271,17 @@ the gate then measures an easier task than the one it was calibrated on.
 inside precision and recall — twice.
 
 `capture` refuses a suite that found none of its labeled defects unless
-`--allow-zero-recall` is passed. Such a golden is structurally valid and passes
-against every later run, including one where the review engine returns nothing:
-`precision` is 1.0 when there is nothing to be precise about. A real zero is a
-finding about the review engine and worth recording deliberately; it must not
-happen by accident.
+`--allow-zero-recall` is passed. Such a baseline is structurally valid and
+passes against every later run, including one where the review engine returns
+nothing: `precision` is 1.0 when there is nothing to be precise about. A real
+zero is a finding about the review engine and worth recording deliberately; it
+must not happen by accident.
 
 ## Known limits
 
 Stated plainly so nobody mistakes a green run for more than it is.
 
-- **No golden, so no gate.** Everything above is machinery. It has never been
+- **No baseline, so no gate.** Everything above is machinery. It has never been
   run against a live model. See [CAPTURE.md](CAPTURE.md).
 - **No repository policy is applied.** The harness passes `policy=None`, so the
   engine uses the environment-level `MIN_REVIEW_CONFIDENCE` and `REVIEW_PASSES`.
@@ -297,7 +303,7 @@ Stated plainly so nobody mistakes a green run for more than it is.
   a category-agreeing observation but does not solve the min-cost assignment,
   so the table can name a confusion a better assignment would have avoided. It
   is stable under reordering of the observed list, and it is recorded in the
-  golden and reported as a delta — never gated.
+  baseline and reported as a delta — never gated.
 - **The candidate/verifier token split is observed, not reported.**
   `ReviewReport` carries one combined token pair, so the harness wraps
   `_call_structured` to attribute each call to its stage. The wrapper delegates
