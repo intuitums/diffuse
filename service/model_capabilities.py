@@ -49,7 +49,7 @@ per-parameter probe: it is only visible by rendering the *combination*. See
 ``plan_structured_output``.
 
 This module is deliberately a leaf, like ``model_providers``: it imports nothing
-from ``service``, so ``review_engine`` and ``indexer`` can both depend on it
+from ``service``, so ``review.engine`` and ``indexer`` can both depend on it
 without a cycle. Keep it that way.
 """
 

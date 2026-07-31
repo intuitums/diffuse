@@ -6,7 +6,7 @@ from collections import defaultdict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from service.review_models import Category, Severity
+from service.models.review import Category, Severity
 
 
 class EvaluationModel(BaseModel):

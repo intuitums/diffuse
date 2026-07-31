@@ -8,8 +8,8 @@ from typing import Literal
 
 import psycopg2.extras
 
+from service.hosted.workflow import enqueue_review_event
 from service.scm import PullRequestEvent
-from service.workflow import enqueue_review_event
 
 
 def enqueue_review_trigger(

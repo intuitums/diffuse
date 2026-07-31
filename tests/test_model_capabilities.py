@@ -302,7 +302,7 @@ def test_an_unroutable_identifier_needs_no_repair() -> None:
 
 @pytest.mark.parametrize("module", ["model_capabilities.py", "model_providers.py"])
 def test_the_leaf_modules_stay_leaves(module: str) -> None:
-    """`indexer` and `review_engine` both depend on these; a `service` import in
+    """`indexer` and `review.engine` both depend on these; a `service` import in
     either would make that a cycle.
 
     Read as source text this guard checked for the literal strings `from

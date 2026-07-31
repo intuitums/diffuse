@@ -17,14 +17,14 @@ from retriever.retrieve import (
     normalize_code_query,
     retrieve_query_context_from_plan,
 )
-from service.code_query_models import (
+from service.cross_repository import resolve_cross_repository_context_plan
+from service.models.code_query import (
     CodeQueryCitation,
     CodeQueryClaim,
     CodeQueryModelResponse,
 )
-from service.cross_repository import resolve_cross_repository_context_plan
-from service.mcp_store import McpRemote, resolve_mcp_repository
-from service.review_engine import _call_structured, review_model
+from service.review.engine import _call_structured, review_model
+from service.storage.mcp import McpRemote, resolve_mcp_repository
 
 CODE_QUERY_PROMPT_VERSION = "grounded-code-query-v1"
 CODE_SEARCH_SCHEMA_VERSION = "diffuse-code-search-v1"

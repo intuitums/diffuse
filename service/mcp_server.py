@@ -22,16 +22,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AliasChoices, AnyHttpUrl, Field
 
 from indexer.store import get_conn
-from service.analytics_store import (
-    get_review_analytics as query_review_analytics,
-)
 from service.api_auth import authenticate_bearer_token
-from service.api_tokens import (
-    ADMIN_SCOPE,
-    MCP_GENERATE_SCOPE,
-    MCP_READ_SCOPE,
-    MCP_WRITE_SCOPE,
-)
 from service.code_query import (
     ask_codebase as answer_codebase_query,
 )
@@ -39,22 +30,35 @@ from service.code_query import (
     resolve_code_query_target,
     search_codebase,
 )
-from service.custom_context_store import (
+from service.github.api import fetch_manual_pull_request_event
+from service.hosted.analytics_store import (
+    get_review_analytics as query_review_analytics,
+)
+from service.hosted.api_tokens import (
+    ADMIN_SCOPE,
+    MCP_GENERATE_SCOPE,
+    MCP_READ_SCOPE,
+    MCP_WRITE_SCOPE,
+)
+from service.mcp_actions import enqueue_mcp_review_trigger
+from service.review.trigger import (
+    fetch_current_manual_review_event,
+)
+from service.scm import PLAINTEXT_ORIGIN_VARIABLE, plaintext_origin_allowed
+from service.storage.custom_context import (
     CustomContextStatus,
     CustomContextType,
 )
-from service.custom_context_store import (
+from service.storage.custom_context import (
     create_custom_context as create_custom_context_record,
 )
-from service.custom_context_store import (
+from service.storage.custom_context import (
     delete_custom_context as delete_custom_context_record,
 )
-from service.custom_context_store import (
+from service.storage.custom_context import (
     update_custom_context as update_custom_context_record,
 )
-from service.github import fetch_manual_pull_request_event
-from service.mcp_actions import enqueue_mcp_review_trigger
-from service.mcp_store import (
+from service.storage.mcp import (
     AgentTarget,
     McpCustomContextStatus,
     McpCustomContextType,
@@ -75,10 +79,6 @@ from service.mcp_store import (
     search_mcp_custom_context,
     search_mcp_review_comments,
 )
-from service.review_trigger import (
-    fetch_current_manual_review_event,
-)
-from service.scm import PLAINTEXT_ORIGIN_VARIABLE, plaintext_origin_allowed
 
 DEFAULT_ALLOWED_HOSTS = (
     "localhost:*",
