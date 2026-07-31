@@ -292,6 +292,7 @@ def _feedback_job(event: FeedbackSyncEvent) -> WorkflowJob:
 
 @pytest.mark.anyio
 async def test_worker_checks_revision_before_review_and_completes(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     event = _event(action="synchronize")
     job = _job(event)
     current_checks = iter([True, True, True, True, True, True])
@@ -454,6 +455,7 @@ async def test_worker_checks_revision_before_review_and_completes(monkeypatch):
 async def test_worker_auto_approves_only_after_clean_review_publication(
     monkeypatch,
 ):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     event = _event(
         title="Clarify the guide",
         description="Documentation only.",
@@ -627,6 +629,7 @@ async def test_worker_supersedes_before_review_when_head_changed(monkeypatch):
 
 @pytest.mark.anyio
 async def test_worker_publishes_exact_review_status_check(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     event = _event()
     job = _job(event)
     current_checks = iter([True, True, True, True, True, True, True])
@@ -819,6 +822,7 @@ async def test_missing_index_completes_an_already_open_check_run(
 
 @pytest.mark.anyio
 async def test_worker_persists_trigger_skip_without_retrieval_or_publication(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     event = _event(is_draft=True)
     job = _job(event)
     current_checks = iter([True, True, True, True, True])
@@ -1459,6 +1463,9 @@ def test_hot_path_configuration_is_validated_before_any_job_is_claimed(monkeypat
     review permanently on its first attempt -- and does so for every pull
     request until someone notices. Fixing the variable then recovers nothing.
     """
+    # REVIEW_MODEL has no default and is probed before REVIEW_PASSES, so it
+    # would otherwise be the variable named here.
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setenv("REVIEW_PASSES", "correctness,perf")
 
     with pytest.raises(ValueError, match="REVIEW_PASSES is invalid"):
@@ -1486,6 +1493,11 @@ def test_hot_path_configuration_is_validated_before_any_job_is_claimed(monkeypat
     ],
 )
 def test_every_hot_path_variable_fails_startup_by_name(monkeypatch, name, value):
+    # REVIEW_MODEL has no default and is probed early, so without a valid value
+    # every case below would report REVIEW_MODEL instead of the variable it is
+    # meant to exercise.
+    if name != "REVIEW_MODEL":
+        monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setenv(name, value)
 
     with pytest.raises(ValueError, match=name):
@@ -1495,8 +1507,33 @@ def test_every_hot_path_variable_fails_startup_by_name(monkeypatch, name, value)
 def test_startup_configuration_check_accepts_the_shipped_defaults(monkeypatch):
     for name, _probe in worker._CONFIGURATION_PROBES:
         monkeypatch.delenv(name, raising=False)
+    # REVIEW_MODEL is the one hot-path variable with no default, by design: see
+    # `test_unset_review_model_stops_the_worker_with_an_actionable_error`.
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
 
     worker.validate_worker_configuration()
+
+
+def test_unset_review_model_stops_the_worker_with_an_actionable_error(monkeypatch):
+    """No default model, and the refusal must tell the operator what to do.
+
+    Diffuse used to fall back to a hardcoded `anthropic/claude-sonnet-5`, which
+    assumes a credential the operator may never have had. Guessing is the bug,
+    so the only acceptable behaviour is a startup refusal that names the
+    variable and points at the setup path.
+    """
+    for name, _probe in worker._CONFIGURATION_PROBES:
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(ValueError) as failure:
+        worker.validate_worker_configuration()
+
+    message = str(failure.value)
+    assert "REVIEW_MODEL" in message
+    assert "diffuse init" in message
+    # A refusal that merely says "unset" leaves the operator guessing at the
+    # format; it has to show one.
+    assert "anthropic/claude-sonnet-5" in message
 
 
 def test_unauthorized_context_repositories_are_recorded_against_the_worker(monkeypatch):
@@ -1730,6 +1767,9 @@ def test_missing_embedding_credential_is_not_a_configuration_parse_error(monkeyp
     """
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_KEY", raising=False)
+    # REVIEW_MODEL has no default and is probed before REVIEW_PASSES, so it
+    # would otherwise be the variable named here.
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setenv("REVIEW_PASSES", "correctness,perf")
 
     with pytest.raises(ValueError, match="REVIEW_PASSES is invalid"):

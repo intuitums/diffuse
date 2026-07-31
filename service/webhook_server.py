@@ -46,6 +46,7 @@ from service.scm import (
     ReviewConversationEvent,
     ReviewFeedbackCommentEvent,
 )
+from service.worker import validate_worker_configuration
 from service.workflow import (
     REPOSITORY_NOT_ONBOARDED_REASON,
     DeliveryConflictError,
@@ -117,6 +118,15 @@ def _verify_database_schema() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # The API resolves the same hot-path configuration the worker does -- it
+    # answers code questions in-process and enqueues the jobs the worker later
+    # runs -- but it used to check only the database schema. With REVIEW_MODEL
+    # unset it therefore started clean, accepted webhooks, enqueued jobs that
+    # could never succeed, and answered `code/ask` with HTTP 400
+    # `invalid_request`: a server misconfiguration reported to the caller as
+    # their mistake. Failing here names the variable instead, and matches the
+    # worker, the CLI, and `diffuse model`.
+    await anyio.to_thread.run_sync(validate_worker_configuration)
     await anyio.to_thread.run_sync(_verify_database_schema)
     async with diffuse_mcp.session_manager.run():
         yield

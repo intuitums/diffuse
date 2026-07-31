@@ -71,6 +71,8 @@ def _diagram_diff():
 def test_unsafe_diagram_is_discarded_without_failing_the_review(monkeypatch):
     """The diagram is optional enrichment; rejecting it must not lose the review."""
 
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
+
     def unsafe_diagram(**_kwargs):
         return {
             "choices": [
@@ -104,6 +106,8 @@ def test_unsafe_diagram_is_discarded_without_failing_the_review(monkeypatch):
 
 def test_empty_diagram_response_is_discarded_without_failing_the_review(monkeypatch):
     """Empty diagram content is a RuntimeError; it must not discard the review."""
+
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
 
     def empty_diagram(**_kwargs):
         return {

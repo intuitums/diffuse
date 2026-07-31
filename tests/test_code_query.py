@@ -162,6 +162,7 @@ def test_search_returns_commit_pinned_encoded_source_links(monkeypatch):
 
 
 def test_answer_drops_any_claim_with_an_invented_citation(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     context = _context()
     monkeypatch.setattr(
         code_query,
@@ -232,6 +233,7 @@ def test_answer_drops_any_claim_with_an_invented_citation(monkeypatch):
 
 
 def test_answer_fails_closed_without_retrieved_or_valid_citations(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setattr(
         code_query,
         "retrieve_query_context_from_plan",
