@@ -137,6 +137,8 @@ def test_native_review_report_and_publication_are_durable_and_idempotent():
         context_chunk_count=3,
         prompt_tokens=120,
         completion_tokens=30,
+        cache_read_tokens=80,
+        cache_write_tokens=10,
     )
 
     with closing(psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])) as connection:

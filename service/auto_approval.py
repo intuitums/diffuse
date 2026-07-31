@@ -113,12 +113,26 @@ LOW_PATH_PATTERNS = (
 # for the small-change shortcut below -- a test-only change is medium at the very least,
 # and approving one takes an operator who raised `risk_ceiling` on purpose.
 TEST_PATH_PATTERNS = (
+    "test/**",
     "tests/**",
+    "testing/**",
+    "**/test/**",
     "**/tests/**",
+    "**/testing/**",
+    "**/__tests__/**",
+    "spec/**",
+    "**/spec/**",
     "**/test_*.py",
     "**/*_test.py",
+    "**/*_test.go",
+    "**/*_test.ts",
+    "**/*_test.tsx",
+    "**/*_test.js",
+    "**/*_test.jsx",
     "**/*.test.*",
     "**/*.spec.*",
+    "**/*Test.java",
+    "**/*Tests.java",
 )
 
 
