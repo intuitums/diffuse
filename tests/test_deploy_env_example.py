@@ -108,8 +108,64 @@ def test_release_requires_public_oci_artifacts():
     assert 'oras manifest fetch "${BUNDLE_ARTIFACT}:${RELEASE_TAG}"' in workflow
 
 
+_ASSIGNMENT = re.compile(
+    r"^(?P<comment>#[ \t]*)?(?P<name>[A-Z][A-Z0-9_]*)=(?P<value>.*)$", re.M
+)
+
+
 def _declared_values(path: Path) -> dict[str, str]:
-    return dict(re.findall(r"^([A-Z][A-Z0-9_]*)=(.*)$", path.read_text(), re.M))
+    """Every assignment, whether it is live or a commented recommendation.
+
+    `REVIEW_MODEL` ships commented out in both files so that `cp .env.example
+    .env` cannot produce a working review model -- that would be the deleted
+    code default moved into a file. The recommendation itself still has to stay
+    identical between the two, which is the drift a customer feels, so this has
+    to see a commented line as well as a live one.
+
+    Reading both forms into one flat last-match-wins dictionary would have made
+    this test weaker than the one it replaced: an explanatory
+    `#EMBEDDING_DIMENSIONS=1536` written *below* a live
+    `EMBEDDING_DIMENSIONS=3072` would be read as the file's value, and a
+    divergence between the two files in exactly that shape would pass. A live
+    assignment is what the process gets, so a live assignment always wins here;
+    a commented one is only consulted when there is no live one at all.
+
+    The `#` is also allowed to be separated from the name, because
+    `# REVIEW_MODEL=...` is the comment style used throughout both files and
+    requiring adjacency made a correctly-written recommendation fail with a
+    message about a missing variable.
+    """
+
+    live: dict[str, str] = {}
+    commented: dict[str, str] = {}
+    for match in _ASSIGNMENT.finditer(path.read_text()):
+        target = commented if match["comment"] else live
+        target[match["name"]] = match["value"]
+    return commented | live
+
+
+def _live_assignments(path: Path) -> set[str]:
+    return set(re.findall(r"^([A-Z][A-Z0-9_]*)=", path.read_text(), re.M))
+
+
+def test_review_model_is_not_set_by_copying_an_example_file():
+    """Both env files must recommend a review model without supplying one.
+
+    deploy/README.md tells a customer to copy `env.example` to `.env`, and
+    `.env.example` is copied the same way in development. While `REVIEW_MODEL`
+    was assigned there, that copy produced a working Anthropic configuration --
+    which is exactly the guess `review_model()` stopped making, one file over.
+    """
+
+    for path in (SOURCE_ENV, CUSTOMER_ENV):
+        assert "REVIEW_MODEL" not in _live_assignments(path), (
+            f"{path.name} assigns REVIEW_MODEL. Comment the line out: copying "
+            "this file must not hand an operator a model they never chose."
+        )
+        assert "#REVIEW_MODEL=" in path.read_text(), (
+            f"{path.name} no longer carries the commented REVIEW_MODEL "
+            "recommendation, so an operator has nothing to uncomment."
+        )
 
 
 # Names being in sync is not enough: the customer bundle shipped
@@ -130,6 +186,33 @@ def test_customer_env_example_ships_the_same_model_defaults():
             f".env.example={source[name]!r} deploy/env.example={customer[name]!r}. "
             "A customer following deploy/README.md would get the second one."
         )
+
+
+def test_a_commented_recommendation_never_overrides_a_live_assignment(tmp_path: Path):
+    """Guard the guard: widening the scan to commented lines must not weaken it.
+
+    Both files explain a live setting with a commented alternative nearby, and
+    an explanation written below the assignment it explains is the ordinary way
+    to write one. Read as one flat last-match-wins mapping, that explanation
+    becomes the file's value -- so two files that genuinely disagree about
+    `EMBEDDING_DIMENSIONS` compare equal, which is precisely the drift this
+    module exists to catch.
+    """
+
+    path = tmp_path / "env.example"
+    path.write_text(
+        "EMBEDDING_DIMENSIONS=3072\n"
+        "#EMBEDDING_DIMENSIONS=1536\n"
+        "# REVIEW_MODEL=anthropic/claude-sonnet-5\n"
+    )
+
+    values = _declared_values(path)
+
+    assert values["EMBEDDING_DIMENSIONS"] == "3072"
+    # And a `#` separated from the name is still a recommendation. Requiring
+    # adjacency reported the commonest comment style in these files as a
+    # variable that was never documented at all.
+    assert values["REVIEW_MODEL"] == "anthropic/claude-sonnet-5"
 
 
 def test_no_code_default_can_drift_from_the_shipped_env_files():

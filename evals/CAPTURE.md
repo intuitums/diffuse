@@ -15,7 +15,7 @@ This document is the exact procedure to run once a credential exists.
 | `REVIEW_MODEL` | The candidate model. There is no default; the run refuses without it. |
 | That provider's API key | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, … as `service/model_providers.py` resolves it. |
 | `REVIEW_VERIFIER_MODEL` *(optional)* | Defaults to `REVIEW_MODEL`. If you set it to a different model you must also pass its rate card — see step 3. |
-| `REVIEW_EFFORT` *(optional)* | Costs real money. Whatever you choose, the golden is only valid for that value; record it. |
+| `REVIEW_DEPTH` *(optional)* | Costs real money. Whatever you choose, the golden is only valid for that value; record it. `diffuse model` shows what the depth actually becomes on your model before you spend anything. |
 
 **No database is needed.** The harness calls `generate_review` directly with
 fixture-supplied context, so it does not touch Postgres, the indexer, or the
@@ -70,7 +70,8 @@ stage, so a full capture is:
 - 8 fixtures x (4 candidate passes + 1 verification) = **40 model calls**
 - **≈ 50,000 input tokens** total (measured: ~46k for the candidate prompts plus
   the verification prompts)
-- **≈ 40,000 output tokens** at default effort. With `REVIEW_EFFORT=xhigh`,
+- **≈ 40,000 output tokens** with no depth requested. With
+  `REVIEW_DEPTH=thorough`,
   reasoning tokens bill as output and this is the term that explodes — budget
   **250,000–600,000 output tokens**.
 
@@ -79,8 +80,8 @@ provider's current rates, do not trust this number*:
 
 | Setting | Cost per capture | Wall clock (serial) |
 | --- | --- | --- |
-| default effort | **≈ $0.75** | 7–20 min |
-| `REVIEW_EFFORT=xhigh` | **≈ $4–5** | 40–80 min |
+| no depth requested | **≈ $0.75** | 7–20 min |
+| `REVIEW_DEPTH=thorough` | **≈ $4–5** | 40–80 min |
 
 On a small model (an example $0.40 / $1.60 rate card) the same run is under
 **$0.10**. Capturing on a cheap model first to shake out the plumbing, then
@@ -117,7 +118,7 @@ in whatever it recorded. Check all of these:
    golden and set a non-zero `EVAL_TOLERANCE`, rather than committing a lucky
    run that every later change appears to regress against.
 6. **Record the configuration** in the commit message: model, verifier model,
-   `REVIEW_EFFORT`, `MIN_REVIEW_CONFIDENCE`, `REVIEW_PASSES`, and the date. The
+   `REVIEW_DEPTH`, `MIN_REVIEW_CONFIDENCE`, `REVIEW_PASSES`, and the date. The
    golden stores the model names and refuses a comparison across models, but it
    does not store the rest, and all of them move the score.
 

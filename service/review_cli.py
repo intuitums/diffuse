@@ -52,6 +52,7 @@ from service.repositories import RegisteredRepository, list_repositories
 from service.review_engine import (
     PROMPT_VERSION,
     generate_review,
+    resolve_review_depth_support,
     review_model,
     review_verifier_model,
 )
@@ -535,6 +536,24 @@ def _stderr_progress_reporter() -> ProgressReporter | None:
     return ProgressReporter(stream)
 
 
+def report_review_depth(stream: TextIO | None = None) -> None:
+    """Name what each model will actually be sent, and refuse the impossible.
+
+    The worker resolves this at startup; the CLI has no startup, so it resolves
+    it before the first model call instead. Written straight to stderr rather
+    than through `ProgressReporter`, which overwrites its own line and stays
+    silent off a terminal -- the opposite of what a diagnostic about a control
+    the operator will not get needs to be.
+    """
+
+    support = resolve_review_depth_support()
+    for line in support.report_lines():
+        print(line, file=stream if stream is not None else sys.stderr)
+    refusal = support.refusal()
+    if refusal is not None:
+        raise ValueError(refusal)
+
+
 def run_local_review(
     *,
     start: Path,
@@ -610,6 +629,7 @@ def run_local_review(
     dimensions = embedding_dimensions()
     selected_review_model = review_model()
     selected_verifier_model = review_verifier_model()
+    report_review_depth()
     with closing(get_conn()) as conn:
         snapshot_id = active_snapshot_id_for_repository(
             conn,

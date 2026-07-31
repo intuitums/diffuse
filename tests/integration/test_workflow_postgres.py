@@ -603,6 +603,15 @@ def test_native_review_report_and_publication_are_durable_and_idempotent():
                 "confidence": 0.9,
             },
             model_routing_reason="opposing_anthropic_reviewer",
+            # Routing permutes the configured pair per pull request, so what the
+            # models were actually asked to do is not derivable from
+            # configuration after the fact. It is recorded with the run, where
+            # LOG_LEVEL cannot delete it.
+            review_depth_resolution=(
+                "REVIEW_DEPTH=exhaustive (routed by provenance: "
+                "opposing_anthropic_reviewer) | candidate: openai/test-review-model "
+                "has no reasoning control on this route"
+            ),
             prompt_version="native-review-v1",
             context_fingerprint="c" * 64,
             context_snapshots=context_snapshots,
@@ -729,7 +738,8 @@ def test_native_review_report_and_publication_are_durable_and_idempotent():
                     run.review_number,
                     run.verifier_model,
                     run.provenance->>'model_family',
-                    run.model_routing_reason
+                    run.model_routing_reason,
+                    run.review_depth_resolution
                 FROM review_runs AS run
                 JOIN review_publications AS publication
                   ON publication.review_run_id = run.id
@@ -784,6 +794,9 @@ def test_native_review_report_and_publication_are_durable_and_idempotent():
         "openai/test-verifier-model",
         "anthropic",
         "opposing_anthropic_reviewer",
+        "REVIEW_DEPTH=exhaustive (routed by provenance: "
+        "opposing_anthropic_reviewer) | candidate: openai/test-review-model "
+        "has no reasoning control on this route",
     )
     assert finding_classifications == [
         (finding.fingerprint, "vulnerability"),

@@ -214,7 +214,11 @@ untracked choice, index snapshot, policy fingerprint, model, and prompt version
 are unchanged; completed or drifted runs require a new review.
 
 `diffuse model` reports the selected LiteLLM provider, expected credential
-variable names, and readiness booleans without printing secret values.
+variable names, and readiness booleans without printing secret values. It also
+reports what each configured model actually supports — sampling parameters,
+structured output, and which reasoning mechanism it exposes, if any — together
+with the resolution of `REVIEW_DEPTH` against it. All of that is probed offline,
+so it answers before any credential is configured.
 `diffuse model --live` makes a small schema-validated request and should be run
 before onboarding the first review repository.
 
@@ -449,6 +453,43 @@ error naming the variable rather than failing every pull request against a
 provider you may not have an account with. `REVIEW_VERIFIER_MODEL`
 optionally selects an independent verifier from another model family, and
 falls back to `REVIEW_MODEL` when unset.
+
+`REVIEW_DEPTH` optionally sets how carefully to review: `brisk`, `standard`,
+`careful`, `thorough`, or `exhaustive`. Unset sends nothing and leaves the model
+on its own default; `thorough` is the recommendation for repositories where a
+missed defect costs more than the tokens.
+
+This names an intent, not a provider parameter, because there is no single
+provider parameter to name. Diffuse probes what the configured model actually
+supports and decides what the intent becomes there: a graded effort level on
+current `anthropic/` and OpenAI reasoning routes, a thinking-token budget on
+`claude-haiku-4-5`, `gemini/`, and `bedrock/`, an on/off switch on `ollama/`,
+and nothing at all on `openai/gpt-4.1-mini`. The resolution is reported at
+startup — what was asked for, what the model supports, and what will actually be
+sent — and a `REVIEW_MODEL` LiteLLM knows about that cannot express the requested
+depth at all refuses to start rather than dropping it. A model LiteLLM holds no
+metadata for is reported rather than refused: an empty rendering there is an
+absence of knowledge, not a finding, and the self-hosted spellings
+`.env.example` documents produce exactly that. The unhonoured case is written to
+stderr rather than through `LOG_LEVEL`, which can silence it. `diffuse model`
+prints the same resolution, plus the full capability probe for both configured
+models.
+
+Provenance routing permutes the configured pair per pull request, so the
+candidate pass on an AI-authored change can run on the model configured as the
+verifier — a pair startup never saw, and one whose candidate need not support the
+depth the configured candidate did. That pair is resolved per review, reported,
+and recorded on the review run in `review_depth_resolution`, so what a given
+review was actually asked to do survives both `LOG_LEVEL` and a later
+configuration change.
+
+Thinking tokens are billed against `REVIEW_MAX_OUTPUT_TOKENS`, which also bounds
+the thinking budget a route derives from the depth, so raise it alongside.
+
+`REVIEW_EFFORT` is the previous spelling, in LiteLLM's own effort vocabulary
+(`low`, `medium`, `high`, `xhigh`, `max` — one rung per depth, in the same
+order). It is still honoured so an existing deployment keeps working; set one or
+the other, never both.
 OpenAI, Anthropic, Google Gemini, Azure, AWS Bedrock, Ollama, and other LiteLLM
 routes use their conventional provider configuration in the data plane. A
 provider prefix Diffuse does not name explicitly—`mistral/…`, `groq/…`,
