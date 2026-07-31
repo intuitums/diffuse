@@ -24,12 +24,12 @@ AI can write code faster than teams can confidently review it. Diffuse closes
 that gap with repository-aware pull-request review grounded in the exact code
 being changed and the wider system around it.
 
-Diffuse combines graph, lexical, and semantic retrieval with structured review
+Diffuse combines graph and lexical retrieval with structured review
 passes, then publishes commit-pinned findings directly to GitHub. It learns from
 inspectable team feedback, carries context across repositories, and exposes the
 same intelligence through its CLI, REST API, and MCP server.
 
-You run the API, workers, PostgreSQL/pgvector, repository storage, and model
+You run the API, workers, PostgreSQL, repository storage, and model
 connections inside infrastructure you control. There is no hosted control plane
 and no Diffuse account to create.
 
@@ -82,8 +82,8 @@ revision deduplication, and queued-job supersession.
 
 ## Deployment model
 
-Diffuse is self-hosted. You run the API, workers, PostgreSQL/pgvector,
-repository storage, and model connections in infrastructure you control. There
+Diffuse is self-hosted. You run the API, workers, PostgreSQL, repository
+storage, and model connections in infrastructure you control. There
 is no Diffuse-hosted control plane, no account to create, and no managed
 service. Source-derived data does not leave your environment unless you
 explicitly configure an external model or integration, and the model
@@ -112,7 +112,7 @@ Requirements:
 - a GitHub token that can clone private target repositories
 - a GitHub App installation or user access token with pull-request read/write
   permission, plus Checks write permission when status checks are enabled
-- an embedding/model provider supported by LiteLLM
+- a review-model provider supported by LiteLLM
 
 ```bash
 cp .env.example .env
@@ -160,7 +160,7 @@ docker compose run --rm migrate database verify
 An installation created before versioned migrations has application tables but
 no migration ledger. The migrator refuses to guess. After inspecting and
 backing up that database, explicitly adopt it; Diffuse first verifies every
-version-1 table and column plus pgvector:
+version-1 table and column:
 
 ```bash
 docker compose run --rm migrate database migrate \
@@ -367,8 +367,8 @@ Results come from durable pull-request state, review runs, published finding
 lineages, active immutable snapshots, operator context, and inspectable
 feedback-derived rules. Every read and write is constrained to the
 repositories assigned to the authenticated token. `search_code` fuses literal
-identifier, semantic, and one-hop graph evidence within an optional literal
-path scope and returns immutable GitHub commit permalinks.
+identifier and one-hop graph evidence within an optional literal path scope and
+returns immutable GitHub commit permalinks.
 `ask_codebase` uses the same bounded evidence but emits claim-level citations;
 claims with a missing, ambiguous, out-of-range, or unauthorized citation are
 dropped, and no usable claims produces an explicit insufficient-evidence
@@ -440,12 +440,6 @@ Enterprise is selected with `GITHUB_WEB_URL` and `GITHUB_API_URL`. Set
 `GITHUB_GRAPHQL_URL` when its GraphQL endpoint cannot be derived from the REST
 URL. The process-level token and webhook credentials are still shared across
 configured GitHub instances pending encrypted per-installation credentials.
-
-The version-1 database schema expects 1,536-dimensional embeddings. A release
-that supports another stored dimension must add a numbered migration for both
-`VECTOR(1536)` and the snapshot dimension constraint, set
-`EMBEDDING_DIMENSIONS` consistently, and schedule compatible re-indexing.
-Never edit the frozen baseline migration.
 
 `REVIEW_MODEL` is required and accepts LiteLLM model identifiers. There is no
 built-in default: Diffuse will not assume you hold a credential for a provider
@@ -532,8 +526,8 @@ stored with the immutable review run.
 Repository Q&A inherits `REVIEW_MODEL` and `REVIEW_API_BASE`; set
 `CODE_QUERY_MODEL` to choose a different LiteLLM model. Each call is bounded by
 `CODE_QUERY_MAX_OUTPUT_TOKENS` and `CODE_QUERY_MODEL_TIMEOUT_SECONDS`. Plain
-`search_code` never invokes the generation model, though hybrid retrieval still
-uses the configured embedding provider.
+`search_code` never invokes the generation model: retrieval is graph and
+lexical search inside PostgreSQL and needs no model credential.
 
 ### REST API
 
@@ -656,7 +650,7 @@ ruff check .
 pip-audit -r requirements.lock --disable-pip
 ```
 
-Integration tests need a disposable pgvector database — disposable because
+Integration tests need a disposable PostgreSQL database — disposable because
 `tests/integration/test_database_migrations_postgres.py` creates and drops whole
 databases, so never point this at a database you care about. The full recipe,
 including the health-check wait and the password substitution this summary
@@ -691,17 +685,16 @@ uvicorn service.webhook_server:app --reload
 
 Diffuse currently:
 
-- indexes clean Git commits into immutable, model-pinned snapshots;
+- indexes clean Git commits into immutable, commit-pinned snapshots;
 - atomically activates complete snapshots while retaining prior commit indexes
-  for reproducibility and reusing unchanged embeddings;
+  for reproducibility and copying unchanged chunks forward;
 - extracts persisted symbols and containment/import/call/inheritance/
   implementation edges for Python, JavaScript/JSX, TypeScript/TSX, Go, Java,
   Ruby, Rust, PHP, C, and C++;
 - derives chunk boundaries from parser-backed definitions and isolates syntax
   failures to the affected file;
 - expands retrieval through one-hop callers, callees, imports, and inheritance
-  and fuses graph evidence with weighted path/symbol/content lexical search and
-  semantic similarity;
+  and fuses graph evidence with weighted path/symbol/content lexical search;
 - resolves cascading `context.repos` and operator-managed same-host repository
   clusters into a bounded immutable context plan, searches related snapshots
   read-only, preserves repository-qualified path provenance, and snapshots the
@@ -794,9 +787,9 @@ Diffuse currently:
   positions;
 - uses parser-backed definition boundaries with bounded line-window fallback,
   without claiming compiler-grade type analysis;
-- retrieves by cosine similarity from one embedding of the meaningful diff
-  lines, while exact code identifiers remain recoverable through PostgreSQL
-  full-text search;
+- retrieves by code identifiers extracted from the meaningful diff lines
+  through PostgreSQL full-text search, with no embedding model or vector store
+  anywhere on the path;
 - supports GitHub pull-request and default-branch push webhooks, review
   publication, native status output, grounded finding-thread replies, and
   authorized feedback ingestion.

@@ -203,7 +203,7 @@ docker compose exec -T db \
 
 Copy backups off-host, encrypt them, apply a retention policy, and alert on a
 missed backup. A backup is not trusted until it has been restored into a
-disposable PostgreSQL 17 + pgvector database and verified there:
+disposable PostgreSQL 17 database and verified there:
 
 ```bash
 docker compose run --rm \

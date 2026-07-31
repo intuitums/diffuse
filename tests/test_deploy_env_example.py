@@ -124,8 +124,8 @@ def _declared_values(path: Path) -> dict[str, str]:
 
     Reading both forms into one flat last-match-wins dictionary would have made
     this test weaker than the one it replaced: an explanatory
-    `#EMBEDDING_DIMENSIONS=1536` written *below* a live
-    `EMBEDDING_DIMENSIONS=3072` would be read as the file's value, and a
+    `#MAX_CONTEXT_CHUNKS=18` written *below* a live
+    `MAX_CONTEXT_CHUNKS=6` would be read as the file's value, and a
     divergence between the two files in exactly that shape would pass. A live
     assignment is what the process gets, so a live assignment always wins here;
     a commented one is only consulted when there is no live one at all.
@@ -174,7 +174,12 @@ def test_review_model_is_not_set_by_copying_an_example_file():
 # this file to `.env`, so the documented production install silently ran the
 # budget model the source tree calls "the previous default". The tests above all
 # passed throughout, because none of them ever compared a value.
-MODEL_SETTINGS = ("REVIEW_MODEL", "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS")
+MODEL_SETTINGS = (
+    "REVIEW_MODEL",
+    "REVIEW_VERIFIER_MODEL",
+    "CODE_QUERY_MODEL",
+    "RULE_LEARNING_MODEL",
+)
 
 
 def test_customer_env_example_ships_the_same_model_defaults():
@@ -195,20 +200,20 @@ def test_a_commented_recommendation_never_overrides_a_live_assignment(tmp_path: 
     an explanation written below the assignment it explains is the ordinary way
     to write one. Read as one flat last-match-wins mapping, that explanation
     becomes the file's value -- so two files that genuinely disagree about
-    `EMBEDDING_DIMENSIONS` compare equal, which is precisely the drift this
+    `MAX_CONTEXT_CHUNKS` compare equal, which is precisely the drift this
     module exists to catch.
     """
 
     path = tmp_path / "env.example"
     path.write_text(
-        "EMBEDDING_DIMENSIONS=3072\n"
-        "#EMBEDDING_DIMENSIONS=1536\n"
+        "MAX_CONTEXT_CHUNKS=6\n"
+        "#MAX_CONTEXT_CHUNKS=18\n"
         "# REVIEW_MODEL=anthropic/claude-sonnet-5\n"
     )
 
     values = _declared_values(path)
 
-    assert values["EMBEDDING_DIMENSIONS"] == "3072"
+    assert values["MAX_CONTEXT_CHUNKS"] == "6"
     # And a `#` separated from the name is still a recommendation. Requiring
     # adjacency reported the commonest comment style in these files as a
     # variable that was never documented at all.

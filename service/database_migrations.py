@@ -40,6 +40,17 @@ TABLE_DECLARATION_PATTERN = re.compile(
 COLUMN_DECLARATION_PATTERN = re.compile(r"^    ([a-z][a-z0-9_]*)\s+")
 MAX_MIGRATION_BYTES = 10 * 1024 * 1024
 METADATA_TABLE = "diffuse_schema_migrations"
+# Baseline columns a later migration deliberately removes. The contract below is
+# parsed from the frozen version-1 schema, which cannot be edited, so without
+# this every database that has correctly applied 0010 would be reported as
+# missing columns it is supposed to have lost.
+RETIRED_BASELINE_COLUMNS = frozenset(
+    {
+        "code_chunks.embedding",
+        "index_snapshots.embedding_model",
+        "index_snapshots.embedding_dimensions",
+    }
+)
 _COLUMN_KEYWORDS = frozenset(
     {"check", "constraint", "foreign", "primary", "unique"}
 )
@@ -266,22 +277,17 @@ def _verify_baseline_contract(cursor, baseline: Migration) -> None:
         actual.setdefault(str(table_name), set()).add(str(column_name))
     missing_tables = sorted(set(expected) - set(actual))
     missing_columns = sorted(
-        f"{table}.{column}"
+        identity
         for table, columns in expected.items()
         for column in columns - actual.get(table, set())
+        if (identity := f"{table}.{column}") not in RETIRED_BASELINE_COLUMNS
     )
-    cursor.execute(
-        "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')"
-    )
-    vector_installed = bool(cursor.fetchone()[0])
-    if missing_tables or missing_columns or not vector_installed:
+    if missing_tables or missing_columns:
         details = []
         if missing_tables:
             details.append("missing tables: " + ", ".join(missing_tables))
         if missing_columns:
             details.append("missing columns: " + ", ".join(missing_columns))
-        if not vector_installed:
-            details.append("missing extension: vector")
         raise DatabaseNotCurrentError(
             "Database does not satisfy the version-1 schema contract ("
             + "; ".join(details)

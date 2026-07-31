@@ -1,12 +1,10 @@
-"""Postgres persistence for repositories, immutable indexes, graph, and vectors."""
+"""Postgres persistence for repositories, immutable indexes, and the code graph."""
 
 from __future__ import annotations
 
 import hashlib
-import math
 import os
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 import psycopg2
@@ -40,15 +38,6 @@ def get_conn():
     return psycopg2.connect(os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL))
 
 
-def _vector_literal(values: Sequence[float], expected_dimensions: int) -> str:
-    if len(values) != expected_dimensions:
-        raise ValueError(f"Embedding has {len(values)} dimensions; expected {expected_dimensions}")
-    floats = [float(value) for value in values]
-    if not all(math.isfinite(value) for value in floats):
-        raise ValueError("Embedding contains a non-finite value")
-    return "[" + ",".join(repr(value) for value in floats) + "]"
-
-
 def _path_prefix_filter(
     column: str,
     path_prefix: str | None,
@@ -67,8 +56,6 @@ def begin_index_snapshot(
     conn,
     repo: str,
     commit_sha: str,
-    model: str,
-    dimensions: int,
     *,
     scm_provider: str = "github",
     scm_base_url: str = DEFAULT_SCM_BASE_URL,
@@ -131,11 +118,9 @@ def begin_index_snapshot(
             WHERE repository_id = %s
               AND commit_sha = %s
               AND index_format_version = %s
-              AND embedding_model = %s
-              AND embedding_dimensions = %s
               AND status = 'active'
             """,
-            (repository_id, commit_sha, index_format_version, model, dimensions),
+            (repository_id, commit_sha, index_format_version),
         )
         active_match = cursor.fetchone()
         if active_match:
@@ -155,8 +140,6 @@ def begin_index_snapshot(
             WHERE repository_id = %s
               AND commit_sha = %s
               AND index_format_version = %s
-              AND embedding_model = %s
-              AND embedding_dimensions = %s
               AND status = 'building'
               AND updated_at < now() - (%s * interval '1 second')
             """,
@@ -164,8 +147,6 @@ def begin_index_snapshot(
                 repository_id,
                 commit_sha,
                 index_format_version,
-                model,
-                dimensions,
                 stale_after_seconds,
             ),
         )
@@ -176,13 +157,11 @@ def begin_index_snapshot(
             WHERE repository_id = %s
               AND commit_sha = %s
               AND index_format_version = %s
-              AND embedding_model = %s
-              AND embedding_dimensions = %s
               AND status = 'building'
             ORDER BY id DESC
             LIMIT 1
             """,
-            (repository_id, commit_sha, index_format_version, model, dimensions),
+            (repository_id, commit_sha, index_format_version),
         )
         building_match = cursor.fetchone()
         if building_match:
@@ -200,11 +179,9 @@ def begin_index_snapshot(
                 commit_sha,
                 status,
                 index_format_version,
-                policy_fingerprint,
-                embedding_model,
-                embedding_dimensions
+                policy_fingerprint
             )
-            VALUES (%s, %s, 'building', %s, %s, %s, %s)
+            VALUES (%s, %s, 'building', %s, %s)
             RETURNING id
             """,
             (
@@ -212,8 +189,6 @@ def begin_index_snapshot(
                 commit_sha,
                 index_format_version,
                 EMPTY_POLICY_FINGERPRINT,
-                model,
-                dimensions,
             ),
         )
         snapshot_id = int(cursor.fetchone()[0])
@@ -325,8 +300,6 @@ def activate_snapshot(conn, snapshot_id: int) -> bool:
 def _active_snapshot_id(
     conn,
     repo: str,
-    model: str,
-    dimensions: int,
     *,
     scm_provider: str = "github",
     scm_base_url: str = DEFAULT_SCM_BASE_URL,
@@ -345,16 +318,12 @@ def _active_snapshot_id(
               AND repository.full_name = %s
               AND repository.enabled = TRUE
               AND snapshot.index_format_version = %s
-              AND snapshot.embedding_model = %s
-              AND snapshot.embedding_dimensions = %s
             """,
             (
                 scm_provider,
                 scm_base_url.rstrip("/"),
                 repo,
                 index_format_version,
-                model,
-                dimensions,
             ),
         )
         row = cursor.fetchone()
@@ -364,8 +333,6 @@ def _active_snapshot_id(
 def active_snapshot_id(
     conn,
     repo: str,
-    model: str,
-    dimensions: int,
     *,
     scm_provider: str = "github",
     scm_base_url: str = DEFAULT_SCM_BASE_URL,
@@ -374,8 +341,6 @@ def active_snapshot_id(
     return _active_snapshot_id(
         conn,
         repo,
-        model,
-        dimensions,
         scm_provider=scm_provider,
         scm_base_url=scm_base_url,
         index_format_version=index_format_version,
@@ -385,8 +350,6 @@ def active_snapshot_id(
 def active_snapshot_id_for_repository(
     conn,
     repository_id: int,
-    model: str,
-    dimensions: int,
     *,
     index_format_version: str = INDEX_FORMAT_VERSION,
 ) -> int | None:
@@ -402,14 +365,10 @@ def active_snapshot_id_for_repository(
             WHERE repository.id = %s
               AND repository.enabled = TRUE
               AND snapshot.index_format_version = %s
-              AND snapshot.embedding_model = %s
-              AND snapshot.embedding_dimensions = %s
             """,
             (
                 repository_id,
                 index_format_version,
-                model,
-                dimensions,
             ),
         )
         row = cursor.fetchone()
@@ -419,22 +378,17 @@ def active_snapshot_id_for_repository(
 def get_existing_hashes(
     conn,
     snapshot_id: int | None,
-    model: str,
-    dimensions: int,
 ) -> dict[tuple[str, int, int], str]:
     if snapshot_id is None:
         return {}
     with conn.cursor() as cursor:
         cursor.execute(
             """
-            SELECT chunk.file_path, chunk.start_line, chunk.end_line, chunk.content_hash
-            FROM code_chunks AS chunk
-            JOIN index_snapshots AS snapshot ON snapshot.id = chunk.snapshot_id
-            WHERE chunk.snapshot_id = %s
-              AND snapshot.embedding_model = %s
-              AND snapshot.embedding_dimensions = %s
+            SELECT file_path, start_line, end_line, content_hash
+            FROM code_chunks
+            WHERE snapshot_id = %s
             """,
-            (snapshot_id, model, dimensions),
+            (snapshot_id,),
         )
         return {(row[0], row[1], row[2]): row[3] for row in cursor.fetchall()}
 
@@ -461,8 +415,7 @@ def copy_unchanged_chunks(
                 start_line,
                 end_line,
                 content_hash,
-                content,
-                embedding
+                content
             )
             SELECT
                 {target_id},
@@ -471,8 +424,7 @@ def copy_unchanged_chunks(
                 source.start_line,
                 source.end_line,
                 source.content_hash,
-                source.content,
-                source.embedding
+                source.content
             FROM code_chunks AS source
             JOIN keys USING (file_path, start_line, end_line)
             WHERE source.snapshot_id = {source_id}
@@ -486,12 +438,8 @@ def copy_unchanged_chunks(
 def upsert_chunks(
     conn,
     snapshot_id: int,
-    dimensions: int,
     chunks: list[Chunk],
-    embeddings: list[list[float]],
 ) -> None:
-    if len(chunks) != len(embeddings):
-        raise ValueError("Each chunk must have exactly one embedding")
     if not chunks:
         return
 
@@ -504,9 +452,8 @@ def upsert_chunks(
             chunk.end_line,
             chunk.content_hash,
             chunk.content,
-            _vector_literal(embedding, dimensions),
         )
-        for chunk, embedding in zip(chunks, embeddings, strict=True)
+        for chunk in chunks
     ]
     with conn.cursor() as cursor:
         psycopg2.extras.execute_values(
@@ -519,19 +466,16 @@ def upsert_chunks(
                 start_line,
                 end_line,
                 content_hash,
-                content,
-                embedding
+                content
             )
             VALUES %s
             ON CONFLICT (snapshot_id, file_path, start_line, end_line)
             DO UPDATE SET
                 symbol_name = EXCLUDED.symbol_name,
                 content_hash = EXCLUDED.content_hash,
-                content = EXCLUDED.content,
-                embedding = EXCLUDED.embedding
+                content = EXCLUDED.content
             """,
             rows,
-            template="(%s, %s, %s, %s, %s, %s, %s, %s::vector)",
         )
 
 
@@ -657,8 +601,6 @@ def validate_snapshot_ready(
 def search_lexical(
     conn,
     repo: str,
-    model: str,
-    dimensions: int,
     terms: list[str] | tuple[str, ...],
     *,
     top_k: int = 8,
@@ -677,7 +619,7 @@ def search_lexical(
     if not normalized_terms:
         return []
     if snapshot_id is None:
-        snapshot_id = _active_snapshot_id(conn, repo, model, dimensions)
+        snapshot_id = _active_snapshot_id(conn, repo)
     if snapshot_id is None:
         return []
 
@@ -724,65 +666,9 @@ def search_lexical(
         return list(cursor.fetchall())
 
 
-def search_similar(
-    conn,
-    repo: str,
-    model: str,
-    dimensions: int,
-    query_embedding: list[float],
-    *,
-    top_k: int = 8,
-    exclude_files: set[str] | None = None,
-    path_prefix: str | None = None,
-    snapshot_id: int | None = None,
-) -> list[dict]:
-    if not 1 <= top_k <= 50:
-        raise ValueError("top_k must be between 1 and 50")
-    if snapshot_id is None:
-        snapshot_id = _active_snapshot_id(conn, repo, model, dimensions)
-    if snapshot_id is None:
-        return []
-
-    clauses = ["snapshot_id = %s"]
-    vector = _vector_literal(query_embedding, dimensions)
-    parameters: list[object] = [vector, snapshot_id]
-    if exclude_files:
-        clauses.append("file_path <> ALL(%s)")
-        parameters.append(sorted(exclude_files))
-    path_clause, path_parameters = _path_prefix_filter(
-        "file_path",
-        path_prefix,
-    )
-    if path_clause:
-        clauses.append(path_clause)
-        parameters.extend(path_parameters)
-    parameters.extend([vector, top_k])
-
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-        cursor.execute(
-            f"""
-            SELECT
-                file_path,
-                symbol_name,
-                start_line,
-                end_line,
-                content,
-                1 - (embedding <=> %s::vector) AS similarity
-            FROM code_chunks
-            WHERE {" AND ".join(clauses)}
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-            """,
-            parameters,
-        )
-        return list(cursor.fetchall())
-
-
 def search_graph_related_chunks(
     conn,
     repo: str,
-    model: str,
-    dimensions: int,
     changed_ranges: dict[str, list[tuple[int, int]]],
     *,
     limit: int = 8,
@@ -793,7 +679,7 @@ def search_graph_related_chunks(
     if not 1 <= limit <= 50 or not changed_ranges:
         return []
     if snapshot_id is None:
-        snapshot_id = _active_snapshot_id(conn, repo, model, dimensions)
+        snapshot_id = _active_snapshot_id(conn, repo)
     if snapshot_id is None:
         return []
 

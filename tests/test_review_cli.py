@@ -328,8 +328,6 @@ def _configure_local_review(monkeypatch, *, repository) -> None:
         "list_repositories",
         lambda _conn: [repository],
     )
-    monkeypatch.setattr(review_cli, "embedding_model", lambda: "embed/test")
-    monkeypatch.setattr(review_cli, "embedding_dimensions", lambda: 1536)
     monkeypatch.setattr(
         review_cli,
         "active_snapshot_id_for_repository",
@@ -580,8 +578,6 @@ def test_review_passes_a_progress_callback_into_the_review_engine(tmp_path, monk
 
     monkeypatch.setattr(review_cli, "get_conn", MagicMock)
     monkeypatch.setattr(review_cli, "list_repositories", lambda _conn: [_repository()])
-    monkeypatch.setattr(review_cli, "embedding_model", lambda: "embed/test")
-    monkeypatch.setattr(review_cli, "embedding_dimensions", lambda: 1536)
     monkeypatch.setattr(review_cli, "active_snapshot_id_for_repository", lambda *_a: 17)
     monkeypatch.setattr(review_cli, "load_active_learned_rules", lambda *_a, **_k: ())
     monkeypatch.setattr(

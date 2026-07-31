@@ -31,10 +31,9 @@ must leave a deployable, observable system.
   path does not resolve there — the in-image fixture is
   `/opt/diffuse/_internal/evals/baseline.example.json`.
 - Configuration validation is in place for the worker: `validate_worker_configuration`
-  resolves every hot-path variable at startup and names the one that fails, and
-  `validate_worker_credentials` separately refuses to start without a usable
-  embedding credential. Extend the same treatment to the API process, which
-  still reads its configuration ad hoc.
+  resolves every hot-path variable at startup and names the one that fails.
+  Extend the same treatment to the API process, which still reads its
+  configuration ad hoc.
 
 Exit: every planned capability has an owner component, data boundary, and
 testable acceptance condition.

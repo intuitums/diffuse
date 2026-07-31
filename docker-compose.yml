@@ -1,5 +1,11 @@
 services:
   db:
+    # Nothing in Diffuse uses pgvector any more: migration 0010 dropped the
+    # embedding column and the extension. The image still ships it because
+    # `sql/schema.sql` is the frozen version-1 migration and still runs
+    # `CREATE EXTENSION IF NOT EXISTS vector` on a fresh install, which stock
+    # `postgres:17` cannot satisfy. Swapping this is a one-line change once the
+    # version-1 baseline is re-cut.
     image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
@@ -7,7 +13,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: diffuse
     # Mirrors deploy/compose.yaml; see the comments there. 64MB of /dev/shm is not
-    # enough to build the HNSW index on code_chunks for a large repository, and the
+    # enough for PostgreSQL's parallel query workers on a large snapshot, and the
     # capability set is the minimum the PostgreSQL entrypoint needs to initdb and
     # step down from root.
     shm_size: 1gb
