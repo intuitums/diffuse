@@ -116,7 +116,7 @@ under different configs, automatic/draft/update booleans use permissive OR
 semantics, exclusion filters are combined, inclusion filters allow the PR when
 any applicable path is unrestricted, and the smallest file-change limit wins.
 Every denied trigger is persisted with a stable skip reason before any
-embedding or review-model call.
+retrieval or review-model call.
 
 The security pass distinguishes an exploitable `vulnerability` in the current
 snapshot from a `preventative` risk that would become exploitable only after a
@@ -183,7 +183,7 @@ precedence, cluster membership adds deduplicated repositories, and the combined
 plan is capped at seven related repositories. Disabled or not-yet-indexed
 cluster members are skipped; explicit entries fail closed so a committed
 dependency cannot disappear silently. Related repositories contribute
-read-only lexical and semantic reference chunks. They do not create synthetic
+read-only lexical reference chunks. They do not create synthetic
 cross-repository graph edges, and findings still must point to changed lines in
 the primary pull request.
 

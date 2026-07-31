@@ -2,17 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from indexer.store import _vector_literal, search_lexical, search_similar
-
-
-def test_vector_literal_validates_shape_and_values():
-    assert _vector_literal([1, 2.5], 2) == "[1.0,2.5]"
-
-    with pytest.raises(ValueError, match="dimensions"):
-        _vector_literal([1], 2)
-
-    with pytest.raises(ValueError, match="non-finite"):
-        _vector_literal([float("nan")], 1)
+from indexer.store import search_lexical
 
 
 class _Cursor:
@@ -42,69 +32,6 @@ class _Connection:
         return self.cursor_instance
 
 
-def test_search_parameters_follow_sql_placeholder_order():
-    connection = _Connection()
-
-    with patch("indexer.store._active_snapshot_id", return_value=42):
-        search_similar(
-            connection,
-            "owner/repo",
-            "embedding-model",
-            2,
-            [0.1, 0.2],
-            top_k=3,
-            exclude_files={"changed.py"},
-        )
-
-    assert connection.cursor_instance.parameters == [
-        "[0.1,0.2]",
-        42,
-        ["changed.py"],
-        "[0.1,0.2]",
-        3,
-    ]
-
-
-def test_search_path_prefix_is_literal_and_follows_snapshot_parameters():
-    connection = _Connection()
-
-    with patch("indexer.store._active_snapshot_id", return_value=42):
-        search_similar(
-            connection,
-            "owner/repo",
-            "embedding-model",
-            2,
-            [0.1, 0.2],
-            top_k=3,
-            path_prefix="src/tenant_%/auth",
-        )
-
-    assert connection.cursor_instance.parameters == [
-        "[0.1,0.2]",
-        42,
-        "src/tenant_%/auth",
-        r"src/tenant\_\%/auth/%",
-        "[0.1,0.2]",
-        3,
-    ]
-    assert "LIKE %s ESCAPE" in connection.cursor_instance.query
-
-
-def test_search_without_an_active_compatible_snapshot_returns_no_rows():
-    connection = _Connection()
-
-    with patch("indexer.store._active_snapshot_id", return_value=None):
-        rows = search_similar(
-            connection,
-            "owner/repo",
-            "embedding-model",
-            2,
-            [0.1, 0.2],
-        )
-
-    assert rows == []
-
-
 def test_lexical_search_uses_bounded_websearch_query_and_snapshot():
     connection = _Connection()
 
@@ -112,8 +39,6 @@ def test_lexical_search_uses_bounded_websearch_query_and_snapshot():
         search_lexical(
             connection,
             "owner/repo",
-            "embedding-model",
-            2,
             ["PaymentDeclinedError", "retry_payment", "paymentdeclinederror"],
             top_k=3,
             exclude_files={"changed.py"},
@@ -129,23 +54,46 @@ def test_lexical_search_uses_bounded_websearch_query_and_snapshot():
     assert "search_vector @@ query.value" in connection.cursor_instance.query
 
 
+def test_search_path_prefix_is_literal_and_follows_snapshot_parameters():
+    connection = _Connection()
+
+    with patch("indexer.store._active_snapshot_id", return_value=42):
+        search_lexical(
+            connection,
+            "owner/repo",
+            ["retry_payment"],
+            top_k=3,
+            path_prefix="src/tenant_%/auth",
+        )
+
+    assert connection.cursor_instance.parameters == [
+        '"retry_payment"',
+        42,
+        "src/tenant_%/auth",
+        r"src/tenant\_\%/auth/%",
+        3,
+    ]
+    assert "LIKE %s ESCAPE" in connection.cursor_instance.query
+
+
+def test_search_without_an_active_compatible_snapshot_returns_no_rows():
+    connection = _Connection()
+
+    with patch("indexer.store._active_snapshot_id", return_value=None):
+        rows = search_lexical(connection, "owner/repo", ["retry_payment"])
+
+    assert rows == []
+
+
 def test_lexical_search_rejects_unbounded_or_syntax_bearing_terms():
     connection = _Connection()
 
     with pytest.raises(ValueError, match="code identifiers"):
-        search_lexical(
-            connection,
-            "owner/repo",
-            "embedding-model",
-            2,
-            ["unsafe | query"],
-        )
+        search_lexical(connection, "owner/repo", ["unsafe | query"])
 
     with pytest.raises(ValueError, match="At most 50"):
         search_lexical(
             connection,
             "owner/repo",
-            "embedding-model",
-            2,
             [f"term_{index}" for index in range(51)],
         )

@@ -2,7 +2,9 @@
 
 Date: 2026-07-23
 
-Status: Accepted
+Status: Accepted. The semantic channel, its similarity floor, and the pgvector
+dependency are superseded by ADR 0043; the graph and lexical channels, the
+tsquery-safety rules, and the fusion contract remain binding.
 
 ## Context
 

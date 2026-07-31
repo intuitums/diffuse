@@ -13,7 +13,6 @@ from repository_policy.discovery import discover_repository_policy
 from repository_policy.store import write_repository_policy
 
 from .chunker import chunk_repo
-from .embed import embed_texts, embedding_dimensions, embedding_model
 from .graph import extract_repository_graph
 from .store import (
     activate_snapshot,
@@ -75,8 +74,6 @@ def index_repo(
         raise ValueError("repo_name must look like owner/repository")
 
     commit_sha = repository_commit(root)
-    model = embedding_model()
-    dimensions = embedding_dimensions()
 
     with closing(get_conn()) as conn:
         with conn:
@@ -84,8 +81,6 @@ def index_repo(
                 conn,
                 repo_name,
                 commit_sha,
-                model,
-                dimensions,
                 scm_provider=scm_provider,
                 scm_base_url=scm_base_url,
                 default_branch=default_branch,
@@ -123,12 +118,7 @@ def index_repo(
 
             with conn:
                 touch_snapshot(conn, handle.snapshot_id)
-                existing = get_existing_hashes(
-                    conn,
-                    handle.previous_snapshot_id,
-                    model,
-                    dimensions,
-                )
+                existing = get_existing_hashes(conn, handle.previous_snapshot_id)
             changed = [
                 chunk
                 for chunk in chunks
@@ -142,10 +132,7 @@ def index_repo(
                 == chunk.content_hash
             ]
 
-            print(f"  {len(changed)} chunks changed/new; {len(unchanged_keys)} embeddings reusable")
-            with conn:
-                touch_snapshot(conn, handle.snapshot_id)
-            embeddings = embed_texts([chunk.content for chunk in changed])
+            print(f"  {len(changed)} chunks changed/new; {len(unchanged_keys)} reusable")
             if progress_callback:
                 progress_callback()
 
@@ -157,13 +144,7 @@ def index_repo(
                     handle.snapshot_id,
                     unchanged_keys,
                 )
-                upsert_chunks(
-                    conn,
-                    handle.snapshot_id,
-                    dimensions,
-                    changed,
-                    embeddings,
-                )
+                upsert_chunks(conn, handle.snapshot_id, changed)
                 write_symbol_graph(
                     conn,
                     handle.snapshot_id,
@@ -192,7 +173,7 @@ def index_repo(
     state = "active" if activated else "superseded by a newer index request"
     print(
         f"Done. Snapshot {handle.snapshot_id} for {repo_name}@{commit_sha[:12]} is {state} "
-        f"({len(chunks)} chunks, {len(changed)} embedded, "
+        f"({len(chunks)} chunks, {len(changed)} written, "
         f"{len(unchanged_keys)} reused, {len(graph.symbols)} symbols)."
     )
 

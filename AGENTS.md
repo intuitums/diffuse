@@ -19,9 +19,11 @@ cloud agent needs.
 
 This VM has no Docker. The dev stack runs natively:
 
-- **PostgreSQL 17 + pgvector** — native cluster `17/main` on `127.0.0.1:5432`. Role `diffuse`
+- **PostgreSQL 17** — native cluster `17/main` on `127.0.0.1:5432`. Role `diffuse`
   (password `diffuse-dev`, granted `SUPERUSER`), databases `diffuse` (dev) and `diffuse_test`
-  (integration tests), both with the `vector` extension. The cluster is NOT auto-started on a
+  (integration tests). Nothing uses pgvector any more, but the frozen version-1 baseline still
+  runs `CREATE EXTENSION IF NOT EXISTS vector` before migration 0010 drops it, so the extension
+  must stay installed on the server. The cluster is NOT auto-started on a
   fresh pod boot (no systemd); start it with `sudo pg_ctlcluster 17 main start` (check with
   `pg_lsclusters`).
 - **API/app** — `uvicorn service.webhook_server:app` on `127.0.0.1:8000` (serves REST `/api/v1`,
@@ -51,7 +53,8 @@ POSTGRES_TEST_DATABASE_URL=postgresql://diffuse:diffuse-dev@127.0.0.1:5432/diffu
   .venv/bin/python -m pytest -m integration            # migrate the test DB first
 ```
 
-Integration tests re-create the `vector` extension from scratch, which requires the `diffuse`
+Integration tests migrate databases from scratch, and the frozen version-1 baseline still
+creates the `vector` extension (migration 0010 drops it again), which requires the `diffuse`
 role to be a Postgres `SUPERUSER` (already granted here; the CI/Docker `diffuse` user is a
 superuser too).
 
@@ -76,12 +79,12 @@ own `git commit`/`git push`.)
 
 ### External secrets for full end-to-end review
 
-Onboarding a repo (clone + resolve exact commit + durable queue) works with no external secrets,
-and the worker indexes up to the embedding call. Full indexing/review additionally needs:
+Onboarding *and indexing* a repo works with no external secrets: retrieval is graph and
+lexical search inside PostgreSQL, so a complete snapshot needs no model credential. Review
+additionally needs:
 
-- `OPENAI_API_KEY` (or `REVIEW_API_BASE`) — embeddings + review model. The worker now refuses
-  to start without a usable embedding credential rather than failing each index job partway
-  through, so a missing key surfaces immediately at startup instead of after five retries.
+- `REVIEW_MODEL` plus that provider's key (or `REVIEW_API_BASE`). The worker refuses to start
+  until `REVIEW_MODEL` is set, naming the variable.
 - `GITHUB_TOKEN` + webhook secret — to clone private repos and publish reviews.
 
 The bare-repo mirrors live under `/var/lib/diffuse/repositories` (created, owned by `ubuntu`).

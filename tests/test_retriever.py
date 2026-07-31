@@ -109,8 +109,7 @@ def test_format_marks_context_untrusted_and_obeys_budget():
         start_line=1,
         end_line=200,
         content="x" * 2000,
-        similarity=0.8123,
-        retrieval_reason="semantic",
+        retrieval_reason="lexical",
     )
 
     formatted = format_as_extra_instructions([context], max_chars=500)
@@ -121,14 +120,13 @@ def test_format_marks_context_untrusted_and_obeys_budget():
     assert "truncated" in formatted
 
 
-def test_format_uses_graph_provenance_when_similarity_is_not_applicable():
+def test_format_carries_graph_provenance_and_the_fused_score():
     context = RetrievedContext(
         file_path="service/caller.py",
         symbol_name="caller",
         start_line=10,
         end_line=20,
         content="def caller(): ...",
-        similarity=None,
         retrieval_reason="graph:calls:inbound",
     )
 
@@ -138,7 +136,7 @@ def test_format_uses_graph_provenance_when_similarity_is_not_applicable():
     assert "hybrid_score=" in formatted
 
 
-def test_retrieval_prioritizes_graph_context_then_fills_with_semantic_context():
+def test_retrieval_prioritizes_graph_context_then_fills_with_lexical_context():
     connection = MagicMock()
     graph_rows = [
         {
@@ -148,16 +146,6 @@ def test_retrieval_prioritizes_graph_context_then_fills_with_semantic_context():
             "end_line": 20,
             "content": "def caller(): ...",
             "retrieval_reason": "graph:calls:inbound",
-        }
-    ]
-    semantic_rows = [
-        {
-            "file_path": "service/pattern.py",
-            "symbol_name": "pattern",
-            "start_line": 1,
-            "end_line": 8,
-            "content": "def pattern(): ...",
-            "similarity": 0.9,
         }
     ]
     lexical_rows = [
@@ -181,26 +169,23 @@ def test_retrieval_prioritizes_graph_context_then_fills_with_semantic_context():
     with (
         patch("retriever.retrieve.get_conn", side_effect=[connection, connection]),
         patch("retriever.retrieve.active_snapshot_id", return_value=17),
-        patch("retriever.retrieve.embed_text", return_value=[0.1, 0.2]),
         patch(
             "retriever.retrieve.search_graph_related_chunks",
             return_value=graph_rows,
         ),
         patch("retriever.retrieve.search_lexical", return_value=lexical_rows),
-        patch("retriever.retrieve.search_similar", return_value=semantic_rows),
     ):
         contexts = retrieve_context("owner/repo", diff, top_k=2)
 
     assert [context.retrieval_reason for context in contexts] == [
         "graph:calls:inbound",
-        "lexical+semantic",
+        "lexical",
     ]
     assert contexts[0].relevance_score > contexts[1].relevance_score
-    assert contexts[1].similarity == 0.9
     assert connection.close.call_count == 2
 
 
-def test_retrieval_skips_embedding_when_no_active_snapshot():
+def test_retrieval_skips_every_channel_when_no_active_snapshot():
     connection = MagicMock()
     diff = """\
 --- a/service/api.py
@@ -213,13 +198,15 @@ def test_retrieval_skips_embedding_when_no_active_snapshot():
     with (
         patch("retriever.retrieve.get_conn", return_value=connection),
         patch("retriever.retrieve.active_snapshot_id", return_value=None),
-        patch("retriever.retrieve.embed_text") as embed,
+        patch("retriever.retrieve.search_lexical") as lexical,
+        patch("retriever.retrieve.search_graph_related_chunks") as graph,
     ):
         bundle = retrieve_context_with_snapshot("owner/repo", diff)
 
     assert bundle.snapshot_id is None
     assert bundle.contexts == ()
-    embed.assert_not_called()
+    lexical.assert_not_called()
+    graph.assert_not_called()
 
 
 def test_cross_repository_retrieval_preserves_repository_provenance_and_path_identity():
@@ -251,11 +238,6 @@ def test_cross_repository_retrieval_preserves_repository_provenance_and_path_ide
             return [{**common, "content": "class AppClient: ...", "lexical_rank": 0.9}]
         return [{**common, "content": "class SDKClient: ...", "lexical_rank": 0.8}]
 
-    def semantic(*_args, **kwargs):
-        if kwargs["snapshot_id"] == 11:
-            return [{**common, "content": "class AppClient: ...", "similarity": 0.8}]
-        return [{**common, "content": "class SDKClient: ...", "similarity": 0.95}]
-
     diff = """\
 --- a/src/api.py
 +++ b/src/api.py
@@ -265,14 +247,11 @@ def test_cross_repository_retrieval_preserves_repository_provenance_and_path_ide
 """
     with (
         patch("retriever.retrieve.get_conn", return_value=connection),
-        patch("retriever.retrieve.embed_text", return_value=[0.1, 0.2]) as embed,
         patch("retriever.retrieve.search_graph_related_chunks", return_value=[]),
         patch("retriever.retrieve.search_lexical", side_effect=lexical) as lexical_search,
-        patch("retriever.retrieve.search_similar", side_effect=semantic),
     ):
         bundle = retrieve_context_from_plan(diff, plan, top_k=2)
 
-    assert embed.call_count == 1
     assert bundle.context_plan == plan
     assert {context.repository_full_name for context in bundle.contexts} == {
         "owner/app",
@@ -283,13 +262,13 @@ def test_cross_repository_retrieval_preserves_repository_provenance_and_path_ide
         for context in bundle.contexts
         if context.repository_full_name == "owner/sdk"
     )
-    assert sdk_context.retrieval_reason == "cross-repo:lexical+cross-repo:semantic"
+    assert sdk_context.retrieval_reason == "cross-repo:lexical"
     assert "owner/sdk::src/client.py" in format_as_extra_instructions([sdk_context])
     assert lexical_search.call_args_list[0].kwargs["exclude_files"] == {"src/api.py"}
     assert "exclude_files" not in lexical_search.call_args_list[1].kwargs
 
 
-def test_query_retrieval_uses_path_scoped_lexical_semantic_and_graph_channels():
+def test_query_retrieval_seeds_the_graph_from_path_scoped_lexical_hits():
     connection = MagicMock()
     plan = CrossRepositoryContextPlan(
         primary_repository_id=1,
@@ -307,20 +286,6 @@ def test_query_retrieval_uses_path_scoped_lexical_semantic_and_graph_channels():
             "lexical_rank": 0.9,
         }
     ]
-    semantic_rows = [
-        {
-            **lexical_rows[0],
-            "similarity": 0.92,
-        },
-        {
-            "file_path": "src/noise.py",
-            "symbol_name": "noise",
-            "start_line": 1,
-            "end_line": 4,
-            "content": "def noise(): ...",
-            "similarity": 0.1,
-        },
-    ]
     graph_rows = [
         {
             "file_path": "src/caller.py",
@@ -334,15 +299,10 @@ def test_query_retrieval_uses_path_scoped_lexical_semantic_and_graph_channels():
 
     with (
         patch("retriever.retrieve.get_conn", return_value=connection),
-        patch("retriever.retrieve.embed_text", return_value=[0.1, 0.2]),
         patch(
             "retriever.retrieve.search_lexical",
             return_value=lexical_rows,
         ) as lexical,
-        patch(
-            "retriever.retrieve.search_similar",
-            return_value=semantic_rows,
-        ) as semantic,
         patch(
             "retriever.retrieve.search_graph_related_chunks",
             return_value=graph_rows,
@@ -363,11 +323,10 @@ def test_query_retrieval_uses_path_scoped_lexical_semantic_and_graph_channels():
         context
         for context in bundle.contexts
         if context.file_path == "src/auth.py"
-    ).retrieval_reason == "lexical+semantic"
+    ).retrieval_reason == "lexical"
     assert lexical.call_args.kwargs["path_prefix"] == "src"
-    assert semantic.call_args.kwargs["path_prefix"] == "src"
     assert graph.call_args.kwargs["path_prefix"] == "src"
-    assert graph.call_args.args[4] == {"src/auth.py": [(10, 20)]}
+    assert graph.call_args.args[2] == {"src/auth.py": [(10, 20)]}
 
 
 def test_context_budget_defaults_are_configurable_and_validated(monkeypatch):
@@ -403,8 +362,7 @@ def test_context_char_override_is_honored_end_to_end(monkeypatch):
         start_line=1,
         end_line=200,
         content="x" * 40_000,
-        similarity=0.8,
-        retrieval_reason="semantic",
+        retrieval_reason="lexical",
     )
 
     monkeypatch.setenv("MAX_CONTEXT_CHARS", "6000")
@@ -423,14 +381,14 @@ def test_context_chunk_override_is_honored_end_to_end(monkeypatch):
         primary_snapshot_id=11,
         primary_commit_sha="a" * 40,
     )
-    semantic_rows = [
+    lexical_rows = [
         {
             "file_path": f"service/module_{index}.py",
             "symbol_name": f"symbol_{index}",
             "start_line": 1,
             "end_line": 8,
             "content": f"def symbol_{index}(): ...",
-            "similarity": 0.9 - index / 100,
+            "lexical_rank": 0.9 - index / 100,
         }
         for index in range(16)
     ]
@@ -445,10 +403,8 @@ def test_context_chunk_override_is_honored_end_to_end(monkeypatch):
     def retrieve() -> tuple[RetrievedContext, ...]:
         with (
             patch("retriever.retrieve.get_conn", return_value=connection),
-            patch("retriever.retrieve.embed_text", return_value=[0.1, 0.2]),
             patch("retriever.retrieve.search_graph_related_chunks", return_value=[]),
-            patch("retriever.retrieve.search_lexical", return_value=[]),
-            patch("retriever.retrieve.search_similar", return_value=semantic_rows),
+            patch("retriever.retrieve.search_lexical", return_value=lexical_rows),
         ):
             return retrieve_context_from_plan(diff, plan).contexts
 

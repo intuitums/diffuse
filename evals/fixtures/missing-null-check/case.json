@@ -26,8 +26,7 @@
       "file_path": "accounts/directory.py",
       "symbol_name": "Directory.lookup_owner",
       "retrieval_reason": "graph_callee",
-      "relevance_score": 0.88,
-      "similarity": 0.81
+      "relevance_score": 0.88
     }
   ]
 }

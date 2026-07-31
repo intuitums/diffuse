@@ -15,12 +15,6 @@ from indexer.store import (
 from service import code_query
 
 
-def _embedding(index: int) -> list[float]:
-    output = [0.0] * 1536
-    output[index] = 1.0
-    return output
-
-
 def test_authorized_code_search_stays_pinned_after_snapshot_supersession(
     monkeypatch,
 ):
@@ -30,27 +24,18 @@ def test_authorized_code_search_stays_pinned_after_snapshot_supersession(
     first_commit = "a" * 40
     second_commit = "b" * 40
     monkeypatch.setenv("DATABASE_URL", database_url)
-    monkeypatch.setenv("EMBEDDING_MODEL", "integration-code-query")
-    monkeypatch.setenv("EMBEDDING_DIMENSIONS", "1536")
-    monkeypatch.setattr(
-        "retriever.retrieve.embed_text",
-        lambda _query: _embedding(0),
-    )
 
     with closing(psycopg2.connect(database_url)) as connection:
         first = begin_index_snapshot(
             connection,
             repository_name,
             first_commit,
-            "integration-code-query",
-            1536,
             scm_base_url=remote_url,
             default_branch="main",
         )
         upsert_chunks(
             connection,
             first.snapshot_id,
-            1536,
             [
                 Chunk(
                     file_path="src/auth.py",
@@ -70,7 +55,6 @@ def test_authorized_code_search_stays_pinned_after_snapshot_supersession(
                     symbol_name=None,
                 ),
             ],
-            [_embedding(0), _embedding(1)],
         )
         validate_snapshot_ready(
             connection,
@@ -107,15 +91,12 @@ def test_authorized_code_search_stays_pinned_after_snapshot_supersession(
             connection,
             repository_name,
             second_commit,
-            "integration-code-query",
-            1536,
             scm_base_url=remote_url,
             default_branch="main",
         )
         upsert_chunks(
             connection,
             second.snapshot_id,
-            1536,
             [
                 Chunk(
                     file_path="src/replacement.py",
@@ -125,7 +106,6 @@ def test_authorized_code_search_stays_pinned_after_snapshot_supersession(
                     symbol_name="replacement",
                 )
             ],
-            [_embedding(1)],
         )
         validate_snapshot_ready(
             connection,

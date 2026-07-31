@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import quote
 
-from indexer.embed import embedding_dimensions, embedding_model
 from indexer.store import active_snapshot_id_for_repository
 from repository_policy.resolve import neutralize_prompt_delimiters
 from retriever.context_models import CrossRepositoryContextPlan
@@ -64,7 +63,6 @@ class _CodeSource:
     content_truncated: bool
     retrieval_reason: str
     relevance_score: float
-    similarity: float | None
     source_url: str
 
 
@@ -102,22 +100,13 @@ def resolve_code_query_target(
     )
     if not repository["enabled"]:
         raise ValueError("Repository is not enabled for code queries")
-    model = embedding_model()
-    dimensions = embedding_dimensions()
     repository_id = int(repository["id"])
-    snapshot_id = active_snapshot_id_for_repository(
-        conn,
-        repository_id,
-        model,
-        dimensions,
-    )
+    snapshot_id = active_snapshot_id_for_repository(conn, repository_id)
     plan = resolve_cross_repository_context_plan(
         conn,
         primary_repository_id=repository_id,
         primary_snapshot_id=snapshot_id,
         explicit_repositories=(),
-        model=model,
-        dimensions=dimensions,
     )
     related = plan.related_snapshots if include_related else ()
     if authorized_repository_ids is not None:
@@ -241,7 +230,6 @@ def _sources(
                 content_truncated=truncated,
                 retrieval_reason=context.retrieval_reason,
                 relevance_score=context.relevance_score,
-                similarity=context.similarity,
                 source_url=_source_url(
                     target,
                     repository_name=repository_name,
@@ -275,11 +263,6 @@ def _source_json(target: CodeQueryTarget, source: _CodeSource) -> dict[str, obje
         "retrieval": {
             "reason": source.retrieval_reason,
             "score": round(source.relevance_score, 8),
-            "similarity": (
-                round(source.similarity, 8)
-                if source.similarity is not None
-                else None
-            ),
         },
     }
 
