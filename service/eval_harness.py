@@ -91,7 +91,6 @@ class FixtureContext(HarnessModel):
     symbol_name: str | None = Field(default=None, max_length=512)
     retrieval_reason: str = Field(default="fixture", min_length=1, max_length=200)
     relevance_score: float = Field(default=0.0, ge=0)
-    similarity: float | None = Field(default=None, ge=0, le=1)
 
 
 class ReviewFixture(HarnessModel):
@@ -275,7 +274,6 @@ def load_fixture(directory: Path) -> LoadedFixture:
                 start_line=1,
                 end_line=line_count,
                 content=content,
-                similarity=entry.similarity,
                 retrieval_reason=entry.retrieval_reason,
                 relevance_score=entry.relevance_score,
             )

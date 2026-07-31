@@ -409,8 +409,6 @@ def test_uncluster_explicit_context_repository_is_dropped_not_retrieved():
         primary_repository_id=1,
         primary_snapshot_id=None,
         explicit_repositories=("owner/secrets",),
-        model="text-embedding-3-small",
-        dimensions=1536,
     )
 
     assert resolution.plan.related_snapshots == ()
@@ -439,8 +437,6 @@ def test_clustered_explicit_context_repository_is_still_retrieved():
         primary_repository_id=1,
         primary_snapshot_id=None,
         explicit_repositories=("owner/secrets",),
-        model="text-embedding-3-small",
-        dimensions=1536,
     )
 
     assert resolution.dropped_repositories == ()

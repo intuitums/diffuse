@@ -19,9 +19,11 @@ cloud agent needs.
 
 This VM has no Docker. The dev stack runs natively:
 
-- **PostgreSQL 17 + pgvector** — native cluster `17/main` on `127.0.0.1:5432`. Role `diffuse`
+- **PostgreSQL 17** — native cluster `17/main` on `127.0.0.1:5432`. Role `diffuse`
   (password `diffuse-dev`, granted `SUPERUSER`), databases `diffuse` (dev) and `diffuse_test`
-  (integration tests), both with the `vector` extension. The cluster is NOT auto-started on a
+  (integration tests). Nothing uses pgvector any more, but the frozen version-1 baseline still
+  runs `CREATE EXTENSION IF NOT EXISTS vector` before migration 0010 drops it, so the extension
+  must stay installed on the server. The cluster is NOT auto-started on a
   fresh pod boot (no systemd); start it with `sudo pg_ctlcluster 17 main start` (check with
   `pg_lsclusters`).
 - **API/app** — `uvicorn service.webhook_server:app` on `127.0.0.1:8000` (serves REST `/api/v1`,
@@ -59,7 +61,8 @@ POSTGRES_TEST_DATABASE_URL=postgresql://diffuse:diffuse-dev@127.0.0.1:5432/diffu
   .venv/bin/python -m pytest -m integration            # migrate the test DB first
 ```
 
-Integration tests re-create the `vector` extension from scratch, which requires the `diffuse`
+Integration tests migrate databases from scratch, and the frozen version-1 baseline still
+creates the `vector` extension (migration 0010 drops it again), which requires the `diffuse`
 role to be a Postgres `SUPERUSER` (already granted here; the CI/Docker `diffuse` user is a
 superuser too).
 
@@ -85,27 +88,27 @@ own `git commit`/`git push`.)
 ### Both the app and the worker validate config at startup — `.env` ships placeholders
 
 `service.webhook_server:app` runs `validate_worker_configuration` in its lifespan, so the API
-server — not just the worker — refuses to boot unless `REVIEW_MODEL` is set and an embedding
-credential is present. That check is offline: it confirms the model identifier and a resolvable
+server — not just the worker — refuses to boot unless `REVIEW_MODEL` is set and its credential
+is resolvable. That check is offline: it confirms the model identifier and a resolvable
 credential *name*, and never calls the provider. A placeholder key therefore satisfies startup;
-only real indexing/review calls fail on a bad one. The committed CI smoke test (`verify.yml`
+only real review calls fail on a bad one. The committed CI smoke test (`verify.yml`
 `build-container`) relies on exactly this, booting with `REVIEW_MODEL=anthropic/claude-sonnet-5`
-and a fake `OPENAI_API_KEY`.
+and a fake provider key.
 
 The dev `.env` on this VM is set up the same way: `REVIEW_MODEL=anthropic/claude-sonnet-5` plus
-placeholder `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`, so the app and worker boot and the whole
-control plane (onboarding, CLI, REST `/api/v1`, MCP, `/health`, `/ready`) works. Replace those
-placeholders with real keys before expecting indexing or a review to complete.
+placeholder provider keys, so the app and worker boot and the whole control plane (onboarding,
+CLI, REST `/api/v1`, MCP, `/health`, `/ready`) works. Replace those placeholders with real keys
+before expecting a review to complete. Indexing needs no model credential.
 
 ### External secrets for full end-to-end review
 
-Onboarding a repo (clone + resolve exact commit + durable queue) works with no external secrets,
-and the worker indexes up to the embedding call. Full indexing/review additionally needs:
+Onboarding *and indexing* a repo works with no external secrets: retrieval is graph and
+lexical search inside PostgreSQL, so a complete snapshot needs no model credential. Review
+additionally needs:
 
-- `OPENAI_API_KEY` (or `REVIEW_API_BASE`) — embeddings + review model. With only the placeholder
- above, a leased index job fails at the embedding call with a 401 (`EmbeddingCredentialError`),
- which is expected; the worker stays up and retries with backoff.
+- `REVIEW_MODEL` plus that provider's key (or `REVIEW_API_BASE`). The worker refuses to start
+  until `REVIEW_MODEL` is set, naming the variable.
 - `GITHUB_TOKEN` + webhook secret — to clone private repos and publish reviews. Public repos
- clone with no token (verified by onboarding `octocat/Hello-World` to `mirrorState: ready`).
+  clone with no token (verified by onboarding `octocat/Hello-World` to `mirrorState: ready`).
 
 The bare-repo mirrors live under `/var/lib/diffuse/repositories` (created, owned by `ubuntu`).

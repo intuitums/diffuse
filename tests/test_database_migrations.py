@@ -5,6 +5,7 @@ import pytest
 
 from service.database_migrations import (
     BASELINE_SCHEMA_SHA256,
+    RETIRED_BASELINE_COLUMNS,
     MigrationDriftError,
     MigrationError,
     _baseline_contract,
@@ -26,6 +27,7 @@ def test_frozen_baseline_catalog_is_packaged_and_contract_is_parseable():
         (7, "webhook_rejections"),
         (8, "review_provenance"),
         (9, "review_depth_resolution"),
+        (10, "drop_embeddings"),
     ]
     assert catalog[0].checksum == BASELINE_SCHEMA_SHA256
     contract = _baseline_contract(catalog[0].sql)
@@ -40,6 +42,23 @@ def test_frozen_baseline_catalog_is_packaged_and_contract_is_parseable():
         "summary_comment_enabled",
         "fix_with_agent_enabled",
     }.issubset(contract["review_runs"])
+
+
+def test_every_retired_baseline_column_is_declared_and_actually_dropped():
+    """An exemption must name a real baseline column a real migration removes.
+
+    `_verify_baseline_contract` skips these names, so a typo would silently stop
+    checking a column that still matters, and a stale entry would keep excusing
+    a column no migration touches. Both fail here instead.
+    """
+    catalog = load_migration_catalog()
+    contract = _baseline_contract(catalog[0].sql)
+    later_sql = "\n".join(migration.sql for migration in catalog[1:]).lower()
+
+    for identity in sorted(RETIRED_BASELINE_COLUMNS):
+        table, _, column = identity.partition(".")
+        assert column in contract.get(table, frozenset()), identity
+        assert f"drop column if exists {column}" in later_sql, identity
 
 
 def test_catalog_rejects_an_edited_baseline(tmp_path: Path):

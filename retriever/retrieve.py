@@ -9,14 +9,12 @@ from collections import Counter
 from contextlib import closing
 from dataclasses import dataclass
 
-from indexer.embed import embed_text, embedding_dimensions, embedding_model
 from indexer.store import (
     active_snapshot_id,
     active_snapshot_id_for_repository,
     get_conn,
     search_graph_related_chunks,
     search_lexical,
-    search_similar,
 )
 from repository_policy.models import validate_repo_path
 from retriever.context_models import CrossRepositoryContextPlan
@@ -35,7 +33,6 @@ RRF_OFFSET = 20
 CHANNEL_WEIGHTS = {
     "graph": 3.0,
     "lexical": 1.8,
-    "semantic": 1.0,
 }
 CROSS_REPOSITORY_WEIGHT = 0.75
 LEXICAL_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,127}")
@@ -136,7 +133,6 @@ class RetrievedContext:
     start_line: int
     end_line: int
     content: str
-    similarity: float | None
     retrieval_reason: str
     relevance_score: float = 0.0
     repository_full_name: str | None = None
@@ -155,7 +151,6 @@ class _FusedCandidate:
     score: float
     best_rank: int
     reasons: list[str]
-    similarity: float | None = None
 
 
 def _diff_path(raw_path: str) -> str | None:
@@ -325,13 +320,6 @@ def extract_query_terms(query: str) -> tuple[str, ...]:
     return tuple(spellings[term] for term in ordered[:MAX_LEXICAL_TERMS])
 
 
-def minimum_similarity() -> float:
-    value = float(os.environ.get("MIN_CONTEXT_SIMILARITY", "0.25"))
-    if not -1 <= value <= 1:
-        raise ValueError("MIN_CONTEXT_SIMILARITY must be between -1 and 1")
-    return value
-
-
 def _positive_int(name: str, default: int) -> int:
     value = int(os.environ.get(name, str(default)))
     if value <= 0:
@@ -359,9 +347,7 @@ def max_context_chars() -> int:
 def _fuse_candidates(
     graph_rows: list[dict],
     lexical_rows: list[dict],
-    semantic_rows: list[dict],
     *,
-    semantic_threshold: float,
     top_k: int,
 ) -> list[RetrievedContext]:
     candidates: dict[tuple[str, str, int, int], _FusedCandidate] = {}
@@ -370,20 +356,9 @@ def _fuse_candidates(
         rows: list[dict],
         channel: str,
         reason_for,
-        *,
-        filter_semantic: bool = False,
     ) -> None:
         for rank, source_row in enumerate(rows, start=1):
             row = dict(source_row)
-            similarity = (
-                float(row["similarity"])
-                if row.get("similarity") is not None
-                else None
-            )
-            if filter_semantic and (
-                similarity is None or similarity < semantic_threshold
-            ):
-                continue
             key = (
                 str(row.get("_repository_full_name") or ""),
                 str(row["file_path"]),
@@ -411,12 +386,6 @@ def _fuse_candidates(
                 reason = f"cross-repo:{reason}"
             if reason not in candidate.reasons:
                 candidate.reasons.append(reason)
-            if similarity is not None:
-                candidate.similarity = (
-                    similarity
-                    if candidate.similarity is None
-                    else max(candidate.similarity, similarity)
-                )
 
     merge(
         graph_rows,
@@ -424,12 +393,6 @@ def _fuse_candidates(
         lambda row: str(row["retrieval_reason"]),
     )
     merge(lexical_rows, "lexical", lambda _row: "lexical")
-    merge(
-        semantic_rows,
-        "semantic",
-        lambda _row: "semantic",
-        filter_semantic=True,
-    )
 
     ranked = sorted(
         candidates.values(),
@@ -453,7 +416,6 @@ def _fuse_candidates(
             start_line=int(candidate.row["start_line"]),
             end_line=int(candidate.row["end_line"]),
             content=str(candidate.row["content"]),
-            similarity=candidate.similarity,
             retrieval_reason="+".join(candidate.reasons),
             relevance_score=candidate.score,
             repository_full_name=(
@@ -487,17 +449,10 @@ def compatible_snapshot_id(
     repository_id: int | None = None,
 ) -> int | None:
     """Resolve the active compatible snapshot before policy or retrieval work."""
-    model = embedding_model()
-    dimensions = embedding_dimensions()
     with closing(get_conn()) as conn:
         if repository_id is not None:
-            return active_snapshot_id_for_repository(
-                conn,
-                repository_id,
-                model,
-                dimensions,
-            )
-        return active_snapshot_id(conn, repo_name, model, dimensions)
+            return active_snapshot_id_for_repository(conn, repository_id)
+        return active_snapshot_id(conn, repo_name)
 
 
 def _annotate_rows(
@@ -537,16 +492,12 @@ def retrieve_context_from_plan(
             context_plan=plan,
         )
 
-    model = embedding_model()
-    dimensions = embedding_dimensions()
     changed_ranges = parse_changed_line_ranges(diff_text)
-    query_embedding = embed_text(query)
     changed_files = parse_changed_files(diff_text)
     lexical_terms = extract_lexical_terms(diff_text)
     candidate_limit = min(MAX_RETRIEVAL_CANDIDATES, max(top_k * 3, top_k))
     graph_rows: list[dict] = []
     lexical_rows: list[dict] = []
-    semantic_rows: list[dict] = []
 
     with closing(get_conn()) as conn:
         if plan.primary_snapshot_id is not None:
@@ -555,8 +506,6 @@ def retrieve_context_from_plan(
                     search_graph_related_chunks(
                         conn,
                         plan.primary_repository_full_name,
-                        model,
-                        dimensions,
                         changed_ranges,
                         limit=candidate_limit,
                         snapshot_id=plan.primary_snapshot_id,
@@ -570,25 +519,7 @@ def retrieve_context_from_plan(
                     search_lexical(
                         conn,
                         plan.primary_repository_full_name,
-                        model,
-                        dimensions,
                         lexical_terms,
-                        top_k=candidate_limit,
-                        exclude_files=changed_files,
-                        snapshot_id=plan.primary_snapshot_id,
-                    ),
-                    repository_full_name=plan.primary_repository_full_name,
-                    cross_repository=False,
-                )
-            )
-            semantic_rows.extend(
-                _annotate_rows(
-                    search_similar(
-                        conn,
-                        plan.primary_repository_full_name,
-                        model,
-                        dimensions,
-                        query_embedding,
                         top_k=candidate_limit,
                         exclude_files=changed_files,
                         snapshot_id=plan.primary_snapshot_id,
@@ -604,24 +535,7 @@ def retrieve_context_from_plan(
                     search_lexical(
                         conn,
                         related.repository_full_name,
-                        model,
-                        dimensions,
                         lexical_terms,
-                        top_k=candidate_limit,
-                        snapshot_id=related.snapshot_id,
-                    ),
-                    repository_full_name=related.repository_full_name,
-                    cross_repository=True,
-                )
-            )
-            semantic_rows.extend(
-                _annotate_rows(
-                    search_similar(
-                        conn,
-                        related.repository_full_name,
-                        model,
-                        dimensions,
-                        query_embedding,
                         top_k=candidate_limit,
                         snapshot_id=related.snapshot_id,
                     ),
@@ -638,19 +552,9 @@ def retrieve_context_from_plan(
             int(row["start_line"]),
         )
     )
-    semantic_rows.sort(
-        key=lambda row: (
-            -float(row.get("similarity") or -1.0),
-            str(row.get("_repository_full_name") or ""),
-            str(row["file_path"]),
-            int(row["start_line"]),
-        )
-    )
     contexts = _fuse_candidates(
         graph_rows[:MAX_RETRIEVAL_CANDIDATES],
         lexical_rows[:MAX_RETRIEVAL_CANDIDATES],
-        semantic_rows[:MAX_RETRIEVAL_CANDIDATES],
-        semantic_threshold=minimum_similarity(),
         top_k=top_k,
     )
     return RetrievedContextBundle(
@@ -662,11 +566,15 @@ def retrieve_context_from_plan(
 
 def _query_seed_ranges(
     lexical_rows: list[dict],
-    semantic_rows: list[dict],
 ) -> dict[str, list[tuple[int, int]]]:
+    """Seed the graph walk from the best lexical hits for a free-form question.
+
+    A diff review seeds from the changed lines it already knows. A question has
+    no such anchor, so lexical matches are the only entry point into the graph.
+    """
     ranges: dict[str, list[tuple[int, int]]] = {}
     seen: set[tuple[str, int, int]] = set()
-    for row in (*lexical_rows, *semantic_rows):
+    for row in lexical_rows:
         identity = (
             str(row["file_path"]),
             int(row["start_line"]),
@@ -700,15 +608,10 @@ def retrieve_query_context_from_plan(
             context_plan=plan,
         )
 
-    model = embedding_model()
-    dimensions = embedding_dimensions()
-    semantic_threshold = minimum_similarity()
-    query_embedding = embed_text(query)
     lexical_terms = extract_query_terms(query)
     candidate_limit = min(MAX_RETRIEVAL_CANDIDATES, max(top_k * 3, top_k))
     graph_rows: list[dict] = []
     lexical_rows: list[dict] = []
-    semantic_rows: list[dict] = []
 
     def search_snapshot(
         conn,
@@ -720,37 +623,15 @@ def retrieve_query_context_from_plan(
         snapshot_lexical = search_lexical(
             conn,
             repository_full_name,
-            model,
-            dimensions,
             lexical_terms,
             top_k=candidate_limit,
             path_prefix=path_prefix,
             snapshot_id=snapshot_id,
         )
-        snapshot_semantic = search_similar(
-            conn,
-            repository_full_name,
-            model,
-            dimensions,
-            query_embedding,
-            top_k=candidate_limit,
-            path_prefix=path_prefix,
-            snapshot_id=snapshot_id,
-        )
-        seed_ranges = _query_seed_ranges(
-            snapshot_lexical,
-            [
-                row
-                for row in snapshot_semantic
-                if float(row.get("similarity") or -1.0) >= semantic_threshold
-            ],
-        )
         snapshot_graph = search_graph_related_chunks(
             conn,
             repository_full_name,
-            model,
-            dimensions,
-            seed_ranges,
+            _query_seed_ranges(snapshot_lexical),
             limit=candidate_limit,
             path_prefix=path_prefix,
             snapshot_id=snapshot_id,
@@ -758,13 +639,6 @@ def retrieve_query_context_from_plan(
         lexical_rows.extend(
             _annotate_rows(
                 snapshot_lexical,
-                repository_full_name=repository_full_name,
-                cross_repository=cross_repository,
-            )
-        )
-        semantic_rows.extend(
-            _annotate_rows(
-                snapshot_semantic,
                 repository_full_name=repository_full_name,
                 cross_repository=cross_repository,
             )
@@ -801,19 +675,9 @@ def retrieve_query_context_from_plan(
             int(row["start_line"]),
         )
     )
-    semantic_rows.sort(
-        key=lambda row: (
-            -float(row.get("similarity") or -1.0),
-            str(row.get("_repository_full_name") or ""),
-            str(row["file_path"]),
-            int(row["start_line"]),
-        )
-    )
     contexts = _fuse_candidates(
         graph_rows[:MAX_RETRIEVAL_CANDIDATES],
         lexical_rows[:MAX_RETRIEVAL_CANDIDATES],
-        semantic_rows[:MAX_RETRIEVAL_CANDIDATES],
-        semantic_threshold=semantic_threshold,
         top_k=top_k,
     )
     return RetrievedContextBundle(
@@ -837,10 +701,7 @@ def retrieve_context_from_snapshot(
     if not query:
         return RetrievedContextBundle(snapshot_id=snapshot_id, contexts=())
 
-    model = embedding_model()
-    dimensions = embedding_dimensions()
     changed_ranges = parse_changed_line_ranges(diff_text)
-    query_embedding = embed_text(query)
     changed_files = parse_changed_files(diff_text)
     lexical_terms = extract_lexical_terms(diff_text)
     candidate_limit = min(MAX_RETRIEVAL_CANDIDATES, max(top_k * 3, top_k))
@@ -848,8 +709,6 @@ def retrieve_context_from_snapshot(
         graph_rows = search_graph_related_chunks(
             conn,
             repo_name,
-            model,
-            dimensions,
             changed_ranges,
             limit=candidate_limit,
             snapshot_id=snapshot_id,
@@ -857,31 +716,13 @@ def retrieve_context_from_snapshot(
         lexical_rows = search_lexical(
             conn,
             repo_name,
-            model,
-            dimensions,
             lexical_terms,
             top_k=candidate_limit,
             exclude_files=changed_files,
             snapshot_id=snapshot_id,
         )
-        semantic_rows = search_similar(
-            conn,
-            repo_name,
-            model,
-            dimensions,
-            query_embedding,
-            top_k=candidate_limit,
-            exclude_files=changed_files,
-            snapshot_id=snapshot_id,
-        )
 
-    contexts = _fuse_candidates(
-        graph_rows,
-        lexical_rows,
-        semantic_rows,
-        semantic_threshold=minimum_similarity(),
-        top_k=top_k,
-    )
+    contexts = _fuse_candidates(graph_rows, lexical_rows, top_k=top_k)
     return RetrievedContextBundle(
         snapshot_id=snapshot_id,
         contexts=tuple(contexts),
@@ -924,13 +765,10 @@ def format_as_extra_instructions(
     remaining = max_chars - len(introduction)
     for context in contexts:
         symbol = f" ({context.symbol_name})" if context.symbol_name else ""
-        provenance_parts = [
-            context.retrieval_reason,
-            f"hybrid_score={context.relevance_score:.4f}",
-        ]
-        if context.similarity is not None:
-            provenance_parts.append(f"similarity={context.similarity:.3f}")
-        provenance = "; ".join(provenance_parts)
+        provenance = (
+            f"{context.retrieval_reason}; "
+            f"hybrid_score={context.relevance_score:.4f}"
+        )
         location = (
             f"{context.repository_full_name}::{context.file_path}"
             if context.repository_full_name

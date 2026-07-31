@@ -2,7 +2,9 @@
 
 Date: 2026-07-23
 
-Status: Accepted
+Status: Accepted. ADR 0043 removes embedding model and dimensions from the
+snapshot identity below, leaving repository, commit, and index-format version;
+everything else in this record remains binding.
 
 ## Context
 

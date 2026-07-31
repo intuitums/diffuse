@@ -363,13 +363,7 @@ def list_repository_clusters(conn) -> tuple[RepositoryCluster, ...]:
     )
 
 
-def _active_snapshot(
-    cursor,
-    *,
-    repository_id: int,
-    model: str,
-    dimensions: int,
-):
+def _active_snapshot(cursor, *, repository_id: int):
     cursor.execute(
         """
         SELECT id, commit_sha
@@ -377,10 +371,8 @@ def _active_snapshot(
         WHERE repository_id = %s
           AND status = 'active'
           AND index_format_version = %s
-          AND embedding_model = %s
-          AND embedding_dimensions = %s
         """,
-        (repository_id, INDEX_FORMAT_VERSION, model, dimensions),
+        (repository_id, INDEX_FORMAT_VERSION),
     )
     return cursor.fetchone()
 
@@ -391,8 +383,6 @@ def resolve_cross_repository_context_plan(
     primary_repository_id: int,
     primary_snapshot_id: int | None,
     explicit_repositories: tuple[str, ...],
-    model: str,
-    dimensions: int,
 ) -> CrossRepositoryContextPlan:
     """Resolve the plan alone, for callers that cannot act on a refusal."""
     return resolve_cross_repository_context(
@@ -400,8 +390,6 @@ def resolve_cross_repository_context_plan(
         primary_repository_id=primary_repository_id,
         primary_snapshot_id=primary_snapshot_id,
         explicit_repositories=explicit_repositories,
-        model=model,
-        dimensions=dimensions,
     ).plan
 
 
@@ -411,8 +399,6 @@ def resolve_cross_repository_context(
     primary_repository_id: int,
     primary_snapshot_id: int | None,
     explicit_repositories: tuple[str, ...],
-    model: str,
-    dimensions: int,
 ) -> CrossRepositoryContextResolution:
     """Plan cross-repository retrieval under the operator authorization boundary.
 
@@ -454,15 +440,11 @@ def resolve_cross_repository_context(
                 WHERE id = %s
                   AND repository_id = %s
                   AND index_format_version = %s
-                  AND embedding_model = %s
-                  AND embedding_dimensions = %s
                 """,
                 (
                     primary_snapshot_id,
                     primary_repository_id,
                     INDEX_FORMAT_VERSION,
-                    model,
-                    dimensions,
                 ),
             )
             snapshot = cursor.fetchone()
@@ -548,12 +530,7 @@ def resolve_cross_repository_context(
                     )
                 )
                 continue
-            active = _active_snapshot(
-                cursor,
-                repository_id=int(target["id"]),
-                model=model,
-                dimensions=dimensions,
-            )
+            active = _active_snapshot(cursor, repository_id=int(target["id"]))
             if not active:
                 raise CrossRepositoryContextError(
                     f"Explicit context repository has no compatible active snapshot: "
@@ -574,12 +551,7 @@ def resolve_cross_repository_context(
         for repository_identity, target in cluster_targets.items():
             if repository_identity in selected_names:
                 continue
-            active = _active_snapshot(
-                cursor,
-                repository_id=int(target["id"]),
-                model=model,
-                dimensions=dimensions,
-            )
+            active = _active_snapshot(cursor, repository_id=int(target["id"]))
             if not active:
                 continue
             selected.append(

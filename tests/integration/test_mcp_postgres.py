@@ -77,11 +77,9 @@ def test_mcp_read_projections_use_durable_review_lineage_and_context():
                     status,
                     index_format_version,
                     policy_fingerprint,
-                    embedding_model,
-                    embedding_dimensions,
                     activated_at
                 )
-                VALUES (%s, %s, 'active', 'test-v1', %s, 'test/embed', 1536, now())
+                VALUES (%s, %s, 'active', 'test-v1', %s, now())
                 RETURNING id
                 """,
                 (repository_id, "a" * 40, "b" * 64),

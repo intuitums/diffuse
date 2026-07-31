@@ -101,13 +101,15 @@ but keep formatting-only churn out of functional pull requests.
 
 ## Run the integration tests
 
-The tests marked `integration` need a real PostgreSQL 17 with the `pgvector`
-extension available. `README.md` points here rather than restating this; this
-is the whole recipe.
+The tests marked `integration` need a real PostgreSQL 17. Nothing in Diffuse
+uses pgvector any more, but the frozen version-1 baseline still runs
+`CREATE EXTENSION IF NOT EXISTS vector` before migration 0010 drops it, so the
+server must still have the extension available. `README.md` points here rather
+than restating this; this is the whole recipe.
 
 ### 1. Start the database
 
-`docker-compose.yml` already defines a `pgvector/pgvector:pg17` service. Compose
+`docker-compose.yml` already defines a suitable PostgreSQL service. Compose
 interpolates the entire file even when you start a single service, so `.env`
 must exist and must supply `POSTGRES_PASSWORD` **and** `DIFFUSE_API_TOKEN`
 (`DIFFUSE_PUBLIC_URL` already has a value in `.env.example`). Without them
