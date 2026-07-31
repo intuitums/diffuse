@@ -2,16 +2,22 @@ name: diffuse
 
 services:
   db:
+    # Nothing in Diffuse uses pgvector any more: migration 0010 dropped the
+    # embedding column and the extension. The image still ships it because
+    # `sql/schema.sql` is the frozen version-1 migration and still runs
+    # `CREATE EXTENSION IF NOT EXISTS vector` on a fresh install, which stock
+    # `postgres:17` cannot satisfy. Swapping this is a one-line change once the
+    # version-1 baseline is re-cut.
     image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg17@sha256:d2ef61f42ef767baa5a1475393303cc235bcd92febd9d7014eddb48b41f3bad0}
     restart: unless-stopped
     environment:
       POSTGRES_USER: diffuse
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: diffuse
-    # Docker's default /dev/shm is 64MB. Building the HNSW index on code_chunks
-    # allocates dynamic shared memory there, and on a large repository the build
-    # fails with "could not resize shared memory segment" partway through indexing.
-    # Raise this further if indexing a very large monorepo still hits that error.
+    # Docker's default /dev/shm is 64MB. PostgreSQL's parallel query workers
+    # allocate dynamic shared memory there, and on a large snapshot a retrieval
+    # query can fail with "could not resize shared memory segment". Raise this
+    # further if a very large monorepo still hits that error.
     shm_size: 1gb
     # `db` is the only service not running with ALL capabilities dropped, because
     # the PostgreSQL entrypoint starts as root and needs CHOWN/SETUID/SETGID/FOWNER

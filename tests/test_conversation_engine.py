@@ -95,7 +95,6 @@ def test_conversation_answer_filters_unsupported_references(monkeypatch):
             start_line=10,
             end_line=24,
             content="def require_tenant(account, tenant): ...",
-            similarity=0.9,
             retrieval_reason="graph",
         )
     ]

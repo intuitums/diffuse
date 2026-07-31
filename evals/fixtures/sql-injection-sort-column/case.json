@@ -19,8 +19,7 @@
       "file_path": "reports/http.py",
       "symbol_name": "invoices_endpoint",
       "retrieval_reason": "graph_caller",
-      "relevance_score": 0.9,
-      "similarity": 0.83
+      "relevance_score": 0.9
     }
   ]
 }

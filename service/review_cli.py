@@ -24,7 +24,6 @@ import openai
 import psycopg2
 from pydantic import BaseModel, ConfigDict, Field
 
-from indexer.embed import embedding_dimensions, embedding_model
 from indexer.store import DEFAULT_DATABASE_URL, active_snapshot_id_for_repository, get_conn
 from repository_policy.discovery import discover_repository_policy
 from repository_policy.models import validate_repo_path
@@ -625,18 +624,11 @@ def run_local_review(
         discover_repository_policy(root),
         changed_paths,
     )
-    model = embedding_model()
-    dimensions = embedding_dimensions()
     selected_review_model = review_model()
     selected_verifier_model = review_verifier_model()
     report_review_depth()
     with closing(get_conn()) as conn:
-        snapshot_id = active_snapshot_id_for_repository(
-            conn,
-            repository.id,
-            model,
-            dimensions,
-        )
+        snapshot_id = active_snapshot_id_for_repository(conn, repository.id)
         if snapshot_id is None:
             raise RuntimeError(
                 "Repository has no compatible active index; run repository sync first"
@@ -656,8 +648,6 @@ def run_local_review(
             primary_repository_id=repository.id,
             primary_snapshot_id=snapshot_id,
             explicit_repositories=policy.context_repositories,
-            model=model,
-            dimensions=dimensions,
         )
     if previous_state is not None and (
         previous_state.index_snapshot_id != snapshot_id
@@ -1171,7 +1161,7 @@ def model_error_message(error: openai.OpenAIError) -> str:
         head = (
             f"The review model request failed for REVIEW_MODEL={model}.\n"
             f"{detail}\n"
-            "Verify REVIEW_MODEL, OPENAI_API_KEY, and REVIEW_API_BASE, then retry with "
+            "Verify REVIEW_MODEL and REVIEW_API_BASE, then retry with "
             "`diffuse review --resume`."
         )
     return head

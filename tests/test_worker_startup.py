@@ -32,9 +32,7 @@ from service import worker
         ("REVIEW_MAX_DIFF_CHUNKS", "many"),
         ("DIFFUSE_MAX_REPOSITORY_BYTES", "0"),
         ("MAX_CONTEXT_CHUNKS", "0"),
-        ("MIN_CONTEXT_SIMILARITY", "2"),
         ("WORKFLOW_LEASE_SECONDS", "30"),
-        ("EMBEDDING_DIMENSIONS", "wide"),
         ("SCM_API_TIMEOUT_SECONDS", "0"),
     ],
 )

@@ -27,12 +27,12 @@ These four carry the decisions the rest of the system is built on:
 
 | # | Decision | Status |
 |---|---|---|
-| 0001 | [Immutable commit-pinned index snapshots](0001-immutable-index-snapshots.md) | Accepted |
+| 0001 | [Immutable commit-pinned index snapshots](0001-immutable-index-snapshots.md) | Accepted; snapshot identity amended by [0043](0043-graph-and-lexical-retrieval-without-embeddings.md) |
 | 0002 | [PostgreSQL-backed durable workflow queue](0002-postgres-workflow-queue.md) | Accepted |
 | 0003 | [Credential-safe repository mirrors](0003-credential-safe-repository-mirrors.md) | Accepted |
 | 0004 | [Native structured review generation and publication](0004-native-structured-review-engine.md) | Accepted |
 | 0005 | [Versioned multi-language code graph adapters](0005-versioned-multilanguage-code-graph.md) | Accepted |
-| 0006 | [Snapshot-pinned hybrid retrieval](0006-snapshot-pinned-hybrid-retrieval.md) | Accepted |
+| 0006 | [Snapshot-pinned hybrid retrieval](0006-snapshot-pinned-hybrid-retrieval.md) | Accepted; vector leg superseded by [0043](0043-graph-and-lexical-retrieval-without-embeddings.md) |
 | 0007 | [Immutable cascading repository policy](0007-immutable-cascading-repository-policy.md) | Accepted |
 | 0008 | [Metadata-aware review triggers](0008-metadata-aware-review-triggers.md) | Accepted |
 | 0009 | [Durable GitHub status checks](0009-durable-github-status-checks.md) | Accepted |
@@ -68,6 +68,7 @@ These four carry the decisions the rest of the system is built on:
 | 0040 | [Proprietary self-hosted and managed-cloud distribution](0040-proprietary-self-hosted-and-managed-cloud-distribution.md) | Superseded by [0042](0042-source-available-self-hosted-distribution.md) |
 | 0041 | [GitHub as the only supported source-control provider](0041-github-only-source-control.md) | Accepted |
 | 0042 | [Source-available self-hosted distribution under BSL 1.1](0042-source-available-self-hosted-distribution.md) | Accepted |
+| 0043 | [Graph and lexical retrieval without embeddings](0043-graph-and-lexical-retrieval-without-embeddings.md) | Accepted |
 
 ## Superseded records
 
