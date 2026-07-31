@@ -9,7 +9,7 @@
       "file_path": "catalog/pagination.py",
       "line": 31,
       "category": "correctness",
-      "line_tolerance": 3
+      "line_tolerance": 1
     }
   ],
   "addressed_finding_ids": [],

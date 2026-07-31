@@ -1,5 +1,5 @@
 {
-  "schema_version": "diffuse-evaluation-v1",
+  "schema_version": "diffuse-evaluation-v2",
   "name": "synthetic-review-baseline",
   "model": "openai/gpt-4.1-mini",
   "pricing": {

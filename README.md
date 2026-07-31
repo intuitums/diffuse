@@ -223,9 +223,10 @@ so it answers before any credential is configured.
 before onboarding the first review repository.
 
 The versioned evaluation format under `evals/` matches labeled and observed
-findings one-to-one by category, path, and bounded line tolerance. It reports
-true bugs, false positives, false negatives, developer-addressed findings,
-precision, recall, F1, median latency, token use, and estimated cost:
+findings one-to-one by path and bounded line tolerance. It reports true bugs,
+false positives, false negatives, developer-addressed findings, precision,
+recall, F1, median latency, token use, and estimated cost — plus, separately,
+how often a finding was located correctly and filed under a different category:
 
 ```bash
 diffuse evaluate evals/baseline.example.json
