@@ -280,12 +280,12 @@ def _append_allow_group(
     current: tuple[tuple[str, ...], ...],
     patterns: tuple[str, ...] | None,
 ) -> tuple[tuple[str, ...], ...]:
-    # An explicitly empty allowlist is kept as an empty group, unlike every other
-    # inclusion filter, because for a write action `[]` is a decision rather than an
-    # absent one: it says this scope approves nothing, and an unmatchable group is how
-    # that survives a parent scope that did allow something.
+    # Omitting `allow_paths` and writing `[]` mean the same thing for a write action:
+    # this scope approves nothing. Skipping `None` used to let a nested scope that
+    # named paths grant what a parent that only set `enabled: true` never consented
+    # to; an unmatchable empty group is how either form survives a sibling grant.
     if patterns is None:
-        return current
+        patterns = ()
     return (*current, patterns)
 
 
