@@ -502,6 +502,8 @@ def persist_review_report(
                 skip_reason = %s,
                 prompt_tokens = %s,
                 completion_tokens = %s,
+                cache_read_tokens = %s,
+                cache_write_tokens = %s,
                 failure_code = NULL,
                 ready_at = now(),
                 updated_at = now()
@@ -541,6 +543,8 @@ def persist_review_report(
                 report.skip_reason,
                 report.prompt_tokens,
                 report.completion_tokens,
+                report.cache_read_tokens,
+                report.cache_write_tokens,
                 review_run_id,
             ),
         )
@@ -614,7 +618,9 @@ def load_review_report(conn, review_run_id: int) -> ReviewReport:
                 skip_reason,
                 context_chunk_count,
                 prompt_tokens,
-                completion_tokens
+                completion_tokens,
+                cache_read_tokens,
+                cache_write_tokens
             FROM review_runs
             WHERE id = %s
               AND status IN ('ready', 'skipped', 'publishing', 'published')
@@ -696,6 +702,8 @@ def load_review_report(conn, review_run_id: int) -> ReviewReport:
         context_chunk_count=int(run["context_chunk_count"]),
         prompt_tokens=int(run["prompt_tokens"]),
         completion_tokens=int(run["completion_tokens"]),
+        cache_read_tokens=int(run["cache_read_tokens"]),
+        cache_write_tokens=int(run["cache_write_tokens"]),
     )
 
 

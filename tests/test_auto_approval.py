@@ -208,6 +208,54 @@ def test_an_explicitly_empty_allowlist_withdraws_a_parent_grant():
     assert decision.reason_code == "path_not_allowlisted"
 
 
+def test_omitting_allow_paths_is_the_same_decision_as_an_empty_list():
+    """A parent that only enables auto-approval must not be widened by a nested grant.
+
+    Docs and the field comment both say omit and `[]` mean the scope approves
+    nothing. Skipping `None` during merge used to leave `allow_path_groups` holding
+    only the nested `**`, so a root that never named a path still approved.
+    """
+    snapshot = RepositoryPolicySnapshot(
+        layers=(
+            PolicyLayer(
+                directory_path="",
+                source_path=".diffuse/config.json",
+                config=RepositoryConfig.model_validate(
+                    {
+                        "version": 1,
+                        "auto_approval": {"enabled": True},
+                    }
+                ),
+            ),
+            PolicyLayer(
+                directory_path="src",
+                source_path="src/.diffuse/config.json",
+                config=RepositoryConfig.model_validate(
+                    {
+                        "version": 1,
+                        "auto_approval": {"filters": {"allow_paths": ["**"]}},
+                    }
+                ),
+            ),
+        )
+    )
+    policy = resolve_review_policy(snapshot, ("src/app.py",))
+
+    assert policy.for_path("src/app.py").auto_approval.allow_path_groups == (
+        (),
+        ("src/**",),
+    )
+    decision = evaluate_auto_approval(
+        policy,
+        _event(),
+        _diff("src/app.py", "src/app.py"),
+        _report(),
+    )
+
+    assert not decision.eligible
+    assert decision.reason_code == "path_not_allowlisted"
+
+
 def test_auto_approval_refuses_any_provider_other_than_github():
     """Diffuse is GitHub-only; the guard is the last line if an event slips through.
 
@@ -651,7 +699,15 @@ def test_ordinary_documentation_stays_auto_approvable():
 
 @pytest.mark.parametrize(
     "path",
-    ("tests/test_billing.py", "src/app.test.ts", "packages/web/tests/cart.spec.ts"),
+    (
+        "tests/test_billing.py",
+        "test/foo.py",
+        "src/__tests__/foo.ts",
+        "src/foo_test.go",
+        "src/foo.test.ts",
+        "packages/web/tests/cart.spec.ts",
+        "src/test/java/FooTest.java",
+    ),
 )
 def test_a_one_line_test_change_is_not_low_risk(path):
     """Deleting the assertion that guarded something is a one-line diff.
