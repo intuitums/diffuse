@@ -4,22 +4,22 @@
 #
 #   1. run the real review engine over every fixture in evals/fixtures/
 #   2. score the result with service/evaluation.py
-#   3. compare against the committed golden, and exit non-zero on a regression
+#   3. compare against the committed baseline, and exit non-zero on a regression
 #
-# THE GATE IS NOT LIVE YET. No golden is committed, because capturing one needs
-# live model calls and therefore a real credential and a real spend. Until
-# evals/golden/review-baseline.json exists this script exits non-zero with
-# instructions rather than passing, which is the honest state: a regression
-# check that goes green because it has nothing to compare against is worse than
-# no check at all. See evals/CAPTURE.md.
+# THE GATE IS NOT LIVE YET. No baseline is committed, because capturing one
+# needs live model calls and therefore a real credential and a real spend.
+# Until evals/baselines/review-baseline.json exists this script exits non-zero
+# with instructions rather than passing, which is the honest state: a
+# regression check that goes green because it has nothing to compare against is
+# worse than no check at all. See evals/CAPTURE.md.
 #
-# Step 1 is the only step that costs money, so the golden is checked for first.
+# Step 1 is the only step that costs money, so the baseline is looked for first.
 #
 # Environment:
 #   REVIEW_MODEL           required by the review engine; there is no default
 #   REVIEW_VERIFIER_MODEL  optional; defaults to REVIEW_MODEL
 #   EVAL_FIXTURES          fixture directory        (default: evals/fixtures)
-#   EVAL_GOLDEN            golden file              (default: evals/golden/review-baseline.json)
+#   EVAL_BASELINE          baseline file            (default: evals/baselines/review-baseline.json)
 #   EVAL_SUITE             score this suite instead of running one (no model calls)
 #   EVAL_SUITE_OUT         where to write the run's suite JSON (default: a temp file)
 #   EVAL_TOLERANCE         allowed absolute drop in precision/recall/F1 (default: 0)
@@ -31,14 +31,14 @@ cd "$(dirname "$0")/.."
 
 PYTHON="${PYTHON:-python}"
 FIXTURES="${EVAL_FIXTURES:-evals/fixtures}"
-GOLDEN="${EVAL_GOLDEN:-evals/golden/review-baseline.json}"
+BASELINE="${EVAL_BASELINE:-evals/baselines/review-baseline.json}"
 TOLERANCE="${EVAL_TOLERANCE:-0}"
 
-if [ ! -f "$GOLDEN" ]; then
+if [ ! -f "$BASELINE" ]; then
   cat >&2 <<EOF
-error: no golden at $GOLDEN.
+error: no baseline at $BASELINE.
 
-The review-quality regression gate is not live. A golden records the scores of
+The review-quality regression gate is not live. A baseline records the scores of
 a real review run, so it cannot be generated offline and none is committed.
 
 To capture one, follow evals/CAPTURE.md. In short:
@@ -46,9 +46,9 @@ To capture one, follow evals/CAPTURE.md. In short:
   export REVIEW_MODEL=<litellm model id>
   export <that provider's API key>
   $PYTHON -m service.eval_harness run --fixtures $FIXTURES --output /tmp/suite.json
-  $PYTHON -m service.eval_harness capture --suite /tmp/suite.json --golden $GOLDEN
+  $PYTHON -m service.eval_harness capture --suite /tmp/suite.json --baseline $BASELINE
 
-Review the captured numbers before committing them. \`capture\` refuses a golden
+Review the captured numbers before committing them. \`capture\` refuses a baseline
 that found nothing at all, but it cannot tell a poor run from a good one: read
 the findings in /tmp/suite.json, not just the scores.
 EOF
@@ -80,5 +80,5 @@ fi
 
 "$PYTHON" -m service.eval_harness check \
   --suite "$SUITE" \
-  --golden "$GOLDEN" \
+  --baseline "$BASELINE" \
   --tolerance "$TOLERANCE"

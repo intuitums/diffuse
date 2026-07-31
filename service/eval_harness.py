@@ -10,17 +10,17 @@ exactly the `EvaluationSuite` shape `score_evaluation` already consumes.
 Three commands, deliberately split so that only one of them can spend money:
 
     run       load fixtures, call the review model, write a suite JSON
-    capture   score a suite JSON and write it out as a golden
-    check     score a suite JSON and compare it against a golden, exit 1 on a
+    capture   score a suite JSON and write it out as a baseline
+    check     score a suite JSON and compare it against a baseline, exit 1 on a
               regression
 
 `capture` and `check` are pure functions of a suite file, so the regression
 logic is unit-testable without a credential. `run` is the only command that
 reaches a provider.
 
-Goldens are *not* committed. Capturing one requires live model calls, which
+Baselines are *not* committed. Capturing one requires live model calls, which
 means a real credential and a real spend; see `evals/CAPTURE.md`. Until a
-golden exists, `check` fails with instructions rather than passing vacuously --
+baseline exists, `check` fails with instructions rather than passing vacuously --
 a regression gate that silently succeeds because it has nothing to compare
 against is worse than no gate.
 """
@@ -57,17 +57,21 @@ from service.models.review import VerificationBatch
 from service.review import engine as review_engine
 
 FIXTURE_SCHEMA_VERSION = "diffuse-eval-fixture-v1"
-#: Bumped from v1: a golden now pins the run configuration, the resolved review
-#: depth and a per-case fixture digest, none of which a v1 golden recorded. A v1
-#: golden cannot be upgraded in place -- the missing values were never measured
+#: Bumped from v1: a baseline now pins the run configuration, the resolved review
+#: depth and a per-case fixture digest, none of which a v1 baseline recorded. A v1
+#: baseline cannot be upgraded in place -- the missing values were never measured
 #: -- so it has to be recaptured rather than silently reinterpreted.
-GOLDEN_SCHEMA_VERSION = "diffuse-eval-golden-v2"
+#:
+#: Unrelated to the "baseline" in `service/storage/migrations.py`, which names
+#: the frozen version-1 SQL schema. This one versions the eval harness's
+#: recorded reference run; the two never meet.
+BASELINE_SCHEMA_VERSION = "diffuse-eval-baseline-v2"
 DEFAULT_FIXTURE_ROOT = Path("evals/fixtures")
-DEFAULT_GOLDEN_PATH = Path("evals/golden/review-baseline.json")
+DEFAULT_BASELINE_PATH = Path("evals/baselines/review-baseline.json")
 CASE_FILE_NAME = "case.json"
 
 CAPTURE_INSTRUCTIONS = (
-    "No golden file at {path}. Goldens record a live review run, so they cannot "
+    "No baseline file at {path}. Baselines record a live review run, so they cannot "
     "be generated offline and none is committed. Follow evals/CAPTURE.md to "
     "capture one against a configured REVIEW_MODEL, review it, and commit it. "
     "Until then this regression gate is not live."
@@ -115,13 +119,13 @@ class LoadedFixture:
     digest: str
 
 
-class GoldenCase(HarnessModel):
+class BaselineCase(HarnessModel):
     case_id: str = Field(min_length=1, max_length=200)
     expected_finding_count: int = Field(ge=0)
     #: The fixture content this case was captured against. The label count
     #: catches an edited label set; this catches an edited *diff*, which moves
     #: the score just as far and was previously undefended -- make a bug more
-    #: obvious and recall rises while the golden keeps passing, so the gate now
+    #: obvious and recall rises while the baseline keeps passing, so the gate now
     #: measures an easier task than the one it was calibrated on.
     fixture_digest: str | None = Field(default=None, min_length=1, max_length=128)
     true_positives: int = Field(ge=0)
@@ -129,27 +133,27 @@ class GoldenCase(HarnessModel):
     false_negatives: int = Field(ge=0)
 
 
-class Golden(HarnessModel):
+class Baseline(HarnessModel):
     """The reference scores a later run must not fall below.
 
-    A golden records *scores*, not model prose. Two runs of the same model
+    A baseline records *scores*, not model prose. Two runs of the same model
     against the same diff do not produce byte-identical titles or summaries, so
     a byte comparison would fail for reasons that have nothing to do with review
     quality and would be silenced within a week. Findings are compared through
     the scorer -- counts of true and false positives per case, plus the
     aggregate precision, recall and F1 -- which is the thing a threshold change
-    in `review_engine.py` actually moves.
+    in `service/review/engine.py` actually moves.
 
     It also records the conditions the scores were produced under, because a
     score is only a standard while those hold. The model name was pinned from
     the start; `run_configuration` pins the rest -- prompt version, confidence
     floor, review passes, and both the requested and the *resolved* review
-    depth -- and `GoldenCase.fixture_digest` pins the fixture content. Every one
+    depth -- and `BaselineCase.fixture_digest` pins the fixture content. Every one
     of those moves the score, and every one of them was previously free to drift
-    under a golden that kept passing.
+    under a baseline that kept passing.
     """
 
-    schema_version: Literal["diffuse-eval-golden-v2"]
+    schema_version: Literal["diffuse-eval-baseline-v2"]
     suite_name: str = Field(min_length=1, max_length=200)
     model: str = Field(min_length=1, max_length=512)
     verifier_model: str | None = Field(default=None, min_length=1, max_length=512)
@@ -160,11 +164,11 @@ class Golden(HarnessModel):
     #: Recorded and reported as a delta, never gated. Category disagreement is a
     #: taxonomy signal, not a detection signal, and it is also non-minimal by
     #: construction (see `_score_case`), so failing a deletion on it would be
-    #: wrong twice over. Absent from the golden entirely, though, drift is
+    #: wrong twice over. Absent from the baseline entirely, though, drift is
     #: invisible -- a reviewer that starts filing every injection as
     #: `maintainability` passes unchanged.
     category_mismatches: int = Field(default=0, ge=0)
-    cases: list[GoldenCase] = Field(min_length=1, max_length=10_000)
+    cases: list[BaselineCase] = Field(min_length=1, max_length=10_000)
 
 
 class FixtureError(ValueError):
@@ -196,10 +200,11 @@ def validate_fixture(fixture: ReviewFixture, diff_text: str) -> None:
     `_deduplicate_candidates` drops any finding that does not land on an added
     or deleted line of the diff, so a label pointing anywhere else is an
     automatic false negative no matter how good the model is. That is precisely
-    the defect in `evals/baseline.example.json`: it labels
-    `service/webhook.py:42` and supplies no diff at all, which is why the
-    committed run scores 0% recall. Catching it at load time keeps the harness
-    from reporting a fixture bug as a quality regression.
+    the defect in `evals/baseline.example.json` -- which, despite the name, is a
+    hand-written example suite for `diffuse evaluate`, not a captured baseline:
+    it labels `service/webhook.py:42` and supplies no diff at all, which is why
+    the run recorded in it scores 0% recall. Catching it at load time keeps the
+    harness from reporting a fixture bug as a quality regression.
     """
 
     parsed = parse_unified_diff(diff_text)
@@ -257,7 +262,7 @@ def load_fixture(directory: Path) -> LoadedFixture:
     if fixture.case_id != directory.name:
         raise FixtureError(
             f"fixture {directory.name!r} declares case_id {fixture.case_id!r}; the "
-            f"directory name is the case id so goldens cannot drift from fixtures"
+            f"directory name is the case id so baselines cannot drift from fixtures"
         )
     diff_text = _safe_child(directory, fixture.diff_path).read_text()
     if not diff_text.strip():
@@ -292,8 +297,8 @@ def load_fixtures(root: Path) -> list[LoadedFixture]:
 
     Skipping a directory without a `case.json` would make the suite silently
     shrink: rename one file and the run covers seven cases instead of eight with
-    nothing red. The golden comparison catches that afterwards, but only once a
-    golden exists, and the fixture set is the thing the golden is captured
+    nothing red. The baseline comparison catches that afterwards, but only once a
+    baseline exists, and the fixture set is the thing the baseline is captured
     from.
     """
 
@@ -419,9 +424,9 @@ def resolve_run_configuration(
     """Read every environment value that moves the score, and what depth resolved to.
 
     `resolve_review_depth_support` is the same call the worker makes at startup
-    and `review_cli` makes before its first model call. The harness has to make
+    and `service/cli/review.py` makes before its first model call. The harness has to make
     it too, and for a second reason beyond reporting: a candidate model that
-    cannot express the requested depth is sent *nothing*, so a golden captured
+    cannot express the requested depth is sent *nothing*, so a baseline captured
     that way would record a depth it never used. `evals/CAPTURE.md` recommends
     capturing on a cheap model first, and the cheap model it names --
     `openai/gpt-4.1-mini` -- is exactly that case.
@@ -498,17 +503,17 @@ def run_suite(
     )
 
 
-def golden_from_score(score: EvaluationScore) -> Golden:
+def baseline_from_score(score: EvaluationScore) -> Baseline:
     if score.run_configuration is None:
         raise ValueError(
-            "this suite records no run configuration, so a golden captured from it "
+            "this suite records no run configuration, so a baseline captured from it "
             "could not refuse a later run at a different confidence floor, prompt "
             "version, review-pass set or review depth. Produce the suite with "
             "`python -m service.eval_harness run`."
         )
     by_case = {case.case_id: case for case in score.cases}
-    return Golden(
-        schema_version=GOLDEN_SCHEMA_VERSION,
+    return Baseline(
+        schema_version=BASELINE_SCHEMA_VERSION,
         suite_name=score.suite_name,
         model=score.model,
         verifier_model=score.verifier_model,
@@ -518,7 +523,7 @@ def golden_from_score(score: EvaluationScore) -> Golden:
         f1=score.f1,
         category_mismatches=score.category_mismatches,
         cases=[
-            GoldenCase(
+            BaselineCase(
                 case_id=case_id,
                 expected_finding_count=case.true_positives + case.false_negatives,
                 fixture_digest=case.fixture_digest,
@@ -531,7 +536,7 @@ def golden_from_score(score: EvaluationScore) -> Golden:
     )
 
 
-def category_mismatch_delta(score: EvaluationScore, golden: Golden) -> str | None:
+def category_mismatch_delta(score: EvaluationScore, baseline: Baseline) -> str | None:
     """How the category confusion moved, or None when it did not.
 
     Deliberately not a regression. Category disagreement says something about
@@ -541,11 +546,11 @@ def category_mismatch_delta(score: EvaluationScore, golden: Golden) -> str | Non
     legible rather than invisible.
     """
 
-    if score.category_mismatches == golden.category_mismatches:
+    if score.category_mismatches == baseline.category_mismatches:
         return None
     direction = (
         "up from"
-        if score.category_mismatches > golden.category_mismatches
+        if score.category_mismatches > baseline.category_mismatches
         else "down from"
     )
     detail = ", ".join(
@@ -553,47 +558,47 @@ def category_mismatch_delta(score: EvaluationScore, golden: Golden) -> str | Non
         for item in score.category_confusion
     )
     return (
-        f"category mismatches {direction} the golden: "
-        f"{score.category_mismatches} vs {golden.category_mismatches}"
+        f"category mismatches {direction} the baseline: "
+        f"{score.category_mismatches} vs {baseline.category_mismatches}"
         + (f" ({detail})" if detail else "")
     )
 
 
-def compare_to_golden(
+def compare_to_baseline(
     score: EvaluationScore,
-    golden: Golden,
+    baseline: Baseline,
     *,
     tolerance: float = 0.0,
 ) -> list[str]:
-    """Every way the run is worse than the golden. Empty means no regression."""
+    """Every way the run is worse than the baseline. Empty means no regression."""
 
     if not 0 <= tolerance <= 1:
         raise ValueError("tolerance must be between 0 and 1")
     regressions: list[str] = []
     observed_cases = {case.case_id: case for case in score.cases}
-    golden_cases = {case.case_id: case for case in golden.cases}
+    baseline_cases = {case.case_id: case for case in baseline.cases}
 
-    for case_id in sorted(golden_cases.keys() - observed_cases.keys()):
-        regressions.append(f"case {case_id!r} is in the golden but was not run")
-    for case_id in sorted(observed_cases.keys() - golden_cases.keys()):
+    for case_id in sorted(baseline_cases.keys() - observed_cases.keys()):
+        regressions.append(f"case {case_id!r} is in the baseline but was not run")
+    for case_id in sorted(observed_cases.keys() - baseline_cases.keys()):
         # Not a quality regression, but the gate no longer covers what it
         # claims to. Recapture rather than let a fixture ride along unmeasured.
         regressions.append(
-            f"case {case_id!r} has no golden entry; recapture the golden "
+            f"case {case_id!r} has no baseline entry; recapture the baseline "
             f"(see evals/CAPTURE.md)"
         )
-    for case_id in sorted(golden_cases.keys() & observed_cases.keys()):
+    for case_id in sorted(baseline_cases.keys() & observed_cases.keys()):
         observed = observed_cases[case_id]
-        reference = golden_cases[case_id]
+        reference = baseline_cases[case_id]
         labeled = observed.true_positives + observed.false_negatives
         if labeled != reference.expected_finding_count:
             # Editing a fixture's labels after capture silently rebases the
             # comparison: drop a label the engine kept missing and recall
             # "improves" without the engine changing at all.
             regressions.append(
-                f"case {case_id!r} now carries {labeled} labels but the golden was "
+                f"case {case_id!r} now carries {labeled} labels but the baseline was "
                 f"captured against {reference.expected_finding_count}; recapture the "
-                f"golden (see evals/CAPTURE.md)"
+                f"baseline (see evals/CAPTURE.md)"
             )
         if (
             reference.fixture_digest is not None
@@ -601,62 +606,62 @@ def compare_to_golden(
         ):
             # Editing `diff.patch` rebases the comparison exactly as editing the
             # labels does, and the label count cannot see it: make the bug more
-            # obvious and recall rises while the golden keeps passing, so the
+            # obvious and recall rises while the baseline keeps passing, so the
             # gate now measures an easier task than the one it was calibrated
             # on.
             regressions.append(
                 f"case {case_id!r} was captured against different fixture content "
                 f"(digest {reference.fixture_digest[:12]}, now "
-                f"{(observed.fixture_digest or 'none')[:12]}); recapture the golden "
+                f"{(observed.fixture_digest or 'none')[:12]}); recapture the baseline "
                 f"(see evals/CAPTURE.md)"
             )
         if observed.false_negatives > reference.false_negatives:
             regressions.append(
                 f"case {case_id!r} missed {observed.false_negatives} labeled findings, "
-                f"golden missed {reference.false_negatives}"
+                f"the baseline missed {reference.false_negatives}"
             )
         if observed.false_positives > reference.false_positives:
             regressions.append(
                 f"case {case_id!r} reported {observed.false_positives} unlabeled findings, "
-                f"golden reported {reference.false_positives}"
+                f"the baseline reported {reference.false_positives}"
             )
 
     for metric, current, reference in (
-        ("precision", score.precision, golden.precision),
-        ("recall", score.recall, golden.recall),
-        ("f1", score.f1, golden.f1),
+        ("precision", score.precision, baseline.precision),
+        ("recall", score.recall, baseline.recall),
+        ("f1", score.f1, baseline.f1),
     ):
         if current < reference - tolerance:
             regressions.append(
-                f"{metric} fell to {current:.4f} from a golden {reference:.4f} "
+                f"{metric} fell to {current:.4f} from the baseline's {reference:.4f} "
                 f"(tolerance {tolerance:.4f})"
             )
-    if golden.model != score.model:
+    if baseline.model != score.model:
         regressions.append(
-            f"golden was captured against model {golden.model!r} but this run used "
-            f"{score.model!r}; the comparison is not meaningful"
+            f"the baseline was captured against model {baseline.model!r} but this run "
+            f"used {score.model!r}; the comparison is not meaningful"
         )
-    if golden.verifier_model != score.verifier_model:
+    if baseline.verifier_model != score.verifier_model:
         regressions.append(
-            f"golden was captured against verifier {golden.verifier_model!r} but this "
-            f"run used {score.verifier_model!r}; the comparison is not meaningful"
+            f"the baseline was captured against verifier {baseline.verifier_model!r} "
+            f"but this run used {score.verifier_model!r}; the comparison is not meaningful"
         )
-    # The model name was the only condition the golden used to pin. Everything
+    # The model name was the only condition the baseline used to pin. Everything
     # here is read from the environment at call time and moves the score just as
     # far: capture with MIN_REVIEW_CONFIDENCE=0.99 left in the shell and the
-    # golden records near-zero recall and near-zero false positives that every
+    # baseline records near-zero recall and near-zero false positives that every
     # later run at the default 0.75 clears trivially, forever. Refused exactly
     # as a different model is refused.
     if score.run_configuration is None:
         regressions.append(
             "this run recorded no configuration, so it cannot be shown to have used "
             "the same confidence floor, prompt version, review passes and review "
-            "depth as the golden; the comparison is not meaningful"
+            "depth as the baseline; the comparison is not meaningful"
         )
     else:
-        for difference in score.run_configuration.differences(golden.run_configuration):
+        for difference in score.run_configuration.differences(baseline.run_configuration):
             regressions.append(
-                f"the golden was captured under a different configuration: "
+                f"the baseline was captured under a different configuration: "
                 f"{difference}; the comparison is not meaningful"
             )
     return regressions
@@ -671,15 +676,15 @@ def load_suite(path: Path) -> EvaluationSuite:
         raise ValueError(f"invalid evaluation suite: {error}") from error
 
 
-def load_golden(path: Path) -> Golden:
+def load_baseline(path: Path) -> Baseline:
     if not path.exists():
         raise FileNotFoundError(CAPTURE_INSTRUCTIONS.format(path=path))
     if path.is_symlink() or not path.is_file():
-        raise ValueError(f"golden must be a regular file: {path}")
+        raise ValueError(f"baseline must be a regular file: {path}")
     try:
-        return Golden.model_validate_json(path.read_text())
+        return Baseline.model_validate_json(path.read_text())
     except (OSError, ValidationError) as error:
-        raise ValueError(f"invalid golden: {error}") from error
+        raise ValueError(f"invalid baseline: {error}") from error
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -728,12 +733,12 @@ def _resume_cases(path: Path, fixtures: list[LoadedFixture]) -> dict[str, Evalua
 def _run(args: argparse.Namespace) -> None:
     fixtures = load_fixtures(args.fixtures)
     # No default model, on purpose: these raise and name the variable when
-    # REVIEW_MODEL is unset. See service/review_engine.review_model.
+    # REVIEW_MODEL is unset. See service/review/engine.review_model.
     candidate_model = review_engine.review_model()
     verifier_model = review_engine.review_verifier_model()
     # Names what each model will actually be sent, and refuses a depth the
     # candidate cannot express -- before anything is billed, and before the
-    # golden can record a depth that was never sent.
+    # baseline can record a depth that was never sent.
     depth_support = review_engine.resolve_review_depth_support()
     for line in depth_support.report_lines():
         print(line, file=sys.stderr)
@@ -799,22 +804,22 @@ def _run(args: argparse.Namespace) -> None:
 def _capture(args: argparse.Namespace) -> None:
     score = score_evaluation(load_suite(args.suite))
     if score.true_positives == 0 and not args.allow_zero_recall:
-        # A golden with no true positives is structurally valid and passes
+        # A baseline with no true positives is structurally valid and passes
         # against *any* later run -- including one where the engine returns
         # nothing at all, because precision is 1.0 when TP+FP is 0. That is a
         # gate that cannot fail, which is the one thing this harness exists not
         # to be. Refused here rather than warned about in prose.
         raise ValueError(
             f"this suite found none of its {score.expected_finding_count} labeled "
-            f"defects, so a golden captured from it would pass against every later "
+            f"defects, so a baseline captured from it would pass against every later "
             f"run, including one that reports nothing at all. Read the findings "
             f"before deciding what this means; a real zero is a finding about the "
             f"review engine, not a reason to weaken the labels (evals/CAPTURE.md). "
             f"Pass --allow-zero-recall to record it anyway."
         )
-    _write_json(args.golden, golden_from_score(score).model_dump(mode="json"))
+    _write_json(args.baseline, baseline_from_score(score).model_dump(mode="json"))
     print(
-        f"wrote {args.golden}: precision={score.precision:.4f} "
+        f"wrote {args.baseline}: precision={score.precision:.4f} "
         f"recall={score.recall:.4f} f1={score.f1:.4f} "
         f"category_mismatches={score.category_mismatches} "
         f"severity_mismatches={score.severity_mismatches}",
@@ -824,10 +829,10 @@ def _capture(args: argparse.Namespace) -> None:
 
 def _check(args: argparse.Namespace) -> None:
     score = score_evaluation(load_suite(args.suite))
-    golden = load_golden(args.golden)
-    regressions = compare_to_golden(score, golden, tolerance=args.tolerance)
+    baseline = load_baseline(args.baseline)
+    regressions = compare_to_baseline(score, baseline, tolerance=args.tolerance)
     print(json.dumps(score.model_dump(mode="json"), indent=2, sort_keys=True))
-    drift = category_mismatch_delta(score, golden)
+    drift = category_mismatch_delta(score, baseline)
     if drift is not None:
         print(f"\nnote: {drift}", file=sys.stderr)
         print(
@@ -843,12 +848,12 @@ def _check(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
     if regressions:
-        print("\nREGRESSION against " + str(args.golden) + ":", file=sys.stderr)
+        print("\nREGRESSION against " + str(args.baseline) + ":", file=sys.stderr)
         for regression in regressions:
             print(f"  - {regression}", file=sys.stderr)
         raise SystemExit(1)
     print(
-        f"\nno regression against {args.golden} "
+        f"\nno regression against {args.baseline} "
         f"(precision={score.precision:.4f} recall={score.recall:.4f} f1={score.f1:.4f})",
         file=sys.stderr,
     )
@@ -859,7 +864,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m service.eval_harness",
         description=(
             "Run the Diffuse review engine against committed fixtures and compare "
-            "the scored result against a golden."
+            "the scored result against a baseline."
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -909,16 +914,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     capture = subparsers.add_parser(
         "capture",
-        help="Turn a suite JSON into a golden. Offline; no model calls.",
+        help="Turn a suite JSON into a baseline. Offline; no model calls.",
     )
     capture.add_argument("--suite", type=Path, required=True)
-    capture.add_argument("--golden", type=Path, default=DEFAULT_GOLDEN_PATH)
+    capture.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE_PATH)
     capture.add_argument(
         "--allow-zero-recall",
         action="store_true",
         help=(
-            "Record a golden that found none of its labeled defects. Such a "
-            "golden passes against every later run, so this has to be asked for "
+            "Record a baseline that found none of its labeled defects. Such a "
+            "baseline passes against every later run, so this has to be asked for "
             "explicitly."
         ),
     )
@@ -926,10 +931,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     check = subparsers.add_parser(
         "check",
-        help="Score a suite JSON against a golden and exit 1 on a regression",
+        help="Score a suite JSON against a baseline and exit 1 on a regression",
     )
     check.add_argument("--suite", type=Path, required=True)
-    check.add_argument("--golden", type=Path, default=DEFAULT_GOLDEN_PATH)
+    check.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE_PATH)
     check.add_argument(
         "--tolerance",
         type=float,
