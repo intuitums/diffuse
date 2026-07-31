@@ -30,7 +30,7 @@ from service.model_capabilities import (
     plan_structured_output,
     supports_structured_output,
 )
-from service.model_providers import resolve_provider
+from service.model_providers import model_family, resolve_provider
 from service.models.review import (
     CandidateBatch,
     CandidateFinding,
@@ -475,6 +475,30 @@ def model_capabilities(model: str) -> ModelCapabilities:
     )
 
 
+@dataclass
+class PromptCacheUsage:
+    """What prompt caching actually did across the calls of one review.
+
+    Deliberately an accumulator the caller passes in rather than two more
+    elements on the return tuple: `service.conversation_engine`,
+    `service.learning_engine`, `service.code_query` and the recording wrapper in
+    `service.eval_harness` all unpack that tuple positionally, and widening it
+    would break four call sites for a number three of them do not want.
+
+    It also records more than the tuple can. Accumulation happens as soon as the
+    provider's usage is read, which is before the response is parsed, so a call
+    that dies on schema validation still reports the tokens it was billed for --
+    the path `StructuredOutputValidationError` takes never returns a tuple at all.
+    """
+
+    read_tokens: int = 0
+    written_tokens: int = 0
+    #: Calls that actually carried a breakpoint. Without this, "both counters are
+    #: zero" cannot be told apart from "nobody asked for caching", and the first
+    #: of those is the silent failure worth a warning.
+    requested_calls: int = 0
+
+
 def _call_structured[T: BaseModel](
     response_model: type[T],
     *,
@@ -483,16 +507,59 @@ def _call_structured[T: BaseModel](
     model_name: str | None = None,
     max_tokens: int | None = None,
     timeout_seconds: int | None = None,
+    cacheable_prefix: str | None = None,
+    cache_usage: PromptCacheUsage | None = None,
 ) -> tuple[T, int, int]:
+    """One structured model call.
+
+    `cacheable_prefix` is prompt text that precedes `user_prompt` and is
+    byte-identical across a run of calls. Supplying it is how a call site opts
+    into a cache breakpoint; the text is sent either way, so a route that cannot
+    cache loses nothing but the discount. It is opt-in because a breakpoint bills
+    1.25x on the write and only pays for itself from the second read: it belongs
+    on the candidate passes, which repeat one prefix up to
+    REVIEW_PASSES x REVIEW_MAX_DIFF_CHUNKS times, and would be a pure surcharge
+    on the verifier, the diagram, the connection probe, and the single-shot
+    conversation and rule-learning calls.
+    """
+
     model = model_name or review_model()
     schema = json.dumps(response_model.model_json_schema(), separators=(",", ":"))
     schema_instruction = (
         "\nReturn only one JSON object conforming exactly to this JSON Schema. "
         f"Do not use Markdown fences.\nJSON Schema:\n{schema}"
     )
+    # Only the Anthropic family reads `cache_control`. LiteLLM's OpenAI
+    # transformation drops the key on the way out, but the Gemini and Ollama
+    # routes build their request bodies through transformations this has not been
+    # checked against, and a marker one of them forwards verbatim is a 400 on
+    # every review rather than a missed discount. Those routes still gain from
+    # the stable-first ordering the prefix implies -- automatic caching is a
+    # prefix match too.
+    cache_prefix = (
+        cacheable_prefix if cacheable_prefix and model_family(model) == "anthropic" else None
+    )
+    if cache_prefix is not None:
+        user_content: object = [
+            {
+                "type": "text",
+                "text": cache_prefix,
+                "cache_control": {"type": "ephemeral"},
+            },
+            # The separator belongs to the volatile block, not the cached one:
+            # a trailing blank line on the cached text would still be inside the
+            # cached prefix, and providers are entitled to strip trailing
+            # whitespace from a text block, which would change its bytes and so
+            # its cache key. This way both branches render the same prompt.
+            {"type": "text", "text": f"\n\n{user_prompt}"},
+        ]
+    elif cacheable_prefix:
+        user_content = f"{cacheable_prefix}\n\n{user_prompt}"
+    else:
+        user_content = user_prompt
     messages = [
         {"role": "system", "content": system_prompt + schema_instruction},
-        {"role": "user", "content": user_prompt},
+        {"role": "user", "content": user_content},
     ]
     arguments: dict[str, object] = {
         "model": model,
@@ -566,6 +633,16 @@ def _call_structured[T: BaseModel](
         ) from error
     prompt_tokens = _usage_value(response, "prompt_tokens")
     completion_tokens = _usage_value(response, "completion_tokens")
+    if cache_usage is not None:
+        # LiteLLM exposes Anthropic's two cache counters as plain attributes on
+        # the usage object; a provider that reports neither leaves both at zero
+        # rather than raising. Both are already inside `prompt_tokens` above --
+        # LiteLLM adds them to it, unlike Anthropic, whose `input_tokens` is the
+        # uncached remainder -- so these are a breakdown, not extra spend.
+        cache_usage.read_tokens += _usage_value(response, "cache_read_input_tokens")
+        cache_usage.written_tokens += _usage_value(response, "cache_creation_input_tokens")
+        if cache_prefix is not None:
+            cache_usage.requested_calls += 1
     try:
         value = response_model.model_validate_json(_message_content(response))
     except (ValidationError, RuntimeError) as error:
@@ -622,29 +699,33 @@ def _candidate_system_prompt(pass_name: str) -> str:
     return prompt
 
 
-def _candidate_user_prompt(
-    pass_name: str,
-    diff_chunk: str,
+def _candidate_cacheable_prompt(
     context_text: str,
     policy_text: str = "",
     security_policy_text: str = "",
 ) -> str:
-    # The diff and the retrieved context are both repository-authored, so they
-    # get the same delimiter neutralization the policy block gets. Without it a
-    # committed file containing a closing tag pushes the text after it outside
-    # the untrusted region, where it reads as a trusted operator instruction.
-    diff = neutralize_prompt_delimiters(diff_chunk)
+    """The part of a candidate prompt that is byte-identical on every call.
+
+    Retrieved context and both policy blocks are fixed for a whole review, so
+    this is the entirety of what up to REVIEW_PASSES x REVIEW_MAX_DIFF_CHUNKS
+    calls have in common and the only thing a cache breakpoint can pay for. It
+    is a function of its own because that stability is load-bearing rather than
+    incidental: interpolating one per-call value here does not fail, it just
+    turns one cache write into thirty-two.
+
+    The retrieved context is repository-authored, so it gets the same delimiter
+    neutralization the policy block gets. Without it a committed file containing
+    a closing tag pushes the text after it outside the untrusted region, where it
+    reads as a trusted operator instruction. The security block is
+    Diffuse-authored, but it is keyed by repository file paths, and a path may
+    legally contain a closing tag. `policy_text` is exempt: it arrives already
+    rendered by `prompt_text`, which neutralized its body and then wrapped it in
+    the nonce-carrying delimiters that neutralizing again would destroy.
+    """
+
     context = neutralize_prompt_delimiters(context_text)
-    # The security block is Diffuse-authored, but it is keyed by repository file paths,
-    # and a path may legally contain a closing tag. `policy_text` is exempt: it arrives
-    # already rendered by `prompt_text`, which neutralized its body and then wrapped it
-    # in the nonce-carrying delimiters that neutralizing again would destroy.
     security_policy = neutralize_prompt_delimiters(security_policy_text)
     return (
-        f"Review pass: {pass_name}\n\n"
-        "<untrusted_pull_request_diff>\n"
-        f"{diff}\n"
-        "</untrusted_pull_request_diff>\n\n"
         "<untrusted_retrieved_repository_context>\n"
         f"{context or 'No compatible indexed context was available.'}\n"
         "</untrusted_retrieved_repository_context>\n\n"
@@ -653,8 +734,53 @@ def _candidate_user_prompt(
         "</repository_review_policy_json>\n\n"
         "<diffuse_security_policy_json>\n"
         f"{security_policy}\n"
-        "</diffuse_security_policy_json>\n\n"
+        "</diffuse_security_policy_json>"
+    )
+
+
+def _candidate_diff_prompt(pass_name: str, diff_chunk: str) -> str:
+    """The part of a candidate prompt that differs on every call.
+
+    The diff is repository-authored and neutralized for the same reason the
+    blocks before it are.
+    """
+
+    diff = neutralize_prompt_delimiters(diff_chunk)
+    return (
+        f"Review pass: {pass_name}\n\n"
+        "<untrusted_pull_request_diff>\n"
+        f"{diff}\n"
+        "</untrusted_pull_request_diff>\n\n"
         "Return zero findings when no high-confidence actionable defect exists."
+    )
+
+
+def _candidate_user_prompt(
+    pass_name: str,
+    diff_chunk: str,
+    context_text: str,
+    policy_text: str = "",
+    security_policy_text: str = "",
+) -> tuple[str, str]:
+    """A candidate prompt, split where a cache breakpoint can go.
+
+    Stable first -- retrieved context, repository policy, security policy -- and
+    the diff chunk last. Prompt caching is a strict prefix match over
+    tools -> system -> messages, so the previous order, which led with the one
+    block that changes on every call, put up to 24,000 characters of unchanging
+    context and policy behind a per-call byte and made every one of the calls a
+    cold prefill. The ordering also happens to put the code under review in the
+    position a model attends to best.
+
+    The pass name travels with the diff rather than with the stable block. The
+    per-pass system prompt already forks the cached prefix four ways, so leading
+    with the pass name here would buy nothing now and would keep the block forked
+    if that system prompt is ever unified.
+    """
+
+    return (
+        _candidate_cacheable_prompt(context_text, policy_text, security_policy_text),
+        _candidate_diff_prompt(pass_name, diff_chunk),
     )
 
 
@@ -869,6 +995,7 @@ def _generate_diagram(
     policy: ResolvedReviewPolicy | None,
     *,
     model_name: str | None = None,
+    cache_usage: PromptCacheUsage | None = None,
 ) -> tuple[ReviewDiagram | None, int, int]:
     if (
         (policy is not None and not policy.diagram_included)
@@ -886,6 +1013,9 @@ def _generate_diagram(
             user_prompt=_diagram_prompt(parsed_diff, diff_chunks, context_text),
             model_name=model_name,
             max_tokens=_positive_int("REVIEW_DIAGRAM_MAX_OUTPUT_TOKENS", 2500),
+            # Accounted but not cached: this call runs once per review, and its
+            # prompt shares no prefix with the candidate passes.
+            cache_usage=cache_usage,
         )
     except StructuredOutputValidationError as error:
         # The diagram is an optional enrichment and its safety rules are
@@ -1020,6 +1150,8 @@ def generate_review(
     security_policy_text = _security_policy_text(policy)
     prompt_tokens = 0
     completion_tokens = 0
+    cache_usage = PromptCacheUsage()
+    cacheable_prompt_chars = 0
     raw_candidates: list[CandidateFinding] = []
 
     selected_passes = policy.passes if policy is not None else review_passes()
@@ -1027,16 +1159,20 @@ def generate_review(
         for chunk in chunks:
             if progress_callback:
                 progress_callback()
+            cacheable_prompt, diff_prompt = _candidate_user_prompt(
+                pass_name,
+                chunk,
+                context_text,
+                policy_text,
+                security_policy_text,
+            )
+            cacheable_prompt_chars = len(cacheable_prompt)
             batch, input_tokens, output_tokens = _call_structured(
                 CandidateBatch,
                 system_prompt=_candidate_system_prompt(pass_name),
-                user_prompt=_candidate_user_prompt(
-                    pass_name,
-                    chunk,
-                    context_text,
-                    policy_text,
-                    security_policy_text,
-                ),
+                user_prompt=diff_prompt,
+                cacheable_prefix=cacheable_prompt,
+                cache_usage=cache_usage,
                 model_name=selected_candidate_model,
             )
             prompt_tokens += input_tokens
@@ -1045,6 +1181,26 @@ def generate_review(
             if progress_callback:
                 progress_callback()
 
+    if cache_usage.requested_calls and not (
+        cache_usage.read_tokens or cache_usage.written_tokens
+    ):
+        # A breakpoint on a prefix below the model's minimum cacheable length --
+        # between 512 and 4096 tokens depending on the model -- is accepted and
+        # then does nothing: no error, no header, no field. Asking the provider
+        # what it did is the only way that surfaces, and unlike a hardcoded
+        # per-model token table it also catches every other cause of a dead
+        # breakpoint: a per-call byte that crept into the prefix, a route that
+        # dropped the marker, a model rename that moved the minimum.
+        LOGGER.warning(
+            "Prompt caching was requested on %d candidate calls to %s and the provider "
+            "reported neither a cache write nor a cache read, so every call was billed "
+            "as a cold prefill. The cacheable block is %d characters; a prefix below "
+            "the model's minimum cacheable length does not cache and does not error.",
+            cache_usage.requested_calls,
+            selected_candidate_model,
+            cacheable_prompt_chars,
+        )
+
     candidates = _deduplicate_candidates(raw_candidates, parsed_diff, policy)
     diagram, diagram_prompt_tokens, diagram_completion_tokens = _generate_diagram(
         parsed_diff,
@@ -1052,6 +1208,7 @@ def generate_review(
         context_text,
         policy,
         model_name=selected_candidate_model,
+        cache_usage=cache_usage,
     )
     prompt_tokens += diagram_prompt_tokens
     completion_tokens += diagram_completion_tokens
@@ -1080,6 +1237,8 @@ def generate_review(
             context_chunk_count=len(contexts),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            cache_read_tokens=cache_usage.read_tokens,
+            cache_write_tokens=cache_usage.written_tokens,
             **presentation,
         )
 
@@ -1094,6 +1253,10 @@ def generate_review(
         ),
         user_prompt=_verification_prompt(candidates, parsed_diff, policy_text),
         model_name=selected_verifier_model,
+        # Accounted but not cached, and on a model that need not even be the
+        # candidate one: there is exactly one verification call per review, so a
+        # breakpoint here could only ever pay the write premium.
+        cache_usage=cache_usage,
     )
     prompt_tokens += input_tokens
     completion_tokens += output_tokens
@@ -1204,5 +1367,7 @@ def generate_review(
         context_chunk_count=len(contexts),
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
+        cache_read_tokens=cache_usage.read_tokens,
+        cache_write_tokens=cache_usage.written_tokens,
         **presentation,
     )
