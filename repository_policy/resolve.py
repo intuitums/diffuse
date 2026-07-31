@@ -276,6 +276,28 @@ def _append_constraint_group(
     return (*current, patterns)
 
 
+def _append_allow_group(
+    current: tuple[tuple[str, ...], ...],
+    patterns: tuple[str, ...] | None,
+) -> tuple[tuple[str, ...], ...]:
+    # An explicitly empty allowlist is kept as an empty group, unlike every other
+    # inclusion filter, because for a write action `[]` is a decision rather than an
+    # absent one: it says this scope approves nothing, and an unmatchable group is how
+    # that survives a parent scope that did allow something.
+    if patterns is None:
+        return current
+    return (*current, patterns)
+
+
+def _rooted_globs(
+    directory: str,
+    patterns: tuple[str, ...] | None,
+) -> tuple[str, ...] | None:
+    if patterns is None or not directory:
+        return patterns
+    return tuple(f"{directory}/{pattern}" for pattern in patterns)
+
+
 def neutralize_prompt_delimiters(text: str) -> str:
     """Strip prompt-structural tags from repository-authored text.
 
@@ -364,6 +386,12 @@ class ResolvedTriggerPolicy:
 class ResolvedAutoApprovalPolicy:
     enabled: bool = False
     risk_ceiling: AutoApprovalRiskName = "low"
+    # One group per configured scope, each already rooted at the scope that wrote it, and
+    # every group has to cover a path before that path may be approved. There is
+    # deliberately no flat union counterpart: unioning the groups would widen the
+    # allowlist instead of narrowing it, and a caller reaching for the familiar flat
+    # field would be reading the most permissive answer while believing it strict.
+    allow_path_groups: tuple[tuple[str, ...], ...] = ()
     exclude_paths: tuple[str, ...] = ()
     include_authors: tuple[str, ...] = ()
     exclude_authors: tuple[str, ...] = ()
@@ -1191,17 +1219,13 @@ def resolve_review_policy(
                 )
             ):
                 auto_approval_risk_ceiling = approval_patch.risk_ceiling
-            rooted_exclusions = (
-                tuple(
-                    (
-                        f"{layer.directory_path}/{pattern}"
-                        if layer.directory_path
-                        else pattern
-                    )
-                    for pattern in approval_filters.exclude_paths
-                )
-                if approval_filters.exclude_paths is not None
-                else None
+            rooted_allowances = _rooted_globs(
+                layer.directory_path,
+                approval_filters.allow_paths,
+            )
+            rooted_exclusions = _rooted_globs(
+                layer.directory_path,
+                approval_filters.exclude_paths,
             )
             file_change_limit = auto_approval.file_change_limit
             if approval_filters.file_change_limit is not None:
@@ -1216,6 +1240,10 @@ def resolve_review_policy(
                     and not auto_approval_disabled_seen
                 ),
                 risk_ceiling=auto_approval_risk_ceiling or "low",
+                allow_path_groups=_append_allow_group(
+                    auto_approval.allow_path_groups,
+                    rooted_allowances,
+                ),
                 exclude_paths=_ordered_union(
                     auto_approval.exclude_paths,
                     rooted_exclusions,
@@ -1469,6 +1497,7 @@ def resolve_review_policy(
                 "auto_approval": {
                     "enabled": item.auto_approval.enabled,
                     "risk_ceiling": item.auto_approval.risk_ceiling,
+                    "allow_path_groups": item.auto_approval.allow_path_groups,
                     "exclude_paths": item.auto_approval.exclude_paths,
                     "include_authors": item.auto_approval.include_authors,
                     "exclude_authors": item.auto_approval.exclude_authors,

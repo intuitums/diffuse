@@ -12,7 +12,7 @@ import anyio
 import psycopg2
 
 from indexer.store import get_conn
-from service.api_tokens import (
+from service.hosted.api_tokens import (
     ADMIN_SCOPE,
     API_GENERATE_SCOPE,
     API_READ_SCOPE,

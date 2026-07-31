@@ -13,7 +13,7 @@ from repository_policy.resolve import (
     path_matches,
 )
 from service.diff_parser import ParsedDiff, parse_unified_diff
-from service.review_models import ReviewFinding, ReviewReport
+from service.models.review import ReviewFinding, ReviewReport
 from service.scm import PullRequestEvent
 
 MAX_AUTO_APPROVAL_DIFF_CHARS = 100_000
@@ -34,6 +34,12 @@ RISK_ORDER = {
     AutoApprovalRisk.CRITICAL: 3,
 }
 
+# A floor under the operator allowlist, never a substitute for it. Nothing here can be
+# allowlisted back in: an operator who names `**/.diffuse/**` would otherwise hand a pull
+# request the ability to widen the rules that approve it, and the same argument holds for
+# every other entry. The list is Diffuse's opinion about paths that are dangerous in any
+# repository; it is not, and cannot be, the set of paths that are dangerous in *this*
+# repository -- that is what `auto_approval.filters.allow_paths` is for.
 CRITICAL_PATH_PATTERNS = (
     # Diffuse's own policy sources decide whether a change may be approved at
     # all, so approving them would let a pull request widen the rules that
@@ -97,14 +103,22 @@ LOW_PATH_PATTERNS = (
     "**/*.mdx",
     "**/*.rst",
     "**/*.txt",
+    "**/*.css",
+    "**/*.scss",
+)
+# Tests used to be low risk on the theory that they ship no production behaviour. They
+# ship the evidence that production behaviour is correct, and a test-only diff is exactly
+# where a guarantee gets quietly removed: deleting one assertion is a one-line change that
+# makes nothing fail. So test paths neither reach the low tier by extension nor qualify
+# for the small-change shortcut below -- a test-only change is medium at the very least,
+# and approving one takes an operator who raised `risk_ceiling` on purpose.
+TEST_PATH_PATTERNS = (
     "tests/**",
     "**/tests/**",
     "**/test_*.py",
     "**/*_test.py",
     "**/*.test.*",
     "**/*.spec.*",
-    "**/*.css",
-    "**/*.scss",
 )
 
 
@@ -165,6 +179,18 @@ def _all_keyword_groups_match(
     )
 
 
+def _path_is_allowlisted(
+    groups: tuple[tuple[str, ...], ...],
+    path: str,
+) -> bool:
+    # No group means no scope ever named this path, and silence is not permission: an
+    # unconfigured repository approves nothing at all. Every scope on the way down has to
+    # agree, so a nested `.diffuse` cannot widen what its parent allowed.
+    return bool(groups) and all(
+        _matches_any_path(group, (path,)) for group in groups
+    )
+
+
 def _changed_paths(parsed: ParsedDiff) -> tuple[str, ...]:
     return tuple(
         sorted(
@@ -208,6 +234,8 @@ def assess_change_risk(
         or _matches_any_path(HIGH_PATH_PATTERNS, changed_paths)
     ):
         return AutoApprovalRisk.HIGH
+    if _matches_any_path(TEST_PATH_PATTERNS, changed_paths):
+        return AutoApprovalRisk.MEDIUM
     if all(
         _matches_any_path(LOW_PATH_PATTERNS, (path,))
         for path in changed_paths
@@ -330,6 +358,16 @@ def evaluate_auto_approval(
             "disabled",
             "Automatic approval is not enabled in every touched path scope.",
         )
+    # Checked per path rather than against the whole change set: the allowlist that
+    # governs a path is the one resolved for that path, so a root scope allowing `docs/**`
+    # cannot lend its permission to a sibling `src/` file in the same pull request. The
+    # `incomplete_diff` gate above is what makes this zip exact.
+    for path, approval in zip(changed_paths, approval_policies, strict=True):
+        if not _path_is_allowlisted(approval.allow_path_groups, path):
+            return reject(
+                "path_not_allowlisted",
+                "A changed path is not on an automatic-approval allowlist.",
+            )
 
     searchable = f"{event.title}\n{event.description}".casefold()
     for approval in approval_policies:

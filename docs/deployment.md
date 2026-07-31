@@ -213,7 +213,8 @@ docker compose run --rm \
 
 `database verify` re-reads the applied migration ledger, compares every applied
 version's SHA-256 against the packaged catalog, and confirms the version-1
-baseline contract — tables, columns, and the `vector` extension. It exits
+baseline contract — every table and column the frozen version-1 schema
+declares, minus those a later migration deliberately drops. It exits
 non-zero on checksum drift, a missing ledger, or a schema that does not match
 the release. That is the whole trustworthiness check a restored dump can be
 given from the runtime image, which ships no Python interpreter and no test

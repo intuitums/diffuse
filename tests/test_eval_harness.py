@@ -1,8 +1,8 @@
-"""Plumbing tests for the golden-output harness.
+"""Plumbing tests for the fixture harness and its baseline gate.
 
 These verify that the harness assembles the `observed` structure
 `service/evaluation.py` consumes, that it refuses fixtures whose labels the
-review engine could never satisfy, and that the golden comparison actually
+review engine could never satisfy, and that the baseline comparison actually
 fails on a worse run. They do NOT measure review quality: `_call_structured` is
 stubbed here exactly as it is in `tests/test_review_engine.py`, so the findings
 are whatever the stub returns.
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from service import eval_harness, review_engine
+from service import eval_harness
 from service.diff_parser import parse_unified_diff
 from service.evaluation import (
     EvaluationCase,
@@ -31,7 +31,7 @@ from service.evaluation import (
     RunConfiguration,
     score_evaluation,
 )
-from service.review_models import (
+from service.models.review import (
     CandidateBatch,
     CandidateFinding,
     Category,
@@ -40,6 +40,7 @@ from service.review_models import (
     VerificationBatch,
     VerificationDecision,
 )
+from service.review import engine as review_engine
 
 FIXTURE_ROOT = Path("evals/fixtures")
 
@@ -164,7 +165,7 @@ def _candidate(line: int = 1, confidence: float = 0.95) -> CandidateFinding:
 
 def test_committed_fixtures_all_load_and_validate():
     fixtures = eval_harness.load_fixtures(FIXTURE_ROOT)
-    # Pinned, not a floor. A golden is captured against a fixture set, and a
+    # Pinned, not a floor. A baseline is captured against a fixture set, and a
     # `>= 5` assertion stays green while three of them quietly stop loading.
     assert [loaded.fixture.case_id for loaded in fixtures] == [
         "clean-settings-refactor",
@@ -186,7 +187,7 @@ def test_a_directory_without_a_case_file_is_an_error_not_a_skip(tmp_path):
     """Silently skipping one would shrink the suite with nothing red.
 
     Renaming `case.json` to `case.jsonc` used to drop that fixture from every
-    run while every test stayed green -- and the fixture set is what a golden is
+    run while every test stayed green -- and the fixture set is what a baseline is
     captured from.
     """
 
@@ -242,8 +243,9 @@ def test_committed_fixtures_cover_more_than_one_category():
 def test_fixture_labeling_a_line_the_diff_does_not_change_is_refused(tmp_path):
     """The defect in evals/baseline.example.json, caught at load time.
 
-    That fixture labels `service/webhook.py:42` and ships no diff, so its
-    recorded run scores 0% recall no matter how good the review engine is.
+    That file is a hand-written example suite for `diffuse evaluate`, not a
+    captured baseline. It labels `service/webhook.py:42` and ships no diff, so
+    its recorded run scores 0% recall no matter how good the review engine is.
     """
 
     _write_fixture(
@@ -471,10 +473,10 @@ def test_every_committed_label_is_reachable_through_the_whole_engine(monkeypatch
     `generate_review` itself -- candidate deduplication, `is_commentable`, the
     confidence threshold, the severity filter and the finding cap -- so a
     fixture that is unmatchable for any of those reasons fails here rather than
-    showing up later as an unexplained recall ceiling in a captured golden.
+    showing up later as an unexplained recall ceiling in a captured baseline.
 
     It says nothing about whether a real model finds these bugs. That is what
-    capturing a golden measures.
+    capturing a baseline measures.
     """
 
     monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
@@ -600,16 +602,16 @@ def _finding(line: int = 1, category: str = "security") -> ObservedFinding:
 
 def test_an_identical_run_is_not_a_regression():
     suite = _suite(observed_per_case={"alpha": [_finding()], "beta": [_finding()]})
-    golden = eval_harness.golden_from_score(score_evaluation(suite))
-    assert eval_harness.compare_to_golden(score_evaluation(suite), golden) == []
+    baseline = eval_harness.baseline_from_score(score_evaluation(suite))
+    assert eval_harness.compare_to_baseline(score_evaluation(suite), baseline) == []
 
 
 def test_a_missed_finding_is_a_regression():
     good = _suite(observed_per_case={"alpha": [_finding()], "beta": [_finding()]})
-    golden = eval_harness.golden_from_score(score_evaluation(good))
+    baseline = eval_harness.baseline_from_score(score_evaluation(good))
     worse = _suite(observed_per_case={"alpha": [_finding()], "beta": []})
 
-    regressions = eval_harness.compare_to_golden(score_evaluation(worse), golden)
+    regressions = eval_harness.compare_to_baseline(score_evaluation(worse), baseline)
 
     assert any("case 'beta' missed 1 labeled findings" in line for line in regressions)
     assert any(line.startswith("recall fell to") for line in regressions)
@@ -617,10 +619,10 @@ def test_a_missed_finding_is_a_regression():
 
 def test_a_new_false_positive_is_a_regression():
     good = _suite(observed_per_case={"alpha": [_finding()]})
-    golden = eval_harness.golden_from_score(score_evaluation(good))
+    baseline = eval_harness.baseline_from_score(score_evaluation(good))
     worse = _suite(observed_per_case={"alpha": [_finding(), _finding(line=40)]})
 
-    regressions = eval_harness.compare_to_golden(score_evaluation(worse), golden)
+    regressions = eval_harness.compare_to_baseline(score_evaluation(worse), baseline)
 
     assert any("reported 1 unlabeled findings" in line for line in regressions)
 
@@ -634,7 +636,7 @@ def test_tolerance_absorbs_a_small_aggregate_drop_but_not_a_case_regression():
             "delta": [_finding()],
         }
     )
-    golden = eval_harness.golden_from_score(score_evaluation(good))
+    baseline = eval_harness.baseline_from_score(score_evaluation(good))
     worse = _suite(
         observed_per_case={
             "alpha": [_finding()],
@@ -644,8 +646,8 @@ def test_tolerance_absorbs_a_small_aggregate_drop_but_not_a_case_regression():
         }
     )
 
-    regressions = eval_harness.compare_to_golden(
-        score_evaluation(worse), golden, tolerance=0.5
+    regressions = eval_harness.compare_to_baseline(
+        score_evaluation(worse), baseline, tolerance=0.5
     )
 
     assert not any(line.startswith("recall fell to") for line in regressions)
@@ -655,27 +657,27 @@ def test_tolerance_absorbs_a_small_aggregate_drop_but_not_a_case_regression():
 def test_editing_a_fixtures_labels_after_capture_is_reported():
     """Dropping a stubbornly-missed label would otherwise 'improve' recall."""
 
-    golden = eval_harness.golden_from_score(
+    baseline = eval_harness.baseline_from_score(
         score_evaluation(_suite(observed_per_case={"alpha": [_finding()]}))
     )
     relabeled = _suite(observed_per_case={"alpha": [_finding()]})
     relabeled.cases[0].expected = []
     relabeled.cases[0].observed = []
 
-    regressions = eval_harness.compare_to_golden(score_evaluation(relabeled), golden)
+    regressions = eval_harness.compare_to_baseline(score_evaluation(relabeled), baseline)
 
     assert any("now carries 0 labels" in line for line in regressions)
 
 
-def test_a_fixture_with_no_golden_entry_is_reported():
-    golden = eval_harness.golden_from_score(
+def test_a_fixture_with_no_baseline_entry_is_reported():
+    baseline = eval_harness.baseline_from_score(
         score_evaluation(_suite(observed_per_case={"alpha": [_finding()]}))
     )
     wider = _suite(observed_per_case={"alpha": [_finding()], "beta": [_finding()]})
 
-    regressions = eval_harness.compare_to_golden(score_evaluation(wider), golden)
+    regressions = eval_harness.compare_to_baseline(score_evaluation(wider), baseline)
 
-    assert any("has no golden entry" in line for line in regressions)
+    assert any("has no baseline entry" in line for line in regressions)
 
 
 def test_recategorising_a_found_defect_is_not_a_regression():
@@ -683,12 +685,12 @@ def test_recategorising_a_found_defect_is_not_a_regression():
 
     Before DEV-292 this ran as a lost true positive *and* a gained false
     positive, so a run that found exactly the same defects would have failed the
-    gate twice over for a taxonomy disagreement. Goldens are captured next, so
+    gate twice over for a taxonomy disagreement. Baselines are captured next, so
     the wrong answer here would have been frozen into them.
     """
 
     good = _suite(observed_per_case={"alpha": [_finding()], "beta": [_finding()]})
-    golden = eval_harness.golden_from_score(score_evaluation(good))
+    baseline = eval_harness.baseline_from_score(score_evaluation(good))
     recategorised = _suite(
         observed_per_case={
             "alpha": [_finding()],
@@ -698,7 +700,7 @@ def test_recategorising_a_found_defect_is_not_a_regression():
 
     score = score_evaluation(recategorised)
 
-    assert eval_harness.compare_to_golden(score, golden) == []
+    assert eval_harness.compare_to_baseline(score, baseline) == []
     assert score.category_mismatches == 1
     assert [item.count for item in score.category_confusion] == [1]
 
@@ -707,41 +709,41 @@ def test_a_finding_that_drifts_out_of_the_span_is_still_a_regression():
     """Widening what counts as the same place must not hide a real miss."""
 
     good = _suite(observed_per_case={"alpha": [_finding()]})
-    golden = eval_harness.golden_from_score(score_evaluation(good))
+    baseline = eval_harness.baseline_from_score(score_evaluation(good))
     # The label sits at line 1 with the default tolerance of 3.
     drifted = _suite(observed_per_case={"alpha": [_finding(line=5)]})
 
-    regressions = eval_harness.compare_to_golden(score_evaluation(drifted), golden)
+    regressions = eval_harness.compare_to_baseline(score_evaluation(drifted), baseline)
 
     assert any("missed 1 labeled findings" in line for line in regressions)
     assert any("reported 1 unlabeled findings" in line for line in regressions)
 
 
-def test_a_golden_case_that_did_not_run_is_reported():
-    golden = eval_harness.golden_from_score(
+def test_a_baseline_case_that_did_not_run_is_reported():
+    baseline = eval_harness.baseline_from_score(
         score_evaluation(_suite(observed_per_case={"alpha": [_finding()], "beta": []}))
     )
     narrower = _suite(observed_per_case={"alpha": [_finding()]})
 
-    regressions = eval_harness.compare_to_golden(score_evaluation(narrower), golden)
+    regressions = eval_harness.compare_to_baseline(score_evaluation(narrower), baseline)
 
-    assert any("is in the golden but was not run" in line for line in regressions)
+    assert any("is in the baseline but was not run" in line for line in regressions)
 
 
-def test_comparing_against_a_golden_from_another_model_is_refused():
+def test_comparing_against_a_baseline_from_another_model_is_refused():
     suite = _suite(observed_per_case={"alpha": [_finding()]})
-    golden = eval_harness.golden_from_score(score_evaluation(suite))
-    other = golden.model_copy(update={"model": "anthropic/claude-sonnet-5"})
+    baseline = eval_harness.baseline_from_score(score_evaluation(suite))
+    other = baseline.model_copy(update={"model": "anthropic/claude-sonnet-5"})
 
-    regressions = eval_harness.compare_to_golden(score_evaluation(suite), other)
+    regressions = eval_harness.compare_to_baseline(score_evaluation(suite), other)
 
     assert any("is not meaningful" in line for line in regressions)
 
 
-def test_a_golden_captured_at_a_different_confidence_floor_is_refused():
+def test_a_baseline_captured_at_a_different_confidence_floor_is_refused():
     """The trigger is a variable left in a shell, not an exotic misuse.
 
-    Capture with MIN_REVIEW_CONFIDENCE=0.99 and the golden records near-zero
+    Capture with MIN_REVIEW_CONFIDENCE=0.99 and the baseline records near-zero
     recall and near-zero false positives, which every later run at the default
     0.75 clears trivially and forever -- with the precision guard pinned to a
     floor nobody chose.
@@ -751,10 +753,10 @@ def test_a_golden_captured_at_a_different_confidence_floor_is_refused():
         observed_per_case={"alpha": [_finding()]},
         run_configuration=_configuration(min_review_confidence=0.99),
     )
-    golden = eval_harness.golden_from_score(score_evaluation(strict))
+    baseline = eval_harness.baseline_from_score(score_evaluation(strict))
     default = _suite(observed_per_case={"alpha": [_finding()]})
 
-    regressions = eval_harness.compare_to_golden(score_evaluation(default), golden)
+    regressions = eval_harness.compare_to_baseline(score_evaluation(default), baseline)
 
     assert any("MIN_REVIEW_CONFIDENCE" in line for line in regressions)
     assert any("not meaningful" in line for line in regressions)
@@ -768,20 +770,20 @@ def test_a_golden_captured_at_a_different_confidence_floor_is_refused():
         ("requested_review_depth", "thorough", "review depth"),
     ),
 )
-def test_a_golden_captured_under_other_configuration_is_refused(field, value, needle):
+def test_a_baseline_captured_under_other_configuration_is_refused(field, value, needle):
     captured = _suite(
         observed_per_case={"alpha": [_finding()]},
         run_configuration=_configuration(**{field: value}),
     )
-    golden = eval_harness.golden_from_score(score_evaluation(captured))
+    baseline = eval_harness.baseline_from_score(score_evaluation(captured))
     now = _suite(observed_per_case={"alpha": [_finding()]})
 
-    regressions = eval_harness.compare_to_golden(score_evaluation(now), golden)
+    regressions = eval_harness.compare_to_baseline(score_evaluation(now), baseline)
 
     assert any(needle in line for line in regressions)
 
 
-def test_a_golden_captured_at_a_depth_the_model_never_received_is_refused():
+def test_a_baseline_captured_at_a_depth_the_model_never_received_is_refused():
     """Asking for a depth and being sent one are different things.
 
     A route with no reasoning control is sent nothing whatever the request says,
@@ -811,17 +813,17 @@ def test_a_golden_captured_at_a_depth_the_model_never_received_is_refused():
             }
         ],
     )
-    golden = eval_harness.golden_from_score(
+    baseline = eval_harness.baseline_from_score(
         score_evaluation(
             _suite(observed_per_case={"alpha": [_finding()]}, run_configuration=honored)
         )
     )
 
-    regressions = eval_harness.compare_to_golden(
+    regressions = eval_harness.compare_to_baseline(
         score_evaluation(
             _suite(observed_per_case={"alpha": [_finding()]}, run_configuration=dropped)
         ),
-        golden,
+        baseline,
     )
 
     assert any("candidate and verifier" in line for line in regressions)
@@ -835,7 +837,7 @@ def test_editing_a_fixtures_diff_after_capture_is_reported():
     reviewer is asked to read got easier.
     """
 
-    golden = eval_harness.golden_from_score(
+    baseline = eval_harness.baseline_from_score(
         score_evaluation(_suite(observed_per_case={"alpha": [_finding()]}))
     )
     rewritten = _suite(
@@ -843,32 +845,32 @@ def test_editing_a_fixtures_diff_after_capture_is_reported():
         digest_per_case={"alpha": "a-different-fixture-entirely"},
     )
 
-    regressions = eval_harness.compare_to_golden(score_evaluation(rewritten), golden)
+    regressions = eval_harness.compare_to_baseline(score_evaluation(rewritten), baseline)
 
     assert any("different fixture content" in line for line in regressions)
 
 
-def test_a_run_that_recorded_no_configuration_cannot_defend_a_golden():
-    golden = eval_harness.golden_from_score(
+def test_a_run_that_recorded_no_configuration_cannot_defend_a_baseline():
+    baseline = eval_harness.baseline_from_score(
         score_evaluation(_suite(observed_per_case={"alpha": [_finding()]}))
     )
     anonymous = _suite(observed_per_case={"alpha": [_finding()]})
     anonymous.run_configuration = None
 
-    regressions = eval_harness.compare_to_golden(score_evaluation(anonymous), golden)
+    regressions = eval_harness.compare_to_baseline(score_evaluation(anonymous), baseline)
 
     assert any("recorded no configuration" in line for line in regressions)
 
 
-def test_a_golden_cannot_be_captured_from_a_suite_with_no_configuration():
+def test_a_baseline_cannot_be_captured_from_a_suite_with_no_configuration():
     suite = _suite(observed_per_case={"alpha": [_finding()]})
     suite.run_configuration = None
 
     with pytest.raises(ValueError, match="records no run configuration"):
-        eval_harness.golden_from_score(score_evaluation(suite))
+        eval_harness.baseline_from_score(score_evaluation(suite))
 
 
-def test_the_golden_records_category_mismatches_and_reports_the_delta():
+def test_the_baseline_records_category_mismatches_and_reports_the_delta():
     """Taxonomy drift is recorded and named, and never fails the gate.
 
     A reviewer that starts filing every injection as `maintainability` is saying
@@ -878,8 +880,8 @@ def test_the_golden_records_category_mismatches_and_reports_the_delta():
     """
 
     agreeing = _suite(observed_per_case={"alpha": [_finding()], "beta": [_finding()]})
-    golden = eval_harness.golden_from_score(score_evaluation(agreeing))
-    assert golden.category_mismatches == 0
+    baseline = eval_harness.baseline_from_score(score_evaluation(agreeing))
+    assert baseline.category_mismatches == 0
 
     drifted = score_evaluation(
         _suite(
@@ -890,8 +892,8 @@ def test_the_golden_records_category_mismatches_and_reports_the_delta():
         )
     )
 
-    assert eval_harness.compare_to_golden(drifted, golden) == []
-    delta = eval_harness.category_mismatch_delta(drifted, golden)
+    assert eval_harness.compare_to_baseline(drifted, baseline) == []
+    delta = eval_harness.category_mismatch_delta(drifted, baseline)
     assert delta is not None
     assert "up from" in delta
     assert "security->maintainability" in delta
@@ -899,9 +901,9 @@ def test_the_golden_records_category_mismatches_and_reports_the_delta():
 
 def test_tolerance_outside_zero_to_one_is_refused():
     suite = _suite(observed_per_case={"alpha": [_finding()]})
-    golden = eval_harness.golden_from_score(score_evaluation(suite))
+    baseline = eval_harness.baseline_from_score(score_evaluation(suite))
     with pytest.raises(ValueError, match="tolerance must be between 0 and 1"):
-        eval_harness.compare_to_golden(score_evaluation(suite), golden, tolerance=2.0)
+        eval_harness.compare_to_baseline(score_evaluation(suite), baseline, tolerance=2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -909,7 +911,7 @@ def test_tolerance_outside_zero_to_one_is_refused():
 # ---------------------------------------------------------------------------
 
 
-def test_check_exits_with_capture_instructions_when_no_golden_exists(tmp_path, capsys):
+def test_check_exits_with_capture_instructions_when_no_baseline_exists(tmp_path, capsys):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(
         _suite(observed_per_case={"alpha": [_finding()]}).model_dump_json()
@@ -920,7 +922,7 @@ def test_check_exits_with_capture_instructions_when_no_golden_exists(tmp_path, c
             "check",
             "--suite",
             str(suite_path),
-            "--golden",
+            "--baseline",
             str(tmp_path / "absent.json"),
         ]
     )
@@ -931,7 +933,7 @@ def test_check_exits_with_capture_instructions_when_no_golden_exists(tmp_path, c
 
 def test_capture_then_check_round_trips(tmp_path):
     suite_path = tmp_path / "suite.json"
-    golden_path = tmp_path / "golden" / "review-baseline.json"
+    baseline_path = tmp_path / "baselines" / "review-baseline.json"
     suite_path.write_text(
         _suite(observed_per_case={"alpha": [_finding()], "beta": [_finding()]})
         .model_dump_json()
@@ -939,17 +941,17 @@ def test_capture_then_check_round_trips(tmp_path):
 
     assert (
         eval_harness.main(
-            ["capture", "--suite", str(suite_path), "--golden", str(golden_path)]
+            ["capture", "--suite", str(suite_path), "--baseline", str(baseline_path)]
         )
         == 0
     )
     assert eval_harness.main(
-        ["check", "--suite", str(suite_path), "--golden", str(golden_path)]
+        ["check", "--suite", str(suite_path), "--baseline", str(baseline_path)]
     ) == 0
 
 
 def test_check_exits_one_on_a_seeded_regression(tmp_path, capsys):
-    golden_path = tmp_path / "golden.json"
+    baseline_path = tmp_path / "baseline.json"
     good = tmp_path / "good.json"
     worse = tmp_path / "worse.json"
     good.write_text(
@@ -959,19 +961,19 @@ def test_check_exits_one_on_a_seeded_regression(tmp_path, capsys):
     worse.write_text(
         _suite(observed_per_case={"alpha": [_finding()], "beta": []}).model_dump_json()
     )
-    eval_harness.main(["capture", "--suite", str(good), "--golden", str(golden_path)])
+    eval_harness.main(["capture", "--suite", str(good), "--baseline", str(baseline_path)])
 
     with pytest.raises(SystemExit) as raised:
         eval_harness.main(
-            ["check", "--suite", str(worse), "--golden", str(golden_path)]
+            ["check", "--suite", str(worse), "--baseline", str(baseline_path)]
         )
 
     assert raised.value.code == 1
     assert "REGRESSION" in capsys.readouterr().err
 
 
-def test_capture_refuses_a_golden_that_found_nothing(tmp_path, capsys):
-    """A golden with no true positives passes against every later run.
+def test_capture_refuses_a_baseline_that_found_nothing(tmp_path, capsys):
+    """A baseline with no true positives passes against every later run.
 
     Including one where the review engine returns nothing at all, because
     precision is 1.0 when there is nothing to be precise about. `scripts/eval.sh`
@@ -985,7 +987,7 @@ def test_capture_refuses_a_golden_that_found_nothing(tmp_path, capsys):
     )
 
     exit_code = eval_harness.main(
-        ["capture", "--suite", str(suite_path), "--golden", str(tmp_path / "g.json")]
+        ["capture", "--suite", str(suite_path), "--baseline", str(tmp_path / "g.json")]
     )
 
     assert exit_code == 2
@@ -993,9 +995,9 @@ def test_capture_refuses_a_golden_that_found_nothing(tmp_path, capsys):
     assert not (tmp_path / "g.json").exists()
 
 
-def test_capture_records_a_zero_recall_golden_when_asked_explicitly(tmp_path):
+def test_capture_records_a_zero_recall_baseline_when_asked_explicitly(tmp_path):
     suite_path = tmp_path / "suite.json"
-    golden_path = tmp_path / "g.json"
+    baseline_path = tmp_path / "g.json"
     suite_path.write_text(
         _suite(observed_per_case={"alpha": [], "beta": []}).model_dump_json()
     )
@@ -1006,14 +1008,14 @@ def test_capture_records_a_zero_recall_golden_when_asked_explicitly(tmp_path):
                 "capture",
                 "--suite",
                 str(suite_path),
-                "--golden",
-                str(golden_path),
+                "--baseline",
+                str(baseline_path),
                 "--allow-zero-recall",
             ]
         )
         == 0
     )
-    assert eval_harness.load_golden(golden_path).recall == 0.0
+    assert eval_harness.load_baseline(baseline_path).recall == 0.0
 
 
 def test_run_records_the_configuration_that_moves_the_score(tmp_path, monkeypatch):
@@ -1045,7 +1047,7 @@ def test_run_records_what_the_model_was_actually_sent_for_a_depth(
 ):
     """`CAPTURE.md` recommends a cheap model, and the cheap one honours nothing.
 
-    A golden that recorded only the requested depth would let a run at
+    A baseline that recorded only the requested depth would let a run at
     `REVIEW_DEPTH=thorough` on a route with no reasoning control defend a run at
     the same depth on a route that has one.
     """

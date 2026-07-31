@@ -11,7 +11,7 @@ from service.auto_approval import (
     assess_change_risk,
     evaluate_auto_approval,
 )
-from service.review_models import Category, ReviewFinding, ReviewReport, Severity
+from service.models.review import Category, ReviewFinding, ReviewReport, Severity
 from service.scm import PullRequestEvent
 
 
@@ -109,7 +109,14 @@ def test_auto_approval_is_default_off_and_clean_low_risk_is_opt_in():
         report,
     )
     enabled = evaluate_auto_approval(
-        _policy({"auto_approval": {"enabled": True}}),
+        _policy(
+            {
+                "auto_approval": {
+                    "enabled": True,
+                    "filters": {"allow_paths": ["docs/**"]},
+                }
+            }
+        ),
         event,
         diff,
         report,
@@ -121,6 +128,84 @@ def test_auto_approval_is_default_off_and_clean_low_risk_is_opt_in():
     assert enabled.reason_code == "approved"
     assert enabled.risk_level is AutoApprovalRisk.LOW
     assert enabled.risk_ceiling is AutoApprovalRisk.LOW
+
+
+def test_an_enabled_repository_without_an_allowlist_approves_nothing():
+    """Enabling the feature is a statement of intent, not a list of paths.
+
+    The old gate approved anything Diffuse's built-in denylist failed to name, which made
+    every path Diffuse never thought of -- `internal/perms/`, `lib/rbac/` -- eligible by
+    accident. Now the operator names the paths, and naming none means approving none.
+    """
+    decision = evaluate_auto_approval(
+        _policy({"auto_approval": {"enabled": True}}),
+        _event(),
+        _diff(),
+        _report(),
+    )
+
+    assert not decision.eligible
+    assert decision.reason_code == "path_not_allowlisted"
+
+
+def test_an_allowlist_covers_only_the_paths_it_names():
+    """A grant is per path, so an allowed file cannot carry an unallowed one in with it."""
+    diff = _diff() + _diff("src/app.py", "src/app.py")
+
+    decision = evaluate_auto_approval(
+        _policy(
+            {
+                "auto_approval": {
+                    "enabled": True,
+                    "filters": {"allow_paths": ["docs/**"]},
+                }
+            },
+            ("docs/guide.md", "src/app.py"),
+        ),
+        _event(changed_file_count=2),
+        diff,
+        _report(diff_file_count=2, reviewed_file_count=2),
+    )
+
+    assert not decision.eligible
+    assert decision.reason_code == "path_not_allowlisted"
+
+
+def test_an_explicitly_empty_allowlist_withdraws_a_parent_grant():
+    """`allow_paths: []` is a decision, not an omission, and it has to outrank a parent."""
+    snapshot = RepositoryPolicySnapshot(
+        layers=(
+            PolicyLayer(
+                directory_path="",
+                source_path=".diffuse/config.json",
+                config=RepositoryConfig.model_validate(
+                    {
+                        "version": 1,
+                        "auto_approval": {
+                            "enabled": True,
+                            "filters": {"allow_paths": ["**"]},
+                        },
+                    }
+                ),
+            ),
+            PolicyLayer(
+                directory_path="docs",
+                source_path="docs/.diffuse/config.json",
+                config=RepositoryConfig.model_validate(
+                    {
+                        "version": 1,
+                        "auto_approval": {"filters": {"allow_paths": []}},
+                    }
+                ),
+            ),
+        )
+    )
+    policy = resolve_review_policy(snapshot, ("docs/guide.md",))
+
+    decision = evaluate_auto_approval(policy, _event(), _diff(), _report())
+
+    assert not decision.eligible
+    assert decision.reason_code == "path_not_allowlisted"
 
 
 def test_auto_approval_refuses_any_provider_other_than_github():
@@ -150,6 +235,7 @@ def test_auto_approval_filters_are_all_required_and_renames_check_both_paths():
             "auto_approval": {
                 "enabled": True,
                 "filters": {
+                    "allow_paths": ["**"],
                     "exclude_paths": ["src"],
                     "include_authors": ["octo*"],
                     "include_branches": ["main"],
@@ -252,6 +338,7 @@ def test_nested_auto_approval_cannot_weaken_parent_constraints():
                             "enabled": True,
                             "risk_ceiling": "high",
                             "filters": {
+                                "allow_paths": ["src/**"],
                                 "include_authors": ["release-bot"],
                                 "exclude_paths": ["src/generated"],
                                 "file_change_limit": 10,
@@ -270,6 +357,7 @@ def test_nested_auto_approval_cannot_weaken_parent_constraints():
                             "enabled": True,
                             "risk_ceiling": "critical",
                             "filters": {
+                                "allow_paths": ["**"],
                                 "include_authors": ["octocat"],
                                 "file_change_limit": 100,
                             },
@@ -289,6 +377,12 @@ def test_nested_auto_approval_cannot_weaken_parent_constraints():
     assert resolved.auto_approval.include_author_groups == (
         ("release-bot",),
         ("octocat",),
+    )
+    # The nested `**` is rooted at the scope that wrote it, so the two groups agree here
+    # rather than the child's catch-all replacing the parent's narrower grant.
+    assert resolved.auto_approval.allow_path_groups == (
+        ("src/**",),
+        ("src/**",),
     )
 
     decision = evaluate_auto_approval(
@@ -370,6 +464,7 @@ def test_critical_risk_is_never_approved_even_with_critical_ceiling():
                 "auto_approval": {
                     "enabled": True,
                     "risk_ceiling": "critical",
+                    "filters": {"allow_paths": ["src/**"]},
                 }
             },
             ("src/auth/session.py",),
@@ -439,7 +534,14 @@ def test_critical_risk_is_never_approved_even_with_critical_ceiling():
 )
 def test_auto_approval_requires_full_clean_review(report, unresolved, reason):
     decision = evaluate_auto_approval(
-        _policy({"auto_approval": {"enabled": True}}),
+        _policy(
+            {
+                "auto_approval": {
+                    "enabled": True,
+                    "filters": {"allow_paths": ["docs/**"]},
+                }
+            }
+        ),
         _event(),
         _diff(),
         report,
@@ -483,12 +585,20 @@ def test_policy_bearing_paths_are_critical_risk(path):
 
 @pytest.mark.parametrize("path", POLICY_BEARING_PATHS)
 def test_policy_bearing_paths_are_never_auto_approved(path):
+    """The built-in critical floor outranks an operator allowlist that names the path.
+
+    An operator can be talked into allowlisting `**` -- by a contributor, or by a pull
+    request that edits the configuration one commit earlier. The floor is what makes that
+    survivable: allowlisting a policy-bearing path still cannot approve a change to it,
+    so no pull request can widen the rules that approve it.
+    """
     decision = evaluate_auto_approval(
         _policy(
             {
                 "auto_approval": {
                     "enabled": True,
                     "risk_ceiling": "critical",
+                    "filters": {"allow_paths": ["**", "**/.diffuse/**"]},
                 }
             },
             (path,),
@@ -521,7 +631,15 @@ def test_foreign_ci_definitions_stay_critical_on_a_github_repository():
 
 def test_ordinary_documentation_stays_auto_approvable():
     decision = evaluate_auto_approval(
-        _policy({"auto_approval": {"enabled": True}}, ("docs/contributing.md",)),
+        _policy(
+            {
+                "auto_approval": {
+                    "enabled": True,
+                    "filters": {"allow_paths": ["docs/**"]},
+                }
+            },
+            ("docs/contributing.md",),
+        ),
         _event(),
         _diff("docs/contributing.md", "docs/contributing.md"),
         _report(),
@@ -529,3 +647,144 @@ def test_ordinary_documentation_stays_auto_approvable():
 
     assert decision.eligible
     assert decision.risk_level is AutoApprovalRisk.LOW
+
+
+@pytest.mark.parametrize(
+    "path",
+    ("tests/test_billing.py", "src/app.test.ts", "packages/web/tests/cart.spec.ts"),
+)
+def test_a_one_line_test_change_is_not_low_risk(path):
+    """Deleting the assertion that guarded something is a one-line diff.
+
+    Both routes to the low tier have to close for test paths, not just the extension
+    list: the small-change shortcut would otherwise hand the low tier straight back to
+    the smallest and most dangerous version of this change.
+    """
+    assert (
+        assess_change_risk(
+            (path,),
+            changed_file_count=1,
+            changed_line_count=1,
+            diff_chars=200,
+        )
+        is AutoApprovalRisk.MEDIUM
+    )
+
+
+def test_a_test_only_change_needs_a_raised_ceiling_to_be_approved():
+    config = {
+        "auto_approval": {
+            "enabled": True,
+            "filters": {"allow_paths": ["tests/**"]},
+        }
+    }
+    event = _event()
+    diff = _diff("tests/test_billing.py", "tests/test_billing.py")
+
+    at_default_ceiling = evaluate_auto_approval(
+        _policy(config, ("tests/test_billing.py",)),
+        event,
+        diff,
+        _report(),
+    )
+    at_raised_ceiling = evaluate_auto_approval(
+        _policy(
+            {"auto_approval": {**config["auto_approval"], "risk_ceiling": "medium"}},
+            ("tests/test_billing.py",),
+        ),
+        event,
+        diff,
+        _report(),
+    )
+
+    assert not at_default_ceiling.eligible
+    assert at_default_ceiling.reason_code == "risk_ceiling"
+    assert at_raised_ceiling.eligible
+
+
+class _StubConnection:
+    def close(self) -> None:
+        return None
+
+
+def _snapshot_policy(monkeypatch, config: dict, diff_text: str):
+    from service.hosted import worker
+
+    snapshot = RepositoryPolicySnapshot(
+        layers=(
+            PolicyLayer(
+                directory_path="",
+                source_path=".diffuse/config.json",
+                config=RepositoryConfig.model_validate({"version": 1, **config}),
+            ),
+        )
+    )
+    monkeypatch.setattr(worker, "get_conn", lambda: _StubConnection())
+    monkeypatch.setattr(
+        worker,
+        "load_repository_policy",
+        lambda conn, snapshot_id: snapshot,
+    )
+    return worker._load_review_policy(41, diff_text)
+
+
+def test_the_allowlist_is_read_from_the_snapshot_not_from_the_pull_request_head(
+    monkeypatch,
+):
+    """The allowlist can live in the repository only because the head cannot supply it.
+
+    `_load_review_policy` resolves against the indexed default-branch snapshot, so the
+    `.diffuse/config.json` a pull request proposes is diff text and nothing more. Were it
+    ever read from the head, every gate in this module would be self-service: a PR would
+    allowlist its own paths in the same commit it needs approved.
+    """
+    head_grant = (
+        "diff --git a/.diffuse/config.json b/.diffuse/config.json\n"
+        "--- a/.diffuse/config.json\n"
+        "+++ b/.diffuse/config.json\n"
+        "@@ -1 +1 @@\n"
+        '-{"version": 1, "auto_approval": {"enabled": true}}\n'
+        '+{"version": 1, "auto_approval": {"enabled": true, "filters": '
+        '{"allow_paths": ["src/**"]}}}\n'
+    ) + _diff("src/app.py", "src/app.py")
+
+    policy = _snapshot_policy(
+        monkeypatch,
+        {
+            "auto_approval": {
+                "enabled": True,
+                "filters": {"allow_paths": ["docs/**"]},
+            }
+        },
+        head_grant,
+    )
+    resolved = policy.for_path("src/app.py")
+    decision = evaluate_auto_approval(
+        policy,
+        _event(changed_file_count=2),
+        head_grant,
+        _report(diff_file_count=2, reviewed_file_count=2),
+    )
+
+    assert resolved is not None
+    assert resolved.auto_approval.allow_path_groups == (("docs/**",),)
+    assert not decision.eligible
+    assert decision.reason_code == "path_not_allowlisted"
+
+    granted_by_snapshot = _snapshot_policy(
+        monkeypatch,
+        {
+            "auto_approval": {
+                "enabled": True,
+                "filters": {"allow_paths": ["src/**"]},
+            }
+        },
+        _diff("src/app.py", "src/app.py"),
+    )
+
+    assert evaluate_auto_approval(
+        granted_by_snapshot,
+        _event(),
+        _diff("src/app.py", "src/app.py"),
+        _report(),
+    ).eligible

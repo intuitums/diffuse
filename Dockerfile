@@ -79,14 +79,14 @@ RUN pyinstaller \
         --copy-metadata tree-sitter-ruby \
         --copy-metadata tree-sitter-rust \
         --copy-metadata tree-sitter-typescript \
-        --add-data /src/service/git_askpass.sh:service \
+        --add-data /src/service/hosted/git_askpass.sh:service/hosted \
         --add-data /src/sql:sql \
         --add-data /src/evals:evals \
         /src/service/runtime.py \
     && test -x /build/diffuse/diffuse \
     && test -f /build/diffuse/_internal/sql/schema.sql \
     && test -f /build/diffuse/_internal/evals/baseline.example.json \
-    && test -x /build/diffuse/_internal/service/git_askpass.sh \
+    && test -x /build/diffuse/_internal/service/hosted/git_askpass.sh \
     && for dist in tree_sitter tree_sitter_c tree_sitter_cpp tree_sitter_go \
             tree_sitter_java tree_sitter_javascript tree_sitter_php \
             tree_sitter_ruby tree_sitter_rust tree_sitter_typescript; do \
@@ -133,7 +133,7 @@ LABEL org.opencontainers.image.title="Diffuse" \
       org.opencontainers.image.source="https://github.com/intuitumxyz/Diffuse"
 
 ENV DIFFUSE_SQL_DIR=/opt/diffuse/_internal/sql \
-    DIFFUSE_GIT_ASKPASS=/opt/diffuse/_internal/service/git_askpass.sh \
+    DIFFUSE_GIT_ASKPASS=/opt/diffuse/_internal/service/hosted/git_askpass.sh \
     DEBIAN_FRONTEND=noninteractive \
     PATH=/opt/diffuse:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     PYTHONUNBUFFERED=1
@@ -154,7 +154,7 @@ COPY --from=builder --chown=diffuse:diffuse /build/diffuse/ /opt/diffuse/
 COPY --chown=diffuse:diffuse LICENSE /opt/diffuse/LICENSE
 
 RUN chmod 500 /opt/diffuse/diffuse \
-    && chmod 500 /opt/diffuse/_internal/service/git_askpass.sh \
+    && chmod 500 /opt/diffuse/_internal/service/hosted/git_askpass.sh \
     && test -f /opt/diffuse/LICENSE \
     && ! find /opt/diffuse -type f \
         \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit \

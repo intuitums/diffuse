@@ -233,7 +233,7 @@ jobs:
             test "$(id -u)" -ne 0
             test ! -e /usr/local/bin/python
             test -x /opt/diffuse/diffuse
-            test -x /opt/diffuse/_internal/service/git_askpass.sh
+            test -x /opt/diffuse/_internal/service/hosted/git_askpass.sh
             test -f /opt/diffuse/_internal/sql/schema.sql
             test -f /opt/diffuse/_internal/evals/baseline.example.json
             ! find /opt/diffuse -type f \
@@ -271,7 +271,7 @@ jobs:
       #     mitigation had nothing enforcing it.
       #   * the migration path was only covered by the editable source install, where
       #     DIFFUSE_SQL_DIR is unset. The image sets it to /opt/diffuse/_internal/sql,
-      #     which is a different branch in service/database_migrations.py.
+      #     which is a different branch in service/storage/migrations.py.
       #
       # deploy/compose.yaml is used rather than docker-compose.yml on purpose: it is
       # the file customers run. deploy/env.example is used as shipped apart from the

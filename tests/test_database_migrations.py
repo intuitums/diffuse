@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from service.database_migrations import (
+from service.cli.review import _parser
+from service.storage.migrations import (
     BASELINE_SCHEMA_SHA256,
     RETIRED_BASELINE_COLUMNS,
     MigrationDriftError,
@@ -11,7 +12,6 @@ from service.database_migrations import (
     _baseline_contract,
     load_migration_catalog,
 )
-from service.review_cli import _parser
 
 
 def test_frozen_baseline_catalog_is_packaged_and_contract_is_parseable():
@@ -28,6 +28,7 @@ def test_frozen_baseline_catalog_is_packaged_and_contract_is_parseable():
         (8, "review_provenance"),
         (9, "review_depth_resolution"),
         (10, "drop_embeddings"),
+        (11, "review_tool_calls"),
     ]
     assert catalog[0].checksum == BASELINE_SCHEMA_SHA256
     contract = _baseline_contract(catalog[0].sql)

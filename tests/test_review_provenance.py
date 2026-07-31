@@ -1,4 +1,4 @@
-from service.review_provenance import (
+from service.review.provenance import (
     CommitMetadata,
     PullRequestCommits,
     classify_pull_request_provenance,

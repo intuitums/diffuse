@@ -1,4 +1,4 @@
-"""PostgreSQL coverage for `service/conversation_store.py`.
+"""PostgreSQL coverage for `service/storage/conversation.py`.
 
 Recovered from `tests/integration/test_workflow_postgres.py`. Nothing in the
 surviving suite drives `begin_conversation_generation`,
@@ -10,8 +10,22 @@ from contextlib import closing
 
 import psycopg2
 
-from service.conversation_models import ConversationReference
-from service.conversation_store import (
+from service.hosted.workflow import (
+    claim_workflow_job,
+    complete_workflow_job,
+    enqueue_review_conversation_event,
+    enqueue_review_event,
+)
+from service.models.conversation import ConversationReference
+from service.models.review import (
+    Category,
+    ReviewFinding,
+    ReviewReport,
+    Severity,
+)
+from service.repositories import register_repository
+from service.scm import PullRequestEvent, ReviewConversationEvent
+from service.storage.conversation import (
     PublishedConversationReply,
     begin_conversation_generation,
     begin_conversation_publication,
@@ -20,26 +34,12 @@ from service.conversation_store import (
     mark_conversation_published,
     mark_conversation_ready,
 )
-from service.finding_store import PublishedFindingComment, record_finding_threads
-from service.repositories import register_repository
-from service.review_models import (
-    Category,
-    ReviewFinding,
-    ReviewReport,
-    Severity,
-)
-from service.review_store import (
+from service.storage.finding import PublishedFindingComment, record_finding_threads
+from service.storage.review import (
     begin_publication,
     begin_review_run,
     mark_publication_published,
     persist_review_report,
-)
-from service.scm import PullRequestEvent, ReviewConversationEvent
-from service.workflow import (
-    claim_workflow_job,
-    complete_workflow_job,
-    enqueue_review_conversation_event,
-    enqueue_review_event,
 )
 
 

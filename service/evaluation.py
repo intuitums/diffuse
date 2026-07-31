@@ -6,7 +6,7 @@ from collections import defaultdict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from service.review_models import Category, Severity
+from service.models.review import Category, Severity
 
 
 class EvaluationModel(BaseModel):
@@ -59,7 +59,7 @@ class EvaluationCase(EvaluationModel):
     #: Hash of the fixture files this case was produced from. Pins the *content*
     #: the run was scored against, which the label count alone does not: making
     #: a bug more obvious in `diff.patch` raises recall without the review
-    #: engine changing at all, and the golden would still pass.
+    #: engine changing at all, and the baseline would still pass.
     fixture_digest: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
@@ -82,7 +82,7 @@ class ReviewDepthRendering(EvaluationModel):
 
     Requesting a depth and receiving it are different things: a route can accept
     `reasoning_effort` and render it as a boolean, or refuse it outright. A
-    suite that recorded only what was *asked* would let a golden captured at
+    suite that recorded only what was *asked* would let a baseline captured at
     `thorough` be defended by a run that sent no reasoning parameter at all --
     which is what happens on `openai/gpt-4.1-mini`, the model
     `evals/CAPTURE.md` recommends capturing on first.
@@ -101,11 +101,11 @@ class RunConfiguration(EvaluationModel):
 
     The model name was already pinned; none of these were, and every one of
     them changes what a run finds. Raising `MIN_REVIEW_CONFIDENCE` to 0.99 for
-    one capture records a golden with near-zero recall and near-zero false
+    one capture records a baseline with near-zero recall and near-zero false
     positives that every later run clears trivially, forever. Dropping a review
     pass, or bumping `PROMPT_VERSION`, does the same in the other direction.
-    `service/review_cli.py` already treats a `PROMPT_VERSION` change as
-    invalidating a stored run; a golden is a stored run that outlives many more
+    `service/cli/review.py` already treats a `PROMPT_VERSION` change as
+    invalidating a stored run; a baseline is a stored run that outlives many more
     of them.
     """
 
@@ -291,7 +291,7 @@ class EvaluationScore(EvaluationModel):
     suite_name: str
     model: str
     verifier_model: str | None
-    #: Echoed from the suite so a golden can be captured and compared from the
+    #: Echoed from the suite so a baseline can be captured and compared from the
     #: score alone, exactly as `model` and `verifier_model` already are.
     run_configuration: RunConfiguration | None = None
     case_count: int
@@ -388,7 +388,7 @@ def _score_case(case: EvaluationCase) -> CaseScore:
     # *size* of a maximum matching, so precision, recall and F1 do not depend on
     # this preference; only which maximum matching is chosen, and therefore the
     # diagnostics, do -- which is why `category_mismatches` is recorded in a
-    # golden and reported as a delta rather than gated on.
+    # baseline and reported as a delta rather than gated on.
     #
     # The final tie-break is the observation's own (category, line) rather than
     # its position in the list. With the index there, the same inputs in a

@@ -7,6 +7,12 @@ from service.cross_repository import (
     DroppedContextRepository,
     resolve_cross_repository_context,
 )
+from service.hosted.repository_mirror import (
+    RepositoryMirror,
+    RepositoryMirrorError,
+    git_askpass_path,
+    max_repository_bytes,
+)
 from service.repositories import (
     RegisteredRepository,
     repository_clone_url,
@@ -16,12 +22,6 @@ from service.repositories import (
 from service.repository_indexing import (
     repository_api_base_url,
     repository_index_event,
-)
-from service.repository_mirror import (
-    RepositoryMirror,
-    RepositoryMirrorError,
-    git_askpass_path,
-    max_repository_bytes,
 )
 from service.scm import validate_repository_name
 

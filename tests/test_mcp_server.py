@@ -7,15 +7,17 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.auth.provider import AccessToken
 
-from service import api_auth, mcp_server, review_trigger, webhook_server
-from service.api_tokens import (
+from service import api_auth, mcp_server
+from service.hosted import webhook_server
+from service.hosted.api_tokens import (
     MCP_GENERATE_SCOPE,
     MCP_READ_SCOPE,
     MCP_WRITE_SCOPE,
     ServiceTokenAccess,
 )
+from service.hosted.webhook_server import app
+from service.review import trigger as review_trigger
 from service.scm import PullRequestEvent
-from service.webhook_server import app
 
 API_TOKEN = "m" * 48
 

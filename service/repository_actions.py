@@ -8,6 +8,7 @@ from typing import Literal
 
 import psycopg2.extras
 
+from service.hosted.workflow import enqueue_repository_index_event
 from service.repositories import (
     RegisteredRepository,
     get_repository,
@@ -17,7 +18,6 @@ from service.repositories import (
     validate_repository_origin_allowed,
 )
 from service.scm import PushEvent, validate_repository_name
-from service.workflow import enqueue_repository_index_event
 
 
 class RepositoryConfigurationConflictError(ValueError):
