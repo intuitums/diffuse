@@ -24,7 +24,12 @@ import litellm
 import pytest
 from litellm.utils import get_optional_params
 
-from service.review_engine import REVIEW_TEMPERATURE, verify_model_connection
+from service.model_capabilities import REVIEW_DEPTHS
+from service.review_engine import (
+    REVIEW_EFFORT_LEVELS,
+    REVIEW_TEMPERATURE,
+    verify_model_connection,
+)
 
 # Every model the env files tell an operator to configure, including the one
 # they recommend and the "maximum depth" upgrade beside it.
@@ -156,3 +161,146 @@ def test_connection_probe_leaves_room_for_a_thinking_model(
 
     arguments = _request_arguments(monkeypatch, "anthropic/claude-sonnet-5")
     assert int(arguments["max_tokens"]) >= 1024
+
+
+def test_unset_effort_sends_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unset REVIEW_EFFORT must leave the model on its own default."""
+
+    monkeypatch.delenv("REVIEW_EFFORT", raising=False)
+    assert "reasoning_effort" not in _request_arguments(
+        monkeypatch, "anthropic/claude-sonnet-5"
+    )
+
+
+@pytest.mark.parametrize("effort", REVIEW_EFFORT_LEVELS)
+def test_every_documented_effort_reaches_an_anthropic_model(
+    monkeypatch: pytest.MonkeyPatch, effort: str
+) -> None:
+    """REVIEW_EFFORT maps to `output_config.effort` through LiteLLM's mapping."""
+
+    monkeypatch.setenv("REVIEW_EFFORT", effort)
+    arguments = _request_arguments(monkeypatch, "anthropic/claude-sonnet-5")
+    assert arguments["reasoning_effort"] == effort
+
+    resolved, provider, _, _ = litellm.get_llm_provider(model="anthropic/claude-sonnet-5")
+    mapped = get_optional_params(
+        model=resolved,
+        custom_llm_provider=provider,
+        max_tokens=arguments["max_tokens"],
+        reasoning_effort=effort,
+    )
+    assert mapped["output_config"] == {"effort": effort}
+
+
+def test_effort_is_dropped_rather_than_failing_a_model_that_refuses_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gpt-4.1-mini has no reasoning_effort; a review must still run."""
+
+    monkeypatch.setenv("REVIEW_EFFORT", "xhigh")
+    arguments = _request_arguments(monkeypatch, "openai/gpt-4.1-mini")
+    assert "reasoning_effort" not in arguments
+    # And the parameter it does honor is still there.
+    assert arguments["temperature"] == REVIEW_TEMPERATURE
+
+
+def test_an_unknown_effort_is_refused_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A typo must fail loudly at configuration time, not silently do nothing."""
+
+    monkeypatch.setenv("REVIEW_EFFORT", "maximum")
+    with pytest.raises(ValueError, match="REVIEW_EFFORT"):
+        _request_arguments(monkeypatch, "anthropic/claude-sonnet-5")
+
+
+# --- Structured output must survive a depth request --------------------------
+#
+# Reconstructing the call from a hand-picked subset of parameters is exactly the
+# blind spot that let this through: `response_format` was dropped before the
+# rendering, and it is the parameter whose interaction with `reasoning_effort`
+# breaks. `_rendered_parameters` above renders the whole request, so the depth
+# tests below read through it under a shorter name.
+
+# The two documented routes that reach structured output through a forced tool.
+# `openai/gpt-4.1-mini` is excluded deliberately -- it has no reasoning control,
+# so there is no combination to test.
+TOOL_MODE_MODELS = ("anthropic/claude-sonnet-5", "anthropic/claude-haiku-4-5")
+
+_rendered = _rendered_parameters
+
+
+@pytest.mark.parametrize("model", TOOL_MODE_MODELS)
+@pytest.mark.parametrize("depth", REVIEW_DEPTHS)
+def test_structured_output_stays_forced_at_every_review_depth(
+    monkeypatch: pytest.MonkeyPatch, model: str, depth: str
+) -> None:
+    """Asking for depth must not make the JSON tool optional.
+
+    `AnthropicConfig.map_openai_params` assigns the forcing `tool_choice` only
+    `if not is_thinking_enabled`, so any depth request silently removed it and
+    the model was free to answer in prose. `model_validate_json` then raises
+    `StructuredOutputValidationError`, which is *retryable* -- five attempts and
+    a terminal failure notice on a pull request, which is the exact failure
+    shape Phase 0 exists to delete, on the pairing `.env.example` recommends.
+    """
+
+    monkeypatch.setenv("REVIEW_DEPTH", depth)
+    rendered = _rendered(_request_arguments(monkeypatch, model))
+
+    assert rendered.get("json_mode") is True
+    tools = [tool.get("name") for tool in rendered.get("tools", [])]
+    assert tools, f"{model} at depth {depth} renders no JSON tool to force"
+    assert rendered.get("tool_choice") is not None, (
+        f"{model} at depth {depth} renders the JSON tool but does not force it, "
+        "so the model may answer in prose instead of calling it."
+    )
+    assert rendered["tool_choice"].get("name") in tools
+
+
+@pytest.mark.parametrize("model", TOOL_MODE_MODELS)
+def test_depth_is_still_requested_alongside_forced_structured_output(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """Keeping the tool forced must not be paid for by dropping the depth.
+
+    The cheap way to fix the above is to stop sending depth on these routes.
+    That trades one silent downgrade for another, so pin both halves.
+    """
+
+    monkeypatch.setenv("REVIEW_DEPTH", "careful")
+    rendered = _rendered(_request_arguments(monkeypatch, model))
+
+    reasoning = rendered.get("output_config") or rendered.get("thinking")
+    assert reasoning, f"{model} lost its reasoning request while forcing the tool"
+    assert rendered.get("tool_choice") is not None
+
+
+def test_no_tool_choice_is_invented_for_routes_that_never_forced_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The repair is narrow on purpose, and the blanket version is a 400.
+
+    `openai/`, `hosted_vllm/` and `gemini/` pass `response_format` through and
+    render no tools at all, as do the `anthropic/` models that use the native
+    `output_format`. Sending a `tool_choice` there forces a tool the request
+    does not carry -- turning a route that works today into a hard failure.
+    """
+
+    monkeypatch.setenv("REVIEW_DEPTH", "careful")
+
+    for model in ("openai/gpt-5", "anthropic/claude-sonnet-4-6"):
+        arguments = _request_arguments(monkeypatch, model)
+        assert "tool_choice" not in arguments, (
+            f"{model} renders no tools, so forcing one would be a 400"
+        )
+
+
+def test_a_route_with_no_reasoning_control_is_left_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No depth reaches gpt-4.1-mini, so nothing needs repairing there."""
+
+    monkeypatch.setenv("REVIEW_DEPTH", "exhaustive")
+    arguments = _request_arguments(monkeypatch, "openai/gpt-4.1-mini")
+
+    assert "reasoning_effort" not in arguments
+    assert "tool_choice" not in arguments

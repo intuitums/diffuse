@@ -192,6 +192,7 @@ def begin_review_run(
     verifier_model: str | None = None,
     provenance: dict[str, object] | None = None,
     model_routing_reason: str = "legacy_single_model",
+    review_depth_resolution: str | None = None,
     learned_rules: tuple[ApprovedLearnedRule, ...] = (),
     custom_contexts: tuple[ApprovedCustomContext, ...] = (),
     context_snapshots: tuple[RepositoryContextSnapshot, ...] = (),
@@ -204,6 +205,10 @@ def begin_review_run(
         raise ValueError("Review models cannot be empty")
     if not re.fullmatch(r"[a-z0-9_]{1,64}", model_routing_reason):
         raise ValueError("Review model routing reason is invalid")
+    if review_depth_resolution is not None and not (
+        review_depth_resolution.strip() and len(review_depth_resolution.encode()) <= 8192
+    ):
+        raise ValueError("Review depth resolution must be bounded, non-empty text")
     if (
         not isinstance(selected_provenance, dict)
         or len(
@@ -261,6 +266,7 @@ def begin_review_run(
                         verifier_model = %s,
                         provenance = %s,
                         model_routing_reason = %s,
+                        review_depth_resolution = %s,
                         prompt_version = %s,
                         context_fingerprint = %s,
                         status = 'generating',
@@ -275,6 +281,7 @@ def begin_review_run(
                         selected_verifier_model,
                         psycopg2.extras.Json(selected_provenance),
                         model_routing_reason,
+                        review_depth_resolution,
                         prompt_version,
                         context_fingerprint,
                         review_run_id,
@@ -385,12 +392,13 @@ def begin_review_run(
                 verifier_model,
                 provenance,
                 model_routing_reason,
+                review_depth_resolution,
                 prompt_version,
                 context_fingerprint,
                 status
             )
             VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 'generating'
             )
             RETURNING id
@@ -406,6 +414,7 @@ def begin_review_run(
                 selected_verifier_model,
                 psycopg2.extras.Json(selected_provenance),
                 model_routing_reason,
+                review_depth_resolution,
                 prompt_version,
                 context_fingerprint,
             ),

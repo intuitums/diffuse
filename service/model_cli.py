@@ -8,6 +8,8 @@ import os
 
 from service.model_providers import model_family, resolve_provider
 from service.review_engine import (
+    model_capabilities,
+    resolve_review_depth_support,
     review_model,
     review_verifier_model,
     verify_model_connection,
@@ -46,8 +48,9 @@ def model_status() -> dict[str, object]:
         verifier_credential_names,
         verifier_configured,
     ) = _credential_status(verifier_model)
+    depth_support = resolve_review_depth_support()
     return {
-        "schema_version": "diffuse-model-status-v2",
+        "schema_version": "diffuse-model-status-v3",
         "model": model,
         "provider": provider,
         "credential_env_names": credential_names,
@@ -62,6 +65,17 @@ def model_status() -> dict[str, object]:
             and model_family(model) != model_family(verifier_model)
         ),
         "api_base_configured": bool(os.environ.get("REVIEW_API_BASE")),
+        # What each model actually supports, probed offline. `diffuse init`
+        # (W5.2) shows this before writing any configuration, so an operator
+        # picks a model knowing what it can be asked to do.
+        "capabilities": model_capabilities(model).as_dict(),
+        "verifier_capabilities": model_capabilities(verifier_model).as_dict(),
+        "review_depth": {
+            "requested": depth_support.depth,
+            "variable": depth_support.variable if depth_support.depth else None,
+            "fully_honored": depth_support.fully_honored,
+            "report": list(depth_support.report_lines()),
+        },
         "live_verified": False,
     }
 
