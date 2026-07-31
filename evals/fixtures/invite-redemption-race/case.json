@@ -9,7 +9,7 @@
       "file_path": "invites/redeem.py",
       "line": 18,
       "category": "security",
-      "line_tolerance": 5
+      "line_tolerance": 1
     }
   ],
   "addressed_finding_ids": [],

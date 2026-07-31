@@ -48,8 +48,9 @@ To capture one, follow evals/CAPTURE.md. In short:
   $PYTHON -m service.eval_harness run --fixtures $FIXTURES --output /tmp/suite.json
   $PYTHON -m service.eval_harness capture --suite /tmp/suite.json --golden $GOLDEN
 
-Review the captured numbers before committing them; a golden with 0% recall
-locks in a broken review engine as the standard to defend.
+Review the captured numbers before committing them. \`capture\` refuses a golden
+that found nothing at all, but it cannot tell a poor run from a good one: read
+the findings in /tmp/suite.json, not just the scores.
 EOF
   exit 1
 fi

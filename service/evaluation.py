@@ -13,13 +13,26 @@ class EvaluationModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+#: Widest line span a single label may claim, as a half-width in lines.
+#:
+#: A label names a *place*, and location is now the whole match gate (see
+#: `_matches`), so this ceiling is the only thing bounding how much of a file
+#: one label can absorb. Ten lines each way is a 21-line window -- about one
+#: function body, and an order of magnitude wider than any committed fixture,
+#: every one of which uses 1. The previous ceiling of 50 spanned 101 lines: past
+#: that a label has
+#: stopped identifying a place and started claiming a region, and any finding
+#: anywhere in it would be credited as having found the labeled defect.
+MAX_LINE_TOLERANCE = 10
+
+
 class ExpectedFinding(EvaluationModel):
     finding_id: str = Field(min_length=1, max_length=200)
     file_path: str = Field(min_length=1, max_length=1024)
     line: int = Field(gt=0)
     category: Category
     severity: Severity | None = None
-    line_tolerance: int = Field(default=3, ge=0, le=50)
+    line_tolerance: int = Field(default=3, ge=0, le=MAX_LINE_TOLERANCE)
 
 
 class ObservedFinding(EvaluationModel):
@@ -43,6 +56,11 @@ class EvaluationCase(EvaluationModel):
     completion_tokens: int = Field(default=0, ge=0)
     verifier_prompt_tokens: int = Field(default=0, ge=0)
     verifier_completion_tokens: int = Field(default=0, ge=0)
+    #: Hash of the fixture files this case was produced from. Pins the *content*
+    #: the run was scored against, which the label count alone does not: making
+    #: a bug more obvious in `diff.patch` raises recall without the review
+    #: engine changing at all, and the golden would still pass.
+    fixture_digest: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def addressed_findings_are_labeled(self) -> EvaluationCase:
@@ -59,13 +77,108 @@ class ModelPricing(EvaluationModel):
     output_usd_per_million_tokens: float = Field(default=0, ge=0)
 
 
+class ReviewDepthRendering(EvaluationModel):
+    """What one review stage was actually sent for the requested depth.
+
+    Requesting a depth and receiving it are different things: a route can accept
+    `reasoning_effort` and render it as a boolean, or refuse it outright. A
+    suite that recorded only what was *asked* would let a golden captured at
+    `thorough` be defended by a run that sent no reasoning parameter at all --
+    which is what happens on `openai/gpt-4.1-mini`, the model
+    `evals/CAPTURE.md` recommends capturing on first.
+    """
+
+    stage: str = Field(min_length=1, max_length=64)
+    model: str = Field(min_length=1, max_length=512)
+    #: `service.model_capabilities.ReasoningMechanism`, as its value.
+    mechanism: str = Field(min_length=1, max_length=64)
+    #: The effort rung actually sent, or None when nothing was sent.
+    effort: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class RunConfiguration(EvaluationModel):
+    """Everything besides the model names that moves the score.
+
+    The model name was already pinned; none of these were, and every one of
+    them changes what a run finds. Raising `MIN_REVIEW_CONFIDENCE` to 0.99 for
+    one capture records a golden with near-zero recall and near-zero false
+    positives that every later run clears trivially, forever. Dropping a review
+    pass, or bumping `PROMPT_VERSION`, does the same in the other direction.
+    `service/review_cli.py` already treats a `PROMPT_VERSION` change as
+    invalidating a stored run; a golden is a stored run that outlives many more
+    of them.
+    """
+
+    prompt_version: str = Field(min_length=1, max_length=200)
+    min_review_confidence: float = Field(ge=0, le=1)
+    review_passes: list[str] = Field(min_length=1, max_length=32)
+    #: The depth that was requested, or None when none was.
+    requested_review_depth: str | None = Field(default=None, min_length=1, max_length=64)
+    #: What each stage will actually be sent. Empty when no depth was requested.
+    depth_renderings: list[ReviewDepthRendering] = Field(
+        default_factory=list, max_length=8
+    )
+
+    def differences(self, other: RunConfiguration) -> list[str]:
+        """Every field on which `self` and `other` disagree, in words."""
+
+        differences: list[str] = []
+        for label, mine, theirs in (
+            ("PROMPT_VERSION", self.prompt_version, other.prompt_version),
+            (
+                "MIN_REVIEW_CONFIDENCE",
+                self.min_review_confidence,
+                other.min_review_confidence,
+            ),
+            ("REVIEW_PASSES", ",".join(self.review_passes), ",".join(other.review_passes)),
+            (
+                "review depth",
+                self.requested_review_depth or "unset",
+                other.requested_review_depth or "unset",
+            ),
+        ):
+            if mine != theirs:
+                differences.append(f"{label} was {theirs!r} and is now {mine!r}")
+        mine_rendered = {
+            rendering.stage: rendering for rendering in self.depth_renderings
+        }
+        theirs_rendered = {
+            rendering.stage: rendering for rendering in other.depth_renderings
+        }
+        for stage in sorted(mine_rendered.keys() | theirs_rendered.keys()):
+            mine_stage = mine_rendered.get(stage)
+            theirs_stage = theirs_rendered.get(stage)
+            if mine_stage == theirs_stage:
+                continue
+            differences.append(
+                f"the {stage} stage was sent {_render_summary(theirs_stage)} and is "
+                f"now sent {_render_summary(mine_stage)}"
+            )
+        return differences
+
+
+def _render_summary(rendering: ReviewDepthRendering | None) -> str:
+    if rendering is None:
+        return "nothing (the stage did not run)"
+    if rendering.effort is None:
+        return f"no reasoning parameter by {rendering.model}"
+    return f"reasoning_effort={rendering.effort} ({rendering.mechanism}) by {rendering.model}"
+
+
 class EvaluationSuite(EvaluationModel):
-    schema_version: str = Field(pattern=r"^diffuse-evaluation-v1$")
+    #: Bumped from v1 because `line_tolerance`'s accepted range narrowed from
+    #: 0..50 to 0..10 (see `MAX_LINE_TOLERANCE`) and because a suite now carries
+    #: `run_configuration`. A v1 suite with a wide tolerance is not merely
+    #: unfashionable, it is refused, so the version had to move with it.
+    schema_version: str = Field(pattern=r"^diffuse-evaluation-v2$")
     name: str = Field(min_length=1, max_length=200)
     model: str = Field(min_length=1, max_length=512)
     pricing: ModelPricing = Field(default_factory=ModelPricing)
     verifier_model: str | None = Field(default=None, min_length=1, max_length=512)
     verifier_pricing: ModelPricing | None = None
+    #: Present on a suite the harness produced; absent on one written by hand
+    #: from a reviewed pull request, which has no run to describe.
+    run_configuration: RunConfiguration | None = None
     cases: list[EvaluationCase] = Field(min_length=1, max_length=10_000)
 
     @model_validator(mode="after")
@@ -112,6 +225,55 @@ class EvaluationSuite(EvaluationModel):
         return self.verifier_pricing or self.pricing
 
 
+class CategoryMismatch(EvaluationModel):
+    """A finding that was found, and filed under a different category.
+
+    This is a diagnostic, not a penalty: the pair it describes is counted as one
+    true positive. It exists because the disagreement is genuinely worth knowing
+    -- a reviewer that consistently files injections as `correctness` is telling
+    you something about its prompt -- and because folding it into the match
+    decision, as this scorer used to, charged the same finding as a false
+    negative *and* a false positive.
+    """
+
+    finding_id: str
+    expected: Category
+    observed: Category
+
+
+class CategoryConfusion(EvaluationModel):
+    """How often one labeled category was reported as another, suite-wide."""
+
+    expected: Category
+    observed: Category
+    count: int
+
+
+class SeverityMismatch(EvaluationModel):
+    """A label the reviewer landed on and graded differently, so it did not match.
+
+    Unlike `CategoryMismatch` this one *is* a penalty, and an expensive one: the
+    severity gate charges the label as a false negative **and** the observation
+    that found it as a false positive -- the same double charge DEV-292 removed
+    from category. The gate stays, because a label opts into severity by stating
+    one and category offers no such opt-out, but the cost was previously
+    invisible in the score. This makes it legible: every entry here is one
+    finding paid for twice.
+    """
+
+    finding_id: str
+    expected: Severity
+    observed: Severity
+
+
+class SeverityConfusion(EvaluationModel):
+    """How often one labeled severity was reported as another, suite-wide."""
+
+    expected: Severity
+    observed: Severity
+    count: int
+
+
 class CaseScore(EvaluationModel):
     case_id: str
     true_positives: int
@@ -119,13 +281,19 @@ class CaseScore(EvaluationModel):
     false_negatives: int
     addressed_findings: int
     latency_ms: int
+    category_mismatches: list[CategoryMismatch] = Field(default_factory=list)
+    severity_mismatches: list[SeverityMismatch] = Field(default_factory=list)
+    fixture_digest: str | None = None
 
 
 class EvaluationScore(EvaluationModel):
-    schema_version: str = "diffuse-evaluation-score-v2"
+    schema_version: str = "diffuse-evaluation-score-v4"
     suite_name: str
     model: str
     verifier_model: str | None
+    #: Echoed from the suite so a golden can be captured and compared from the
+    #: score alone, exactly as `model` and `verifier_model` already are.
+    run_configuration: RunConfiguration | None = None
     case_count: int
     expected_finding_count: int
     observed_finding_count: int
@@ -133,6 +301,15 @@ class EvaluationScore(EvaluationModel):
     false_positives: int
     false_negatives: int
     addressed_findings: int
+    #: True positives whose category disagreed with the label. A subset of
+    #: `true_positives`, reported beside precision/recall rather than inside it.
+    category_mismatches: int = 0
+    category_confusion: list[CategoryConfusion] = Field(default_factory=list)
+    #: Labels the reviewer landed on but graded differently. Unlike
+    #: `category_mismatches` these are *not* a subset of `true_positives`: each
+    #: one is already counted as a false negative and a false positive.
+    severity_mismatches: int = 0
+    severity_confusion: list[SeverityConfusion] = Field(default_factory=list)
     precision: float
     recall: float
     f1: float
@@ -148,9 +325,37 @@ class EvaluationScore(EvaluationModel):
 
 
 def _matches(expected: ExpectedFinding, observed: ObservedFinding) -> bool:
+    """Is this observation about the defect this label describes?
+
+    The gate is **location**: the same file, and a line within the label's own
+    tolerance. Category is deliberately *not* part of it. A label's category is
+    mandatory, so a labeller cannot opt out of it, and requiring equality meant
+    a model that found a real SQL injection and filed it under `correctness`
+    scored strictly worse than a model that missed the bug entirely -- the same
+    false negative either way, plus a false positive for the near miss. Being
+    right in the wrong taxonomy was punished harder than being wrong. The
+    disagreement is still reported, as `CategoryMismatch`, where it informs
+    without corrupting precision, recall or F1.
+
+    Severity stays a gate, and the asymmetry is deliberate: `severity` is
+    optional and defaults to unset, so a label only opts into it by stating one,
+    and stating one is an explicit claim that a review calling this defect minor
+    has not really found it. `category` offers no such opt-out.
+
+    The gate is not free, and the cost is the same double charge category used
+    to impose: a severity disagreement makes the label a false negative *and*
+    the observation that found it a false positive. `SeverityMismatch` reports
+    each one so that cost is visible in the score rather than silently folded
+    into it. Do not state a severity on a label unless the grade is part of the
+    claim.
+
+    Nothing here lets two labels share an observation, or one label absorb two:
+    `_score_case` matches injectively, so the count of true positives can never
+    exceed the number of distinct observations, however generous the tolerance.
+    """
+
     return (
         expected.file_path == observed.file_path
-        and expected.category is observed.category
         and abs(expected.line - observed.line) <= expected.line_tolerance
         and (expected.severity is None or expected.severity is observed.severity)
     )
@@ -166,11 +371,32 @@ def _score_case(case: EvaluationCase) -> CaseScore:
     # apart in one file are enough to trigger it at the default line tolerance,
     # so the score would depend on the order labels happen to be written in.
     #
-    # `_matches` requires equality on file path and category, so the graph
-    # decomposes into independent buckets and each augmenting search stays
-    # small. Adjacency is ordered by (line distance, observation index), which
-    # keeps the chosen assignment stable across runs and across reorderings of
-    # the observed list.
+    # `_matches` requires equality on file path, so the graph decomposes into
+    # one independent bucket per file and each augmenting search stays small.
+    # Adjacency is ordered by (category disagreement, line distance, observed
+    # category, observed line), which keeps the chosen assignment stable across
+    # runs and across reorderings of the observed list. Category leads that key
+    # so that when a label can be satisfied either by an observation that agrees
+    # on category or by one that does not, the agreeing one is *preferred*.
+    #
+    # Preferred, not guaranteed. This is a greedy-local preference, not a
+    # solution to the min-cost assignment problem: minimising reported
+    # mismatches over all maximum matchings is a different problem, and an
+    # augmenting path can displace a label off an observation it already agreed
+    # with. Measured over 6,000 random cases the reported table was non-minimal
+    # in 572 of them. Ordering within a label's adjacency cannot change the
+    # *size* of a maximum matching, so precision, recall and F1 do not depend on
+    # this preference; only which maximum matching is chosen, and therefore the
+    # diagnostics, do -- which is why `category_mismatches` is recorded in a
+    # golden and reported as a delta rather than gated on.
+    #
+    # The final tie-break is the observation's own (category, line) rather than
+    # its position in the list. With the index there, the same inputs in a
+    # different observed order produced a different confusion table -- unstable
+    # in 1,089 of those 6,000 cases. Two observations that tie on all of
+    # (category agreement, line distance, category, line) are indistinguishable
+    # to this table, so the remaining index tie-break cannot move it and is
+    # present only to keep the sort total.
     #
     # Maximum cardinality alone does not pin down *which* labels get matched
     # when two labels compete for one observation, and `addressed_findings`
@@ -183,18 +409,26 @@ def _score_case(case: EvaluationCase) -> CaseScore:
     # maximises the addressed count over every maximum matching. The
     # tie-break is the label's identity rather than its position, so list
     # order no longer decides the score.
-    buckets: dict[tuple[str, object], list[int]] = defaultdict(list)
+    buckets: dict[str, list[int]] = defaultdict(list)
     for index, observed in enumerate(case.observed):
-        buckets[(observed.file_path, observed.category)].append(index)
+        buckets[observed.file_path].append(index)
 
     adjacency: list[list[int]] = []
     for expected in case.expected:
         candidates = [
             index
-            for index in buckets.get((expected.file_path, expected.category), ())
+            for index in buckets.get(expected.file_path, ())
             if _matches(expected, case.observed[index])
         ]
-        candidates.sort(key=lambda index: (abs(expected.line - case.observed[index].line), index))
+        candidates.sort(
+            key=lambda index: (
+                case.observed[index].category is not expected.category,
+                abs(expected.line - case.observed[index].line),
+                case.observed[index].category.value,
+                case.observed[index].line,
+                index,
+            )
+        )
         adjacency.append(candidates)
 
     observed_to_expected: dict[int, int] = {}
@@ -227,6 +461,17 @@ def _score_case(case: EvaluationCase) -> CaseScore:
         for expected_index in observed_to_expected.values()
     }
     unmatched_observed = set(range(len(case.observed))) - observed_to_expected.keys()
+    mismatches = [
+        CategoryMismatch(
+            finding_id=case.expected[expected_index].finding_id,
+            expected=case.expected[expected_index].category,
+            observed=case.observed[observed_index].category,
+        )
+        for observed_index, expected_index in sorted(observed_to_expected.items())
+        if case.observed[observed_index].category
+        is not case.expected[expected_index].category
+    ]
+    mismatches.sort(key=lambda mismatch: mismatch.finding_id)
     return CaseScore(
         case_id=case.case_id,
         true_positives=true_positives,
@@ -234,7 +479,78 @@ def _score_case(case: EvaluationCase) -> CaseScore:
         false_negatives=len(case.expected) - true_positives,
         addressed_findings=len(matched_ids.intersection(case.addressed_finding_ids)),
         latency_ms=case.latency_ms,
+        category_mismatches=mismatches,
+        severity_mismatches=_severity_mismatches(
+            case,
+            matched_expected=set(observed_to_expected.values()),
+            unmatched_observed=unmatched_observed,
+        ),
+        fixture_digest=case.fixture_digest,
     )
+
+
+def _severity_mismatches(
+    case: EvaluationCase,
+    *,
+    matched_expected: set[int],
+    unmatched_observed: set[int],
+) -> list[SeverityMismatch]:
+    """Name the labels the severity gate turned into a double charge.
+
+    Reads the matching; never changes it. A label with a stated severity that
+    went unmatched, sitting on top of an observation that agrees on location and
+    disagrees only on severity, is one finding charged as a false negative and a
+    false positive at once. That cost is real and is policy -- stating a
+    severity is an explicit claim that a review grading the defect differently
+    has not really found it -- but it was previously indistinguishable in the
+    score from a defect nobody noticed.
+
+    Labels are visited by `finding_id` and observations ranked by their own
+    (distance, severity, line), so the table does not depend on the order either
+    list happens to be written in.
+    """
+
+    unmatched_expected = sorted(
+        (
+            index
+            for index in range(len(case.expected))
+            if index not in matched_expected and case.expected[index].severity is not None
+        ),
+        key=lambda index: case.expected[index].finding_id,
+    )
+    if not unmatched_expected:
+        return []
+    available = set(unmatched_observed)
+    reported: list[SeverityMismatch] = []
+    for expected_index in unmatched_expected:
+        expected = case.expected[expected_index]
+        candidates = sorted(
+            (
+                index
+                for index in available
+                if case.observed[index].file_path == expected.file_path
+                and abs(expected.line - case.observed[index].line) <= expected.line_tolerance
+                and case.observed[index].severity is not expected.severity
+            ),
+            key=lambda index: (
+                abs(expected.line - case.observed[index].line),
+                case.observed[index].severity.value,
+                case.observed[index].line,
+            ),
+        )
+        if not candidates:
+            continue
+        chosen = candidates[0]
+        available.discard(chosen)
+        reported.append(
+            SeverityMismatch(
+                finding_id=expected.finding_id,
+                # `severity` is not None: unmatched_expected filtered on it.
+                expected=expected.severity,  # type: ignore[arg-type]
+                observed=case.observed[chosen].severity,
+            )
+        )
+    return reported
 
 
 def score_evaluation(suite: EvaluationSuite) -> EvaluationScore:
@@ -253,6 +569,37 @@ def score_evaluation(suite: EvaluationSuite) -> EvaluationScore:
         else 1.0
     )
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0
+    # Reported beside the quality metrics, never inside them. A systematic
+    # confusion -- security consistently filed as correctness, say -- is a
+    # prompt problem worth seeing, and it is invisible if it is only ever
+    # aggregated into a lower recall.
+    confusion_counts: dict[tuple[Category, Category], int] = defaultdict(int)
+    for case in cases:
+        for mismatch in case.category_mismatches:
+            confusion_counts[(mismatch.expected, mismatch.observed)] += 1
+    category_confusion = [
+        CategoryConfusion(expected=expected, observed=observed, count=count)
+        for (expected, observed), count in sorted(
+            confusion_counts.items(),
+            key=lambda item: (-item[1], item[0][0].value, item[0][1].value),
+        )
+    ]
+    # Reported beside the quality metrics too, but for the opposite reason:
+    # these are already *inside* precision and recall, twice over, and the
+    # score alone cannot tell them apart from a defect the reviewer missed.
+    severity_counts: dict[tuple[Severity, Severity], int] = defaultdict(int)
+    for case in cases:
+        for severity_mismatch in case.severity_mismatches:
+            severity_counts[
+                (severity_mismatch.expected, severity_mismatch.observed)
+            ] += 1
+    severity_confusion = [
+        SeverityConfusion(expected=expected, observed=observed, count=count)
+        for (expected, observed), count in sorted(
+            severity_counts.items(),
+            key=lambda item: (-item[1], item[0][0].value, item[0][1].value),
+        )
+    ]
     latencies = sorted(case.latency_ms for case in suite.cases)
     middle = len(latencies) // 2
     median_latency = (
@@ -277,6 +624,7 @@ def score_evaluation(suite: EvaluationSuite) -> EvaluationScore:
         suite_name=suite.name,
         model=suite.model,
         verifier_model=suite.verifier_model,
+        run_configuration=suite.run_configuration,
         case_count=len(suite.cases),
         expected_finding_count=sum(len(case.expected) for case in suite.cases),
         observed_finding_count=sum(len(case.observed) for case in suite.cases),
@@ -284,6 +632,10 @@ def score_evaluation(suite: EvaluationSuite) -> EvaluationScore:
         false_positives=false_positives,
         false_negatives=false_negatives,
         addressed_findings=sum(case.addressed_findings for case in cases),
+        category_mismatches=sum(len(case.category_mismatches) for case in cases),
+        category_confusion=category_confusion,
+        severity_mismatches=sum(len(case.severity_mismatches) for case in cases),
+        severity_confusion=severity_confusion,
         precision=precision,
         recall=recall,
         f1=f1,
