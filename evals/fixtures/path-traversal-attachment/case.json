@@ -19,8 +19,7 @@
       "file_path": "web/routes.py",
       "symbol_name": "download_attachment",
       "retrieval_reason": "graph_caller",
-      "relevance_score": 0.86,
-      "similarity": 0.8
+      "relevance_score": 0.86
     }
   ]
 }

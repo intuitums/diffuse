@@ -52,6 +52,11 @@ _PARSER_RUNTIME_IDENTITY = "|".join(
 PARSER_RUNTIME_FINGERPRINT = hashlib.sha256(
     _PARSER_RUNTIME_IDENTITY.encode()
 ).hexdigest()[:16]
+# v4 dropped the embedding column: a v3 snapshot's chunks are still readable,
+# but snapshot compatibility no longer carries an embedding model or dimension,
+# so a v3 row cannot be distinguished from one built by a different embedder.
+# Bumping forces a rebuild rather than trusting a snapshot whose provenance the
+# schema no longer records.
 INDEX_FORMAT_VERSION = (
-    f"diffuse-index-v3-policy-{PARSER_RUNTIME_FINGERPRINT}"
+    f"diffuse-index-v4-graph-lexical-{PARSER_RUNTIME_FINGERPRINT}"
 )
