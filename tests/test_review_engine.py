@@ -119,6 +119,20 @@ def _candidate(
     )
 
 
+def _whole_user_prompt(kwargs: dict) -> str:
+    """One call's user prompt as the model sees it, across the cache breakpoint.
+
+    `_call_structured` takes the stable half of a candidate prompt as
+    `cacheable_prefix` and the per-call half as `user_prompt`. A test that reads
+    only the latter checks a fraction of the prompt and would pass for the wrong
+    reason if a block moved across the split.
+    """
+
+    return "\n\n".join(
+        part for part in (kwargs.get("cacheable_prefix"), kwargs["user_prompt"]) if part
+    )
+
+
 def test_review_generation_grounds_deduplicates_and_verifies_findings(monkeypatch):
     monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setenv("REVIEW_PASSES", "security")
@@ -521,7 +535,7 @@ def test_preventative_security_uses_cascading_confidence_floor_and_classificatio
     prompts: list[str] = []
 
     def fake_call(response_model, **kwargs):
-        prompts.append(kwargs["user_prompt"])
+        prompts.append(_whole_user_prompt(kwargs))
         if response_model is CandidateBatch:
             return (
                 CandidateBatch(
@@ -881,7 +895,7 @@ def test_repository_policy_filters_diff_controls_passes_and_enforces_threshold(
     report = review_engine.generate_review(MIXED_DIFF, [], policy=policy)
 
     assert [call[0] for call in calls] == [CandidateBatch, VerificationBatch]
-    candidate_prompt = calls[0][1]["user_prompt"]
+    candidate_prompt = _whole_user_prompt(calls[0][1])
     assert "Review pass: security" in candidate_prompt
     assert "generated/client.py" not in candidate_prompt
     assert "auth-boundary" in candidate_prompt
@@ -944,11 +958,16 @@ FORGED_DELIMITER_PAYLOAD = "\n".join(
 
 
 def _render_candidate_prompt(text: str) -> str:
-    return review_engine._candidate_user_prompt(
-        "correctness",
-        diff_chunk=text,
-        context_text=text,
-        security_policy_text=json.dumps({"paths": {text: {"preventative": True}}}),
+    # The builder returns the prompt split at its cache breakpoint. Joined the
+    # way `_call_structured` joins it, because a forged closing tag does not care
+    # which content block it was sent in.
+    return "\n\n".join(
+        review_engine._candidate_user_prompt(
+            "correctness",
+            diff_chunk=text,
+            context_text=text,
+            security_policy_text=json.dumps({"paths": {text: {"preventative": True}}}),
+        )
     )
 
 
@@ -1162,7 +1181,7 @@ def test_every_structural_tag_emitted_by_a_service_prompt_is_registered():
 def test_every_module_that_frames_a_prompt_region_also_neutralizes_it():
     """Registering a tag is only half the control; the builder must still apply it.
 
-    `service/mcp_store.py` framed `<diffuse_fix_handoff>` correctly and never called
+    `service/storage/mcp.py` framed `<diffuse_fix_handoff>` correctly and never called
     the neutralizer, so a forged closing tag in a finding body escaped into a prompt
     handed to a coding agent holding write access to the operator's checkout. The
     registry test above cannot catch that: the tag was registered, the call site
@@ -1370,3 +1389,318 @@ def test_rejected_model_credential_is_non_retryable(monkeypatch):
             system_prompt="System",
             user_prompt="User",
         )
+
+
+# --- Prompt caching ----------------------------------------------------------
+#
+# A review is up to REVIEW_PASSES x REVIEW_MAX_DIFF_CHUNKS candidate calls, and
+# every one of them re-sends the same retrieved context and the same two policy
+# blocks. Caching is a strict prefix match, so two things have to hold together
+# for any of that to be billed once instead of thirty-two times: the stable
+# blocks must physically precede the per-call diff, and the breakpoint must sit
+# between them. Either one alone is worth nothing, which is why they are pinned
+# in the same section.
+
+
+def _completion_recorder(monkeypatch, *, usage: dict | None = None) -> list[dict]:
+    """Capture the argument dictionaries handed to LiteLLM."""
+
+    batch = CandidateBatch(analysis_summary="No issue.", findings=[])
+    arguments: list[dict] = []
+
+    def fake_completion(**kwargs):
+        arguments.append(kwargs)
+        return {
+            "choices": [{"message": {"content": batch.model_dump_json()}}],
+            "usage": usage if usage is not None else {},
+        }
+
+    monkeypatch.setenv("REVIEW_STRUCTURED_OUTPUT_MODE", "prompt")
+    monkeypatch.setattr(review_engine.litellm, "completion", fake_completion)
+    return arguments
+
+
+def test_the_candidate_prompt_puts_every_stable_block_before_the_diff():
+    """Order is the whole of the fix; the breakpoint only exploits it.
+
+    The diff chunk used to lead, which put the one block that differs on every
+    call in front of the ~24k characters that never change. Nothing downstream of
+    a changed byte can cache, so the retrieved context and both policy blocks
+    were re-billed at full price on every call in the review.
+    """
+
+    cacheable, per_call = review_engine._candidate_user_prompt(
+        "security",
+        "diff body",
+        "context body",
+        "policy body",
+        json.dumps({"paths": {}}),
+    )
+
+    positions = [
+        cacheable.index(tag)
+        for tag in (
+            "<untrusted_retrieved_repository_context>",
+            "<repository_review_policy_json>",
+            "<diffuse_security_policy_json>",
+        )
+    ]
+    assert positions == sorted(positions)
+    # The split is what makes the ordering enforceable rather than a convention:
+    # the diff cannot drift back above the policy blocks without leaving the half
+    # of the prompt it is returned in.
+    assert "diff body" not in cacheable
+    assert "diff body" in per_call
+    assert "context body" not in per_call
+    assert "policy body" not in per_call
+
+
+def test_the_same_stable_block_is_produced_for_every_pass_and_every_chunk():
+    """One cache entry per pass, not one per call.
+
+    The pass name and the chunk are the only per-call inputs, and both belong to
+    the other half. A value that leaks into this half does not fail anything --
+    it just turns one cache write into thirty-two, which is the bug this whole
+    section exists to prevent recurring.
+    """
+
+    blocks = {
+        review_engine._candidate_user_prompt(
+            pass_name, chunk, "context body", "policy body", "{}"
+        )[0]
+        for pass_name in ("correctness", "security")
+        for chunk in ("first chunk", "second chunk")
+    }
+
+    assert len(blocks) == 1
+
+
+def test_the_cache_breakpoint_marks_the_stable_block_and_nothing_else(monkeypatch):
+    """A breakpoint after the diff would write 32 entries and read none."""
+
+    monkeypatch.setenv("REVIEW_MODEL", "anthropic/claude-sonnet-5")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    arguments = _completion_recorder(monkeypatch)
+
+    review_engine._call_structured(
+        CandidateBatch,
+        system_prompt="System",
+        user_prompt="the diff",
+        cacheable_prefix="the stable context and policy",
+    )
+
+    content = arguments[0]["messages"][1]["content"]
+    assert [block.get("cache_control") for block in content] == [
+        {"type": "ephemeral"},
+        None,
+    ]
+    assert content[0]["text"] == "the stable context and policy"
+    assert "the diff" in content[1]["text"]
+    # Marking the system prompt as well would be a second breakpoint bought for
+    # nothing: it already renders before the messages, so the one above covers it.
+    assert "cache_control" not in arguments[0]["messages"][0]
+
+
+def test_the_two_halves_render_as_one_prompt_whichever_route_is_used(monkeypatch):
+    """The prefix is prompt content first and a caching hint second.
+
+    A route that cannot read `cache_control` must still receive the context and
+    both policy blocks. Dropping them there would silently review every pull
+    request without its repository policy.
+    """
+
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    arguments = _completion_recorder(monkeypatch)
+
+    review_engine._call_structured(
+        CandidateBatch,
+        system_prompt="System",
+        user_prompt="the diff",
+        cacheable_prefix="the stable context and policy",
+    )
+
+    content = arguments[0]["messages"][1]["content"]
+    assert content == "the stable context and policy\n\nthe diff"
+    assert "cache_control" not in json.dumps(arguments[0]["messages"])
+
+
+def test_a_call_that_asks_for_no_prefix_sends_the_prompt_it_always_sent(monkeypatch):
+    """Caching is opt-in: `_call_structured` is shared with four other stages."""
+
+    monkeypatch.setenv("REVIEW_MODEL", "anthropic/claude-sonnet-5")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    arguments = _completion_recorder(monkeypatch)
+
+    review_engine._call_structured(
+        CandidateBatch,
+        system_prompt="System",
+        user_prompt="User",
+    )
+
+    assert arguments[0]["messages"][1]["content"] == "User"
+
+
+def test_structured_call_records_the_providers_cache_counters(monkeypatch):
+    """Cost is unobservable until the two counters are read off the response.
+
+    LiteLLM folds both into `prompt_tokens` on the Anthropic route, so that
+    number alone cannot say whether a review's input was billed at full price or
+    at a tenth of it.
+    """
+
+    monkeypatch.setenv("REVIEW_MODEL", "anthropic/claude-sonnet-5")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    _completion_recorder(
+        monkeypatch,
+        usage={
+            "prompt_tokens": 6100,
+            "completion_tokens": 40,
+            "cache_read_input_tokens": 5800,
+            "cache_creation_input_tokens": 200,
+        },
+    )
+    usage = review_engine.PromptCacheUsage()
+
+    _value, prompt_tokens, _completion = review_engine._call_structured(
+        CandidateBatch,
+        system_prompt="System",
+        user_prompt="the diff",
+        cacheable_prefix="the stable context and policy",
+        cache_usage=usage,
+    )
+
+    assert usage.read_tokens == 5800
+    assert usage.written_tokens == 200
+    assert usage.requested_calls == 1
+    # A breakdown of the prompt tokens, not an addition to them.
+    assert prompt_tokens == 6100
+
+
+def test_cache_counters_survive_a_response_that_fails_schema_validation(monkeypatch):
+    """The tokens were billed whether or not the JSON parsed.
+
+    `StructuredOutputValidationError` carries the prompt and completion counts
+    for exactly this reason; the accumulator is filled before the parse so the
+    cache counts do not have to be carried on the exception as well.
+    """
+
+    monkeypatch.setenv("REVIEW_MODEL", "anthropic/claude-sonnet-5")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("REVIEW_STRUCTURED_OUTPUT_MODE", "prompt")
+    monkeypatch.setattr(
+        review_engine.litellm,
+        "completion",
+        lambda **_kwargs: {
+            "choices": [{"message": {"content": "not json"}}],
+            "usage": {"cache_read_input_tokens": 4096},
+        },
+    )
+    usage = review_engine.PromptCacheUsage()
+
+    with pytest.raises(review_engine.StructuredOutputValidationError):
+        review_engine._call_structured(
+            CandidateBatch,
+            system_prompt="System",
+            user_prompt="the diff",
+            cacheable_prefix="the stable context and policy",
+            cache_usage=usage,
+        )
+
+    assert usage.read_tokens == 4096
+
+
+def _cached_review(monkeypatch, *, read: int, written: int, request: bool = True):
+    """Run a review whose model calls report the given cache activity."""
+
+    monkeypatch.setenv("REVIEW_MODEL", "anthropic/claude-sonnet-5")
+    monkeypatch.setenv("REVIEW_PASSES", "security")
+    seen: list[dict] = []
+
+    def fake_call(response_model, **kwargs):
+        seen.append(kwargs)
+        usage = kwargs.get("cache_usage")
+        if usage is not None and kwargs.get("cacheable_prefix"):
+            usage.read_tokens += read
+            usage.written_tokens += written
+            if request:
+                usage.requested_calls += 1
+        if response_model is CandidateBatch:
+            return (
+                CandidateBatch(
+                    analysis_summary="One candidate.",
+                    findings=[_candidate(title="Bypass", line=1, confidence=0.9)],
+                ),
+                10,
+                4,
+            )
+        return (
+            VerificationBatch(
+                summary="Checked.",
+                risk_score=2,
+                decisions=[
+                    VerificationDecision(
+                        candidate_id="candidate-0",
+                        keep=True,
+                        confidence=0.9,
+                        rationale="Directly evidenced.",
+                    )
+                ],
+            ),
+            3,
+            2,
+        )
+
+    monkeypatch.setattr(review_engine, "_call_structured", fake_call)
+    return review_engine.generate_review(DIFF, []), seen
+
+
+def test_cache_token_counts_reach_the_review_report(monkeypatch):
+    """Otherwise the only evidence caching works is the invoice, a month later."""
+
+    report, _seen = _cached_review(monkeypatch, read=5800, written=200)
+
+    assert report.cache_read_tokens == 5800
+    assert report.cache_write_tokens == 200
+
+
+def test_only_the_repeated_candidate_passes_ask_for_a_breakpoint(monkeypatch):
+    """A write costs 1.25x and pays back from the second read.
+
+    The verifier runs once per review and may not even be the candidate model,
+    so a breakpoint there is a surcharge with no reader.
+    """
+
+    _report, seen = _cached_review(monkeypatch, read=0, written=0, request=False)
+
+    # One candidate pass over one chunk, then the verifier.
+    assert [bool(call.get("cacheable_prefix")) for call in seen] == [True, False]
+    # Every call is still accounted, cached or not, so the report describes the
+    # whole review rather than only its candidate passes.
+    assert all(call.get("cache_usage") is not None for call in seen)
+
+
+def test_a_breakpoint_that_never_caches_is_reported_rather_than_silent(
+    monkeypatch, caplog
+):
+    """Below the model's minimum cacheable prefix, caching just does not happen.
+
+    No error, no header, no field -- the request is accepted and every call is a
+    cold prefill. Asking the provider what it actually did is the only way that
+    becomes visible, and it catches the other silent causes too: a per-call byte
+    that crept into the prefix, or a route that dropped the marker.
+    """
+
+    with caplog.at_level("WARNING"):
+        _cached_review(monkeypatch, read=0, written=0)
+
+    assert "neither a cache write nor a cache read" in caplog.text
+
+
+def test_a_review_that_caches_normally_logs_nothing(monkeypatch, caplog):
+    """A warning on every healthy review is a warning nobody reads."""
+
+    with caplog.at_level("WARNING"):
+        _cached_review(monkeypatch, read=5800, written=200)
+
+    assert "cache" not in caplog.text
