@@ -45,6 +45,14 @@ disables that load for the test process only. Running tests with `.env` in place
 old `mv .env .env.bak` dance is no longer needed. The app and worker still load `.env`
 normally, which is what you want for local development.
 
+That guard only stops litellm from auto-loading the on-disk `.env`; it cannot undo variables
+you export yourself. So do **not** run `pytest` from a shell where you have already done
+`set -a; source .env` (which is how you launch the app/worker below). Those exports put
+`DIFFUSE_MCP_ALLOWED_HOSTS` into the environment, `pytest` inherits it, and the same MCP test
+fails with `421 Misdirected Request` for `http://testserver/mcp` — a failure that looks like a
+code bug but is pure shell pollution. Run the app in one shell and the tests in a separate,
+un-sourced shell.
+
 ```bash
 .venv/bin/python -m pytest -m "not integration"
 POSTGRES_TEST_DATABASE_URL=postgresql://diffuse:diffuse-dev@127.0.0.1:5432/diffuse_test \
@@ -74,14 +82,30 @@ With that set, `mirrorState` reaches `ready` and the worker clones/fetches/check
 normally. (This only affects Diffuse's git subprocesses; keep your normal shell `HOME` for your
 own `git commit`/`git push`.)
 
+### Both the app and the worker validate config at startup — `.env` ships placeholders
+
+`service.webhook_server:app` runs `validate_worker_configuration` in its lifespan, so the API
+server — not just the worker — refuses to boot unless `REVIEW_MODEL` is set and an embedding
+credential is present. That check is offline: it confirms the model identifier and a resolvable
+credential *name*, and never calls the provider. A placeholder key therefore satisfies startup;
+only real indexing/review calls fail on a bad one. The committed CI smoke test (`verify.yml`
+`build-container`) relies on exactly this, booting with `REVIEW_MODEL=anthropic/claude-sonnet-5`
+and a fake `OPENAI_API_KEY`.
+
+The dev `.env` on this VM is set up the same way: `REVIEW_MODEL=anthropic/claude-sonnet-5` plus
+placeholder `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`, so the app and worker boot and the whole
+control plane (onboarding, CLI, REST `/api/v1`, MCP, `/health`, `/ready`) works. Replace those
+placeholders with real keys before expecting indexing or a review to complete.
+
 ### External secrets for full end-to-end review
 
 Onboarding a repo (clone + resolve exact commit + durable queue) works with no external secrets,
 and the worker indexes up to the embedding call. Full indexing/review additionally needs:
 
-- `OPENAI_API_KEY` (or `REVIEW_API_BASE`) — embeddings + review model. The worker now refuses
-  to start without a usable embedding credential rather than failing each index job partway
-  through, so a missing key surfaces immediately at startup instead of after five retries.
-- `GITHUB_TOKEN` + webhook secret — to clone private repos and publish reviews.
+- `OPENAI_API_KEY` (or `REVIEW_API_BASE`) — embeddings + review model. With only the placeholder
+ above, a leased index job fails at the embedding call with a 401 (`EmbeddingCredentialError`),
+ which is expected; the worker stays up and retries with backoff.
+- `GITHUB_TOKEN` + webhook secret — to clone private repos and publish reviews. Public repos
+ clone with no token (verified by onboarding `octocat/Hello-World` to `mirrorState: ready`).
 
 The bare-repo mirrors live under `/var/lib/diffuse/repositories` (created, owned by `ubuntu`).
