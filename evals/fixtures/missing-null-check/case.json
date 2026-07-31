@@ -1,0 +1,26 @@
+{
+  "schema_version": "diffuse-eval-fixture-v1",
+  "case_id": "missing-null-check",
+  "description": "`Directory.lookup_owner` returns `User | None`, and the change drops the None guard before dereferencing `.email`, so every account without an owner raises AttributeError instead of returning None.",
+  "diff_path": "diff.patch",
+  "expected": [
+    {
+      "finding_id": "owner-may-be-none",
+      "file_path": "accounts/notifications.py",
+      "line": 15,
+      "category": "correctness",
+      "line_tolerance": 3
+    }
+  ],
+  "addressed_finding_ids": [],
+  "contexts": [
+    {
+      "path": "context/accounts_directory.py",
+      "file_path": "accounts/directory.py",
+      "symbol_name": "Directory.lookup_owner",
+      "retrieval_reason": "graph_callee",
+      "relevance_score": 0.88,
+      "similarity": 0.81
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "schema_version": "diffuse-eval-fixture-v1",
+  "case_id": "invite-redemption-race",
+  "description": "A single atomic conditional UPDATE is split into a SELECT that checks `redeemed_by` and a later unconditional UPDATE. Two concurrent redemptions of the same single-use invite both pass the check, so one invite grants organisation membership twice.",
+  "diff_path": "diff.patch",
+  "expected": [
+    {
+      "finding_id": "invite-check-then-act",
+      "file_path": "invites/redeem.py",
+      "line": 18,
+      "category": "security",
+      "line_tolerance": 5
+    }
+  ],
+  "addressed_finding_ids": [],
+  "contexts": [
+    {
+      "path": "context/invites_db.py",
+      "file_path": "invites/db.py",
+      "symbol_name": "Connection",
+      "retrieval_reason": "graph_callee",
+      "relevance_score": 0.77,
+      "similarity": 0.72
+    }
+  ]
+}
