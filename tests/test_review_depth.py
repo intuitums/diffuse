@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import litellm
 import pytest
 
-from service.hosted import worker as worker
+from service.hosted import worker
 from service.model_capabilities import is_known_route, plan_reasoning
 from service.review.engine import (
     REVIEW_TEMPERATURE,
