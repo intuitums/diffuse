@@ -210,3 +210,12 @@ class ReviewReport(StrictModel):
     context_chunk_count: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
+    # A breakdown of `prompt_tokens`, never an addition to it. LiteLLM folds both
+    # cache counters into `prompt_tokens` on the Anthropic route, unlike
+    # Anthropic's own `input_tokens`, which reports the uncached remainder alone;
+    # adding all three together double-counts every cached review. Cache reads
+    # bill at about a tenth of the base input rate and writes at 1.25x, so these
+    # two are what says whether a review's prompt tokens were cheap or full price
+    # -- `prompt_tokens` alone cannot distinguish them.
+    cache_read_tokens: int = Field(default=0, ge=0)
+    cache_write_tokens: int = Field(default=0, ge=0)
