@@ -606,6 +606,45 @@ def test_a_fixture_with_no_golden_entry_is_reported():
     assert any("has no golden entry" in line for line in regressions)
 
 
+def test_recategorising_a_found_defect_is_not_a_regression():
+    """The gate measures whether the bug was found, not what it was called.
+
+    Before DEV-292 this ran as a lost true positive *and* a gained false
+    positive, so a run that found exactly the same defects would have failed the
+    gate twice over for a taxonomy disagreement. Goldens are captured next, so
+    the wrong answer here would have been frozen into them.
+    """
+
+    good = _suite(observed_per_case={"alpha": [_finding()], "beta": [_finding()]})
+    golden = eval_harness.golden_from_score(score_evaluation(good))
+    recategorised = _suite(
+        observed_per_case={
+            "alpha": [_finding()],
+            "beta": [_finding(category="correctness")],
+        }
+    )
+
+    score = score_evaluation(recategorised)
+
+    assert eval_harness.compare_to_golden(score, golden) == []
+    assert score.category_mismatches == 1
+    assert [item.count for item in score.category_confusion] == [1]
+
+
+def test_a_finding_that_drifts_out_of_the_span_is_still_a_regression():
+    """Widening what counts as the same place must not hide a real miss."""
+
+    good = _suite(observed_per_case={"alpha": [_finding()]})
+    golden = eval_harness.golden_from_score(score_evaluation(good))
+    # The label sits at line 1 with the default tolerance of 3.
+    drifted = _suite(observed_per_case={"alpha": [_finding(line=5)]})
+
+    regressions = eval_harness.compare_to_golden(score_evaluation(drifted), golden)
+
+    assert any("missed 1 labeled findings" in line for line in regressions)
+    assert any("reported 1 unlabeled findings" in line for line in regressions)
+
+
 def test_a_golden_case_that_did_not_run_is_reported():
     golden = eval_harness.golden_from_score(
         score_evaluation(_suite(observed_per_case={"alpha": [_finding()], "beta": []}))

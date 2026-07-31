@@ -108,11 +108,12 @@ in whatever it recorded. Check all of these:
    it produces is a false positive. If it produces several, the confidence
    threshold is too low, and that is exactly the constant this harness exists to
    measure.
-4. **Check the category column.** `service/evaluation.py` matches on category
-   equality, so a real detection filed under `reliability` where the label says
-   `correctness` scores as *both* a false negative and a false positive. If you
-   see that pattern, the label is arguably wrong — fix the label, and say so in
-   the commit.
+4. **Read `category_mismatches` and `category_confusion`.** Category is not part
+   of the match, so a real detection filed under `reliability` where the label
+   says `correctness` is one true positive and one entry in this table — it does
+   not move precision or recall. Read the table anyway: a repeated confusion in
+   one direction usually means the label is the wrong one, and fixing a label
+   after capture invalidates the golden, so decide before you commit it.
 5. **Run it twice.** These models are not deterministic. If two consecutive
    captures disagree by more than a few points, commit the *worse* run as the
    golden and set a non-zero `EVAL_TOLERANCE`, rather than committing a lucky

@@ -13,13 +13,25 @@ class EvaluationModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+#: Widest line span a single label may claim, as a half-width in lines.
+#:
+#: A label names a *place*, and location is now the whole match gate (see
+#: `_matches`), so this ceiling is the only thing bounding how much of a file
+#: one label can absorb. Ten lines each way is a 21-line window -- about one
+#: function body, and already wider than any committed fixture, which use 3 to
+#: 5. The previous ceiling of 50 spanned 101 lines: past that a label has
+#: stopped identifying a place and started claiming a region, and any finding
+#: anywhere in it would be credited as having found the labeled defect.
+MAX_LINE_TOLERANCE = 10
+
+
 class ExpectedFinding(EvaluationModel):
     finding_id: str = Field(min_length=1, max_length=200)
     file_path: str = Field(min_length=1, max_length=1024)
     line: int = Field(gt=0)
     category: Category
     severity: Severity | None = None
-    line_tolerance: int = Field(default=3, ge=0, le=50)
+    line_tolerance: int = Field(default=3, ge=0, le=MAX_LINE_TOLERANCE)
 
 
 class ObservedFinding(EvaluationModel):
@@ -112,6 +124,30 @@ class EvaluationSuite(EvaluationModel):
         return self.verifier_pricing or self.pricing
 
 
+class CategoryMismatch(EvaluationModel):
+    """A finding that was found, and filed under a different category.
+
+    This is a diagnostic, not a penalty: the pair it describes is counted as one
+    true positive. It exists because the disagreement is genuinely worth knowing
+    -- a reviewer that consistently files injections as `correctness` is telling
+    you something about its prompt -- and because folding it into the match
+    decision, as this scorer used to, charged the same finding as a false
+    negative *and* a false positive.
+    """
+
+    finding_id: str
+    expected: Category
+    observed: Category
+
+
+class CategoryConfusion(EvaluationModel):
+    """How often one labeled category was reported as another, suite-wide."""
+
+    expected: Category
+    observed: Category
+    count: int
+
+
 class CaseScore(EvaluationModel):
     case_id: str
     true_positives: int
@@ -119,10 +155,11 @@ class CaseScore(EvaluationModel):
     false_negatives: int
     addressed_findings: int
     latency_ms: int
+    category_mismatches: list[CategoryMismatch] = Field(default_factory=list)
 
 
 class EvaluationScore(EvaluationModel):
-    schema_version: str = "diffuse-evaluation-score-v2"
+    schema_version: str = "diffuse-evaluation-score-v3"
     suite_name: str
     model: str
     verifier_model: str | None
@@ -133,6 +170,10 @@ class EvaluationScore(EvaluationModel):
     false_positives: int
     false_negatives: int
     addressed_findings: int
+    #: True positives whose category disagreed with the label. A subset of
+    #: `true_positives`, reported beside precision/recall rather than inside it.
+    category_mismatches: int = 0
+    category_confusion: list[CategoryConfusion] = Field(default_factory=list)
     precision: float
     recall: float
     f1: float
@@ -148,9 +189,30 @@ class EvaluationScore(EvaluationModel):
 
 
 def _matches(expected: ExpectedFinding, observed: ObservedFinding) -> bool:
+    """Is this observation about the defect this label describes?
+
+    The gate is **location**: the same file, and a line within the label's own
+    tolerance. Category is deliberately *not* part of it. A label's category is
+    mandatory, so a labeller cannot opt out of it, and requiring equality meant
+    a model that found a real SQL injection and filed it under `correctness`
+    scored strictly worse than a model that missed the bug entirely -- the same
+    false negative either way, plus a false positive for the near miss. Being
+    right in the wrong taxonomy was punished harder than being wrong. The
+    disagreement is still reported, as `CategoryMismatch`, where it informs
+    without corrupting precision, recall or F1.
+
+    Severity stays a gate, and the asymmetry is deliberate: `severity` is
+    optional and defaults to unset, so a label only opts into it by stating one,
+    and stating one is an explicit claim that a review calling this defect minor
+    has not really found it. `category` offers no such opt-out.
+
+    Nothing here lets two labels share an observation, or one label absorb two:
+    `_score_case` matches injectively, so the count of true positives can never
+    exceed the number of distinct observations, however generous the tolerance.
+    """
+
     return (
         expected.file_path == observed.file_path
-        and expected.category is observed.category
         and abs(expected.line - observed.line) <= expected.line_tolerance
         and (expected.severity is None or expected.severity is observed.severity)
     )
@@ -166,11 +228,17 @@ def _score_case(case: EvaluationCase) -> CaseScore:
     # apart in one file are enough to trigger it at the default line tolerance,
     # so the score would depend on the order labels happen to be written in.
     #
-    # `_matches` requires equality on file path and category, so the graph
-    # decomposes into independent buckets and each augmenting search stays
-    # small. Adjacency is ordered by (line distance, observation index), which
-    # keeps the chosen assignment stable across runs and across reorderings of
-    # the observed list.
+    # `_matches` requires equality on file path, so the graph decomposes into
+    # one independent bucket per file and each augmenting search stays small.
+    # Adjacency is ordered by (category disagreement, line distance, observation
+    # index), which keeps the chosen assignment stable across runs and across
+    # reorderings of the observed list. Category leads that key so that when a
+    # label can be satisfied either by an observation that agrees on category or
+    # by one that does not, the agreeing one is taken and no mismatch is
+    # reported for what was only ever an assignment artifact. Ordering within a
+    # label's adjacency cannot change the *size* of a maximum matching, so
+    # precision, recall and F1 do not depend on this preference; only which
+    # maximum matching is chosen, and therefore the diagnostics, do.
     #
     # Maximum cardinality alone does not pin down *which* labels get matched
     # when two labels compete for one observation, and `addressed_findings`
@@ -183,18 +251,24 @@ def _score_case(case: EvaluationCase) -> CaseScore:
     # maximises the addressed count over every maximum matching. The
     # tie-break is the label's identity rather than its position, so list
     # order no longer decides the score.
-    buckets: dict[tuple[str, object], list[int]] = defaultdict(list)
+    buckets: dict[str, list[int]] = defaultdict(list)
     for index, observed in enumerate(case.observed):
-        buckets[(observed.file_path, observed.category)].append(index)
+        buckets[observed.file_path].append(index)
 
     adjacency: list[list[int]] = []
     for expected in case.expected:
         candidates = [
             index
-            for index in buckets.get((expected.file_path, expected.category), ())
+            for index in buckets.get(expected.file_path, ())
             if _matches(expected, case.observed[index])
         ]
-        candidates.sort(key=lambda index: (abs(expected.line - case.observed[index].line), index))
+        candidates.sort(
+            key=lambda index: (
+                case.observed[index].category is not expected.category,
+                abs(expected.line - case.observed[index].line),
+                index,
+            )
+        )
         adjacency.append(candidates)
 
     observed_to_expected: dict[int, int] = {}
@@ -227,6 +301,17 @@ def _score_case(case: EvaluationCase) -> CaseScore:
         for expected_index in observed_to_expected.values()
     }
     unmatched_observed = set(range(len(case.observed))) - observed_to_expected.keys()
+    mismatches = [
+        CategoryMismatch(
+            finding_id=case.expected[expected_index].finding_id,
+            expected=case.expected[expected_index].category,
+            observed=case.observed[observed_index].category,
+        )
+        for observed_index, expected_index in sorted(observed_to_expected.items())
+        if case.observed[observed_index].category
+        is not case.expected[expected_index].category
+    ]
+    mismatches.sort(key=lambda mismatch: mismatch.finding_id)
     return CaseScore(
         case_id=case.case_id,
         true_positives=true_positives,
@@ -234,6 +319,7 @@ def _score_case(case: EvaluationCase) -> CaseScore:
         false_negatives=len(case.expected) - true_positives,
         addressed_findings=len(matched_ids.intersection(case.addressed_finding_ids)),
         latency_ms=case.latency_ms,
+        category_mismatches=mismatches,
     )
 
 
@@ -253,6 +339,21 @@ def score_evaluation(suite: EvaluationSuite) -> EvaluationScore:
         else 1.0
     )
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0
+    # Reported beside the quality metrics, never inside them. A systematic
+    # confusion -- security consistently filed as correctness, say -- is a
+    # prompt problem worth seeing, and it is invisible if it is only ever
+    # aggregated into a lower recall.
+    confusion_counts: dict[tuple[Category, Category], int] = defaultdict(int)
+    for case in cases:
+        for mismatch in case.category_mismatches:
+            confusion_counts[(mismatch.expected, mismatch.observed)] += 1
+    category_confusion = [
+        CategoryConfusion(expected=expected, observed=observed, count=count)
+        for (expected, observed), count in sorted(
+            confusion_counts.items(),
+            key=lambda item: (-item[1], item[0][0].value, item[0][1].value),
+        )
+    ]
     latencies = sorted(case.latency_ms for case in suite.cases)
     middle = len(latencies) // 2
     median_latency = (
@@ -284,6 +385,8 @@ def score_evaluation(suite: EvaluationSuite) -> EvaluationScore:
         false_positives=false_positives,
         false_negatives=false_negatives,
         addressed_findings=sum(case.addressed_findings for case in cases),
+        category_mismatches=sum(len(case.category_mismatches) for case in cases),
+        category_confusion=category_confusion,
         precision=precision,
         recall=recall,
         f1=f1,

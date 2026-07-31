@@ -1,13 +1,37 @@
 # Diffuse review evaluation
 
-`diffuse evaluate` scores labeled findings against a model run. The matching
-unit is a category plus file and line location (within the label's explicit
-tolerance); an optional severity label makes severity part of the match.
+`diffuse evaluate` scores labeled findings against a model run.
+
+**The matching unit is a location**: the same file, and a line within the
+label's own `line_tolerance`. An optional severity label makes severity part of
+the match. **Category is not part of the match** — it is reported separately,
+as `category_mismatches` and a `category_confusion` table.
+
+That split is deliberate. `category` is mandatory on a label, so requiring
+equality gave a labeller no way to opt out of it, and a model that found a real
+SQL injection and filed it under `correctness` scored as *both* a false
+negative and a false positive: strictly worse than a model that missed the bug
+entirely, which pays only the false negative. Category disagreement is a real
+signal — a reviewer that consistently miscategorises injections is telling you
+something about its prompt — but it is a signal about taxonomy, not about
+whether the bug was found, so it is reported beside precision and recall rather
+than folded into them. `severity` keeps gating because a label opts into it by
+stating one; leaving it unset is the default.
+
+`line_tolerance` defaults to 3 and is capped at 10. Since location is the whole
+match gate, that cap is the only bound on how much of a file one label can
+absorb, and a span wide enough to swallow a function has stopped naming a place.
+
+Matching is one-to-one in both directions. One observation can never satisfy two
+labels, and one label can never absorb two observations — a second finding
+inside the same span is a false positive, whatever its category. Loosening the
+match key cannot, therefore, inflate true positives past the number of distinct
+findings the reviewer actually reported.
 
 Each case records expected bugs, observed findings, developer-addressed label
 IDs, latency, and token usage. The resulting JSON reports precision, recall,
-F1, false positives, false negatives, addressed findings, median latency, and
-estimated model cost.
+F1, false positives, false negatives, addressed findings, category mismatches,
+median latency, and estimated model cost.
 
 Candidate and verification tokens are counted and priced separately, because a
 cross-family pair does not share a rate card. `prompt_tokens` and
@@ -164,11 +188,16 @@ Stated plainly so nobody mistakes a green run for more than it is.
   Per-path confidence thresholds, severity floors, `summary_only`, and the
   preventative-security rules in `repository_policy/` are *not* exercised. A
   fixture-level policy is the obvious next extension.
-- **Category is part of the match key.** `service/evaluation.py` requires exact
-  category equality, so a correct detection filed under `reliability` where the
-  label says `correctness` counts as both a false negative and a false positive
-   — a double penalty for a labelling disagreement. Read the findings, not just
-  the score.
+- **A coincidental location match still reads as a true positive.** Category no
+  longer gates the match, and there is no finding text in `ObservedFinding` to
+  compare, so an unrelated finding that lands within a label's span is credited.
+  The span is deliberately small for exactly this reason, but the residual risk
+  is real: read the findings, not just the score. Carrying the finding title
+  into `ObservedFinding` and requiring textual overlap is the principled fix and
+  is not in this schema yet.
+- **The golden does not record category mismatches.** They are in the score JSON
+  that `check` prints, so a systematic miscategorisation is visible, but it is
+  not gated. `Golden` would need a field.
 - **The candidate/verifier token split is observed, not reported.**
   `ReviewReport` carries one combined token pair, so the harness wraps
   `_call_structured` to attribute each call to its stage. The wrapper delegates

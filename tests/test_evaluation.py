@@ -5,7 +5,12 @@ import pytest
 from pydantic import ValidationError
 
 from service import evaluation_cli
-from service.evaluation import EvaluationSuite, score_evaluation
+from service.evaluation import (
+    MAX_LINE_TOLERANCE,
+    EvaluationSuite,
+    score_evaluation,
+)
+from service.review_models import Category
 
 
 def test_evaluation_scores_quality_latency_cost_and_addressed_findings() -> None:
@@ -372,21 +377,26 @@ def test_unpriceable_verifier_labels_are_rejected(override: dict) -> None:
         EvaluationSuite.model_validate(payload)
 
 
-def test_path_and_category_still_constrain_matches() -> None:
+def test_a_different_file_never_matches_however_close_the_line() -> None:
+    """File equality is absolute. The same line number elsewhere is elsewhere."""
+
     score = score_evaluation(
         _overlapping_suite(
             [_LABEL_13],
             [
+                # Same line, same category, wrong file.
                 {
                     "file_path": "other.py",
                     "line": 13,
                     "category": "correctness",
                     "severity": "medium",
                 },
+                # Same line, same category, wrong file, and a path that is a
+                # prefix of the labeled one -- still a different file.
                 {
-                    "file_path": "auth.py",
+                    "file_path": "auth.pyi",
                     "line": 13,
-                    "category": "security",
+                    "category": "correctness",
                     "severity": "medium",
                 },
             ],
@@ -396,6 +406,447 @@ def test_path_and_category_still_constrain_matches() -> None:
     assert score.true_positives == 0
     assert score.false_negatives == 1
     assert score.false_positives == 2
+    assert score.category_mismatches == 0
+
+
+def test_an_unrelated_finding_in_the_labeled_file_does_not_match() -> None:
+    """Right file, outside the label's span: a miss and a false positive."""
+
+    score = score_evaluation(
+        _overlapping_suite(
+            [_LABEL_13],  # line 13, default tolerance 3 -> lines 10..16
+            [
+                {
+                    "file_path": "auth.py",
+                    "line": 17,
+                    "category": "correctness",
+                    "severity": "medium",
+                },
+                {
+                    "file_path": "auth.py",
+                    "line": 9,
+                    "category": "correctness",
+                    "severity": "medium",
+                },
+            ],
+        )
+    )
+
+    assert score.true_positives == 0
+    assert score.false_negatives == 1
+    assert score.false_positives == 2
+
+
+def test_the_right_finding_in_the_wrong_category_is_one_true_positive() -> None:
+    """The bug this whole matcher change exists to fix.
+
+    A real SQL injection filed under `correctness` used to score as a false
+    negative *and* a false positive: strictly worse than not finding it at all.
+    It is one true positive, and the disagreement is reported separately.
+    """
+
+    score = score_evaluation(
+        _overlapping_suite(
+            [
+                {
+                    "finding_id": "injection",
+                    "file_path": "reports/query.py",
+                    "line": 23,
+                    "category": "security",
+                }
+            ],
+            [
+                {
+                    "file_path": "reports/query.py",
+                    "line": 23,
+                    "category": "correctness",
+                    "severity": "high",
+                }
+            ],
+        )
+    )
+
+    assert score.true_positives == 1
+    assert score.false_positives == 0
+    assert score.false_negatives == 0
+    assert score.precision == 1.0
+    assert score.recall == 1.0
+    assert score.category_mismatches == 1
+    assert [
+        (item.expected, item.observed, item.count) for item in score.category_confusion
+    ] == [(Category.SECURITY, Category.CORRECTNESS, 1)]
+    assert [
+        (item.finding_id, item.expected, item.observed)
+        for item in score.cases[0].category_mismatches
+    ] == [("injection", Category.SECURITY, Category.CORRECTNESS)]
+
+
+def test_a_miscategorised_detection_outscores_a_missed_one() -> None:
+    """Being right in the wrong taxonomy must beat being wrong."""
+
+    label = {
+        "finding_id": "injection",
+        "file_path": "reports/query.py",
+        "line": 23,
+        "category": "security",
+    }
+    miscategorised = score_evaluation(
+        _overlapping_suite(
+            [label],
+            [
+                {
+                    "file_path": "reports/query.py",
+                    "line": 23,
+                    "category": "correctness",
+                    "severity": "high",
+                }
+            ],
+        )
+    )
+    missed = score_evaluation(_overlapping_suite([label], []))
+
+    assert miscategorised.f1 > missed.f1
+    assert miscategorised.recall > missed.recall
+    assert missed.category_mismatches == 0
+
+
+def test_a_category_mismatch_still_counts_as_an_addressed_finding() -> None:
+    score = score_evaluation(
+        _overlapping_suite(
+            [_LABEL_13],
+            [
+                {
+                    "file_path": "auth.py",
+                    "line": 13,
+                    "category": "security",
+                    "severity": "medium",
+                }
+            ],
+            addressed=["near"],
+        )
+    )
+
+    assert score.true_positives == 1
+    assert score.addressed_findings == 1
+    assert score.category_mismatches == 1
+
+
+def test_category_confusion_aggregates_across_cases_by_frequency() -> None:
+    """A model that systematically miscategorises should be legible at a glance."""
+
+    def case(case_id: str, observed_category: str) -> dict:
+        return {
+            "case_id": case_id,
+            "expected": [
+                {
+                    "finding_id": f"{case_id}-1",
+                    "file_path": "a.py",
+                    "line": 10,
+                    "category": "security",
+                }
+            ],
+            "observed": [
+                {
+                    "file_path": "a.py",
+                    "line": 10,
+                    "category": observed_category,
+                    "severity": "high",
+                }
+            ],
+        }
+
+    suite = EvaluationSuite.model_validate(
+        {
+            "schema_version": "diffuse-evaluation-v1",
+            "name": "confusion",
+            "model": "test",
+            "cases": [
+                case("one", "correctness"),
+                case("two", "correctness"),
+                case("three", "reliability"),
+                case("four", "security"),
+            ],
+        }
+    )
+
+    score = score_evaluation(suite)
+
+    assert score.true_positives == 4
+    assert score.false_positives == 0
+    assert score.recall == 1.0
+    assert score.category_mismatches == 3
+    assert [
+        (item.expected, item.observed, item.count) for item in score.category_confusion
+    ] == [
+        (Category.SECURITY, Category.CORRECTNESS, 2),
+        (Category.SECURITY, Category.RELIABILITY, 1),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# over-matching
+#
+# Loosening the match key inflates recall and suppresses false positives if it
+# lets one observation stand in for two labels, or one label swallow two
+# observations. Both directions make the reviewer look better than it is, which
+# is precisely the direction a regression gate must not fail in, so each is
+# pinned explicitly below.
+# ---------------------------------------------------------------------------
+
+
+def test_two_distinct_labels_on_adjacent_lines_stay_distinct() -> None:
+    """Two real defects three lines apart are two findings, not one."""
+
+    labels = [
+        {
+            "finding_id": "first",
+            "file_path": "a.py",
+            "line": 10,
+            "category": "security",
+        },
+        {
+            "finding_id": "second",
+            "file_path": "a.py",
+            "line": 12,
+            "category": "correctness",
+        },
+    ]
+    # Every observation lies inside both labels' spans, and neither category
+    # gates any longer, so the graph is fully connected. Matching must still be
+    # one-to-one.
+    both = score_evaluation(
+        _overlapping_suite(
+            labels,
+            [
+                {
+                    "file_path": "a.py",
+                    "line": 10,
+                    "category": "security",
+                    "severity": "high",
+                },
+                {
+                    "file_path": "a.py",
+                    "line": 12,
+                    "category": "correctness",
+                    "severity": "high",
+                },
+            ],
+        )
+    )
+
+    assert both.true_positives == 2
+    assert both.false_positives == 0
+    assert both.false_negatives == 0
+    assert both.category_mismatches == 0
+
+    # Finding only one of the two must stay a miss. If the single observation
+    # could satisfy both labels, recall would read 1.0 for half the work.
+    one = score_evaluation(
+        _overlapping_suite(
+            labels,
+            [
+                {
+                    "file_path": "a.py",
+                    "line": 11,
+                    "category": "security",
+                    "severity": "high",
+                }
+            ],
+        )
+    )
+
+    assert one.true_positives == 1
+    assert one.false_negatives == 1
+    assert one.false_positives == 0
+    assert one.recall == 0.5
+
+
+def test_one_label_cannot_absorb_two_observations() -> None:
+    """A second finding inside the span is a false positive, not free credit."""
+
+    score = score_evaluation(
+        _overlapping_suite(
+            [
+                {
+                    "finding_id": "only",
+                    "file_path": "a.py",
+                    "line": 10,
+                    "category": "security",
+                }
+            ],
+            [
+                {
+                    "file_path": "a.py",
+                    "line": 10,
+                    "category": "security",
+                    "severity": "high",
+                },
+                {
+                    "file_path": "a.py",
+                    "line": 11,
+                    "category": "correctness",
+                    "severity": "low",
+                },
+                {
+                    "file_path": "a.py",
+                    "line": 12,
+                    "category": "maintainability",
+                    "severity": "low",
+                },
+            ],
+        )
+    )
+
+    assert score.true_positives == 1
+    assert score.false_positives == 2
+    assert score.precision == pytest.approx(1 / 3)
+    # The exact-category observation was preferred, so no mismatch is invented
+    # for what would only have been an assignment artifact.
+    assert score.category_mismatches == 0
+
+
+@pytest.mark.parametrize("label_count", (2, 3, 8))
+def test_a_fully_connected_case_never_scores_more_matches_than_observations(
+    label_count: int,
+) -> None:
+    """True positives are bounded by observations at any tolerance.
+
+    Every label sits within every other label's span and the categories are all
+    different, so under the new match key the bipartite graph is complete. Even
+    then, one fewer observation than labels must cost exactly one miss.
+    """
+
+    categories = [
+        "correctness",
+        "security",
+        "performance",
+        "reliability",
+        "testing",
+        "architecture",
+        "maintainability",
+        "api",
+    ]
+    labels = [
+        {
+            "finding_id": f"label-{index}",
+            "file_path": "a.py",
+            "line": 10 + index,
+            "category": categories[index],
+            "line_tolerance": 10,
+        }
+        for index in range(label_count)
+    ]
+    observed = [
+        {
+            "file_path": "a.py",
+            "line": 10 + index,
+            "category": categories[index],
+            "severity": "high",
+        }
+        for index in range(label_count - 1)
+    ]
+
+    score = score_evaluation(_overlapping_suite(labels, observed))
+
+    assert score.true_positives == label_count - 1
+    assert score.false_positives == 0
+    assert score.false_negatives == 1
+
+
+def test_the_category_preference_never_costs_a_match() -> None:
+    """Preferring an agreeing category must not starve a stricter label.
+
+    The loose label would greedily take the exact-category observation that the
+    tolerance-0 label is the only claimant for. Augmenting has to move it.
+    """
+
+    score = score_evaluation(
+        _overlapping_suite(
+            [
+                {
+                    "finding_id": "loose",
+                    "file_path": "a.py",
+                    "line": 10,
+                    "category": "security",
+                    "line_tolerance": 3,
+                },
+                {
+                    "finding_id": "strict",
+                    "file_path": "a.py",
+                    "line": 10,
+                    "category": "security",
+                    "line_tolerance": 0,
+                },
+            ],
+            [
+                {
+                    "file_path": "a.py",
+                    "line": 10,
+                    "category": "security",
+                    "severity": "high",
+                },
+                {
+                    "file_path": "a.py",
+                    "line": 11,
+                    "category": "correctness",
+                    "severity": "high",
+                },
+            ],
+        )
+    )
+
+    assert score.true_positives == 2
+    assert score.false_positives == 0
+    assert score.false_negatives == 0
+    assert score.category_mismatches == 1
+
+
+def test_a_severity_label_still_constrains_the_match() -> None:
+    """Severity stays a gate because, unlike category, a label can omit it."""
+
+    observed = {
+        "file_path": "a.py",
+        "line": 10,
+        "category": "correctness",
+        "severity": "low",
+    }
+    label = {
+        "finding_id": "only",
+        "file_path": "a.py",
+        "line": 10,
+        "category": "security",
+    }
+
+    gated = score_evaluation(_overlapping_suite([{**label, "severity": "critical"}], [observed]))
+    ungated = score_evaluation(_overlapping_suite([label], [observed]))
+
+    assert (gated.true_positives, gated.false_negatives, gated.false_positives) == (0, 1, 1)
+    assert (ungated.true_positives, ungated.false_negatives, ungated.false_positives) == (1, 0, 0)
+
+
+@pytest.mark.parametrize("tolerance", (11, 50))
+def test_a_label_cannot_claim_more_of_a_file_than_the_ceiling(tolerance: int) -> None:
+    """A span wide enough to swallow a whole function is not a location.
+
+    Location is now the entire match gate, so `line_tolerance` is the only thing
+    bounding how much of a file one label absorbs.
+    """
+
+    with pytest.raises(ValidationError):
+        _overlapping_suite(
+            [
+                {
+                    "finding_id": "wide",
+                    "file_path": "a.py",
+                    "line": 40,
+                    "category": "security",
+                    "line_tolerance": tolerance,
+                }
+            ],
+            [],
+        )
+
+    assert MAX_LINE_TOLERANCE == 10
 
 
 def _evaluate_parser() -> argparse.ArgumentParser:
