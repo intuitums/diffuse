@@ -199,6 +199,14 @@ jobs:
       # rather than a per-job failure. Without this the smoke test boots a worker
       # that immediately exits, which is exactly what it exists to catch.
       OPENAI_API_KEY: sk-ci-smoke-test-not-a-real-key
+      # Set here rather than read from deploy/env.example, which now ships this
+      # commented out: a customer who copies that file and gets a working review
+      # model has been handed the same guess the code default was deleted for.
+      # CI has to name a model like any other operator, and this job is the only
+      # thing that noticed. The value matches the example file's recommendation
+      # so the smoke test boots the configuration the file actually documents.
+      # Never used to call a provider -- the worker validates and then idles.
+      REVIEW_MODEL: anthropic/claude-sonnet-5
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -287,6 +295,16 @@ jobs:
               -e "s|^DIFFUSE_PUBLIC_URL=.*|DIFFUSE_PUBLIC_URL=${DIFFUSE_PUBLIC_URL}|" \
               -e "s|^OPENAI_API_KEY=.*|OPENAI_API_KEY=${OPENAI_API_KEY}|" \
               env.example > ci.env
+
+          # REVIEW_MODEL is commented out in env.example on purpose, so it is
+          # appended rather than substituted. Appending also proves the file has
+          # no live assignment left to override -- a sed substitution would have
+          # kept passing if someone uncommented it again.
+          if grep -q "^REVIEW_MODEL=" ci.env; then
+            echo "::error::deploy/env.example assigns REVIEW_MODEL; it must ship commented out" >&2
+            exit 1
+          fi
+          echo "REVIEW_MODEL=${REVIEW_MODEL}" >> ci.env
 
           # --wait blocks on the healthchecks. migrate is gated on db, and app on
           # migrate completing successfully, so a failure here means the release

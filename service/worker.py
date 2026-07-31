@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import socket
+import sys
 import time
 from contextlib import closing
 from functools import partial
@@ -145,12 +146,16 @@ from service.repository_mirror import (
 )
 from service.review_engine import (
     PROMPT_VERSION,
+    ReviewDepthSupport,
     _model_api_base,
     _positive_int,
     _supports_json_schema,
     generate_review,
     minimum_review_confidence,
     model_retries,
+    resolve_review_depth_support,
+    review_depth,
+    review_effort,
     review_model,
     review_passes,
     review_provenance_minimum_confidence,
@@ -472,6 +477,30 @@ def _set_mirror_state(
         )
 
 
+def report_review_depth_support(support: ReviewDepthSupport) -> None:
+    """Emit one depth resolution where `LOG_LEVEL` cannot delete it.
+
+    A depth that was honoured exactly is ordinary startup information and goes
+    to the log. A depth that was *not* is the only evidence an operator gets
+    that they are paying for a review shallower than the one they configured,
+    and `logging.basicConfig(level=LOG_LEVEL)` can throw it away -- `LOG_LEVEL`
+    is documented in both env files, and at `ERROR` the entire report vanished
+    while the refusal still fired. So the unhonoured case is written straight to
+    stderr, which is what `review_cli.report_review_depth` already does and for
+    the same reason.
+    """
+
+    lines = support.report_lines()
+    if not lines:
+        return
+    if support.fully_honored:
+        for line in lines:
+            LOGGER.info("%s", line)
+        return
+    for line in lines:
+        print(line, file=sys.stderr, flush=True)
+
+
 def _begin_native_review(
     job: WorkflowJob,
     event: PullRequestEvent,
@@ -479,6 +508,7 @@ def _begin_native_review(
     policy: ResolvedReviewPolicy,
     provenance: PullRequestProvenance,
     model_plan: ReviewModelPlan,
+    depth_support: ReviewDepthSupport,
 ) -> ReviewRunHandle:
     if job.pull_request_id is None:
         raise NonRetryableError("Review job does not reference a pull request")
@@ -495,6 +525,7 @@ def _begin_native_review(
             verifier_model=model_plan.verifier_model,
             provenance=provenance.to_dict(),
             model_routing_reason=model_plan.reason_code,
+            review_depth_resolution=depth_support.summary(),
             prompt_version=PROMPT_VERSION,
             context_fingerprint=_review_context_fingerprint(
                 context_plan,
@@ -502,6 +533,7 @@ def _begin_native_review(
                 event,
                 provenance,
                 model_plan,
+                depth_support,
             ),
             learned_rules=policy.approved_learned_rules,
             custom_contexts=policy.approved_custom_contexts,
@@ -515,17 +547,42 @@ def _review_context_fingerprint(
     event: PullRequestEvent,
     provenance: PullRequestProvenance,
     model_plan: ReviewModelPlan,
+    depth_support: ReviewDepthSupport,
 ) -> str:
-    identity = "\0".join(
-        (
-            context_plan.fingerprint,
-            policy.fingerprint,
-            event.trigger_fingerprint,
-            provenance.fingerprint,
-            model_plan.fingerprint,
-        )
-    )
-    return hashlib.sha256(identity.encode()).hexdigest()
+    """Everything that decides what a review would say, in one value.
+
+    This is the identity of a review run. `begin_review_run` serves an existing
+    run whose (pull request, base, head, model, prompt version, fingerprint)
+    already matches, and a run that is already `ready` is republished without
+    generating anything -- so an input left out here is an input an operator can
+    change while still being served the previous review.
+
+    Review depth was such an input. It is *recorded* on the run
+    (`review_depth_resolution`), but recording is not identity: raising
+    `REVIEW_DEPTH` and re-running found the shallower run ready and republished
+    it, which is the same silent no-op the depth work exists to delete. The
+    resolved summary is used rather than the bare variable because it names both
+    what was asked and what each stage will actually be sent, so a depth the
+    route steps down or refuses is distinguished from one it honours.
+
+    `summary()` is `None` exactly when no depth was requested, and contributes
+    nothing at all there -- not an empty component, which would still change the
+    hash -- so an installation that never set a depth keeps the fingerprints its
+    runs are already stored under and does not re-review every open pull request
+    on upgrade.
+    """
+
+    components = [
+        context_plan.fingerprint,
+        policy.fingerprint,
+        event.trigger_fingerprint,
+        provenance.fingerprint,
+        model_plan.fingerprint,
+    ]
+    depth_resolution = depth_support.summary()
+    if depth_resolution is not None:
+        components.append(depth_resolution)
+    return hashlib.sha256("\0".join(components).encode()).hexdigest()
 
 
 def _load_cross_repository_context_plan(
@@ -1538,6 +1595,19 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
         verifier_model=review_verifier_model(),
         minimum_confidence=review_provenance_minimum_confidence(),
     )
+    # Startup validated the *configured* pair. Routing permutes it, so on an
+    # AI-authored pull request the candidate pass runs on the model configured
+    # as the verifier -- a pair no validator has looked at, and one that can
+    # have no reasoning control at all while the configured candidate had one.
+    # Resolve the pair that will actually be used, and record it on the run:
+    # refusing here would dead-letter the pull request over configuration the
+    # operator can only change between runs.
+    depth_support = resolve_review_depth_support(
+        candidate_model=model_plan.candidate_model,
+        verifier_model=model_plan.verifier_model,
+        source=f"routed by provenance: {model_plan.reason_code}",
+    )
+    report_review_depth_support(depth_support)
 
     review_run = await anyio.to_thread.run_sync(
         partial(
@@ -1548,6 +1618,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
             policy,
             provenance,
             model_plan,
+            depth_support,
         )
     )
     if review_run.status == "superseded":
@@ -2333,6 +2404,8 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("MIN_CONTEXT_SIMILARITY", minimum_similarity),
     ("REVIEW_MODEL", review_model),
     ("REVIEW_VERIFIER_MODEL", review_verifier_model),
+    ("REVIEW_EFFORT", review_effort),
+    ("REVIEW_DEPTH", review_depth),
     ("REVIEW_PASSES", review_passes),
     ("MIN_REVIEW_CONFIDENCE", minimum_review_confidence),
     ("REVIEW_PROVENANCE_MIN_CONFIDENCE", review_provenance_minimum_confidence),
@@ -2403,6 +2476,33 @@ def validate_worker_configuration() -> None:
             raise ValueError(f"{name} is invalid: {error}") from error
 
 
+def validate_worker_model_controls() -> None:
+    """Report what the configured models will be sent, and refuse the unhonorable.
+
+    A third validator alongside the two below for the same reason they are
+    separate from each other: this asks whether the *models* can express what
+    the operator configured, which `validate_worker_configuration` -- a parse
+    check -- cannot answer and should not grow to.
+
+    Diffuse has no structured logging, no metrics, and no alerting, so a
+    parameter dropped mid-review is indistinguishable from silence. Every
+    resolution is reported here, before a single job is claimed, naming what was
+    requested, what the model supports, and what will actually be sent. A
+    candidate model LiteLLM *knows* cannot express the request does not start;
+    see `ReviewDepthSupport.refusal` for why a model it knows nothing about is
+    reported instead.
+
+    This only ever sees the configured pair. `process_review_job` resolves the
+    pair provenance routing actually chose, which startup cannot know.
+    """
+
+    support = resolve_review_depth_support()
+    report_review_depth_support(support)
+    refusal = support.refusal()
+    if refusal is not None:
+        raise ValueError(refusal)
+
+
 def validate_worker_credentials() -> None:
     """Check that configured providers have a usable credential.
 
@@ -2436,6 +2536,7 @@ def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     try:
         validate_worker_configuration()
+        validate_worker_model_controls()
         validate_worker_credentials()
     except ValueError as error:
         parser.error(str(error))
