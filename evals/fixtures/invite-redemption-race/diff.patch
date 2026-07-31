@@ -1,0 +1,25 @@
+diff --git a/invites/redeem.py b/invites/redeem.py
+index 0bfcd62..e20d03a 100644
+--- a/invites/redeem.py
++++ b/invites/redeem.py
+@@ -10,13 +10,15 @@ class InviteError(Exception):
+ 
+ 
+ def redeem_invite(connection: Connection, token: str, user_id: str) -> str:
+     """Consume a single-use invite and return the organisation it grants."""
+     row = connection.fetch_one(
+-        "UPDATE invites SET redeemed_by = %s, redeemed_at = now() "
+-        "WHERE token = %s AND redeemed_by IS NULL "
+-        "RETURNING organisation_id",
+-        (user_id, token),
++        "SELECT organisation_id, redeemed_by FROM invites WHERE token = %s",
++        (token,),
+     )
+-    if row is None:
++    if row is None or row["redeemed_by"] is not None:
+         raise InviteError("invite is missing or already redeemed")
++    connection.execute(
++        "UPDATE invites SET redeemed_by = %s, redeemed_at = now() WHERE token = %s",
++        (user_id, token),
++    )
+     return row["organisation_id"]

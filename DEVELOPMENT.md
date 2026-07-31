@@ -77,6 +77,23 @@ test process. You do not need to move `.env` aside.
 ruff check .
 ```
 
+## Run the review-quality harness
+
+`pytest` proves the review engine's plumbing; it says nothing about whether the
+engine finds bugs, because every review test stubs the model call.
+`scripts/eval.sh` is the other half: it runs the real engine over the labeled
+fixtures in `evals/fixtures/` and compares the scored result against a golden.
+
+```bash
+./scripts/eval.sh
+```
+
+It needs `REVIEW_MODEL` and that provider's API key, and it costs money —
+roughly 40 model calls per run. **It currently exits non-zero on any machine,
+because no golden is committed:** capturing one requires live model calls. See
+[`evals/CAPTURE.md`](evals/CAPTURE.md) for the capture procedure and
+[`evals/README.md`](evals/README.md) for the fixture format.
+
 Ruff is configured in `pyproject.toml` (`E`, `F`, `I`, `UP`, `B`, `SIM`, line
 length 100, target `py312`). CI runs the exact same command and treats any
 finding as a failure. `ruff check --fix .` and `ruff format` are fine locally,

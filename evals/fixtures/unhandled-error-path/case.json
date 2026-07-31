@@ -1,0 +1,26 @@
+{
+  "schema_version": "diffuse-eval-fixture-v1",
+  "case_id": "unhandled-error-path",
+  "description": "The transaction's `try`/`finally` is removed, so any insert that raises leaves the transaction open and the pooled connection never returned. The happy path is unchanged, which is what makes it easy to miss.",
+  "diff_path": "diff.patch",
+  "expected": [
+    {
+      "finding_id": "connection-leaked-on-error",
+      "file_path": "ledger/commit.py",
+      "line": 16,
+      "category": "reliability",
+      "line_tolerance": 4
+    }
+  ],
+  "addressed_finding_ids": [],
+  "contexts": [
+    {
+      "path": "context/ledger_db.py",
+      "file_path": "ledger/db.py",
+      "symbol_name": "Connection",
+      "retrieval_reason": "graph_callee",
+      "relevance_score": 0.79,
+      "similarity": 0.74
+    }
+  ]
+}
