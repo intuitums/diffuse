@@ -1,7 +1,7 @@
 {
   "schema_version": "diffuse-eval-fixture-v1",
   "case_id": "missing-null-check",
-  "description": "`Directory.lookup_owner` returns `User | None`, and the change drops the None guard before dereferencing `.email`, so every account without an owner raises AttributeError instead of returning None.",
+  "description": "`Directory.lookup_owner` returns `User | None`, and the change drops the None guard in two places. In `owner_email` the missing guard dereferences `.email` on None, so every account without an owner raises AttributeError instead of returning None. In `notify_owner` the caller's own guard goes with it, so what used to be a `False` return for an ownerless account is now an exception out of a `-> bool` function. Both are labeled: one correct finding about the second defect would otherwise score as a false positive and raise this case's false-positive floor permanently.",
   "diff_path": "diff.patch",
   "expected": [
     {
@@ -9,7 +9,14 @@
       "file_path": "accounts/notifications.py",
       "line": 15,
       "category": "correctness",
-      "line_tolerance": 3
+      "line_tolerance": 1
+    },
+    {
+      "finding_id": "notify-owner-no-longer-reports-a-missing-owner",
+      "file_path": "accounts/notifications.py",
+      "line": 22,
+      "category": "correctness",
+      "line_tolerance": 1
     }
   ],
   "addressed_finding_ids": [],

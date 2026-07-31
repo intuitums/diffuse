@@ -28,6 +28,7 @@ against is worse than no gate.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -49,12 +50,18 @@ from service.evaluation import (
     ExpectedFinding,
     ModelPricing,
     ObservedFinding,
+    ReviewDepthRendering,
+    RunConfiguration,
     score_evaluation,
 )
 from service.review_models import VerificationBatch
 
 FIXTURE_SCHEMA_VERSION = "diffuse-eval-fixture-v1"
-GOLDEN_SCHEMA_VERSION = "diffuse-eval-golden-v1"
+#: Bumped from v1: a golden now pins the run configuration, the resolved review
+#: depth and a per-case fixture digest, none of which a v1 golden recorded. A v1
+#: golden cannot be upgraded in place -- the missing values were never measured
+#: -- so it has to be recaptured rather than silently reinterpreted.
+GOLDEN_SCHEMA_VERSION = "diffuse-eval-golden-v2"
 DEFAULT_FIXTURE_ROOT = Path("evals/fixtures")
 DEFAULT_GOLDEN_PATH = Path("evals/golden/review-baseline.json")
 CASE_FILE_NAME = "case.json"
@@ -105,11 +112,19 @@ class LoadedFixture:
     directory: Path
     diff_text: str
     contexts: tuple[RetrievedContext, ...]
+    #: SHA-256 over `diff.patch` and `case.json` as they were read.
+    digest: str
 
 
 class GoldenCase(HarnessModel):
     case_id: str = Field(min_length=1, max_length=200)
     expected_finding_count: int = Field(ge=0)
+    #: The fixture content this case was captured against. The label count
+    #: catches an edited label set; this catches an edited *diff*, which moves
+    #: the score just as far and was previously undefended -- make a bug more
+    #: obvious and recall rises while the golden keeps passing, so the gate now
+    #: measures an easier task than the one it was calibrated on.
+    fixture_digest: str | None = Field(default=None, min_length=1, max_length=128)
     true_positives: int = Field(ge=0)
     false_positives: int = Field(ge=0)
     false_negatives: int = Field(ge=0)
@@ -125,15 +140,31 @@ class Golden(HarnessModel):
     the scorer -- counts of true and false positives per case, plus the
     aggregate precision, recall and F1 -- which is the thing a threshold change
     in `review_engine.py` actually moves.
+
+    It also records the conditions the scores were produced under, because a
+    score is only a standard while those hold. The model name was pinned from
+    the start; `run_configuration` pins the rest -- prompt version, confidence
+    floor, review passes, and both the requested and the *resolved* review
+    depth -- and `GoldenCase.fixture_digest` pins the fixture content. Every one
+    of those moves the score, and every one of them was previously free to drift
+    under a golden that kept passing.
     """
 
-    schema_version: Literal["diffuse-eval-golden-v1"]
+    schema_version: Literal["diffuse-eval-golden-v2"]
     suite_name: str = Field(min_length=1, max_length=200)
     model: str = Field(min_length=1, max_length=512)
     verifier_model: str | None = Field(default=None, min_length=1, max_length=512)
+    run_configuration: RunConfiguration
     precision: float = Field(ge=0, le=1)
     recall: float = Field(ge=0, le=1)
     f1: float = Field(ge=0, le=1)
+    #: Recorded and reported as a delta, never gated. Category disagreement is a
+    #: taxonomy signal, not a detection signal, and it is also non-minimal by
+    #: construction (see `_score_case`), so failing a deletion on it would be
+    #: wrong twice over. Absent from the golden entirely, though, drift is
+    #: invisible -- a reviewer that starts filing every injection as
+    #: `maintainability` passes unchanged.
+    category_mismatches: int = Field(default=0, ge=0)
     cases: list[GoldenCase] = Field(min_length=1, max_length=10_000)
 
 
@@ -199,12 +230,29 @@ def validate_fixture(fixture: ReviewFixture, diff_text: str) -> None:
             )
 
 
+def fixture_digest(case_json: str, diff_text: str) -> str:
+    """A content hash over the two files that decide what a case measures.
+
+    Length-prefixed rather than concatenated, so moving a byte from the end of
+    one file to the start of the other cannot leave the digest unchanged.
+    """
+
+    digest = hashlib.sha256()
+    for part in (case_json, diff_text):
+        encoded = part.encode()
+        digest.update(str(len(encoded)).encode())
+        digest.update(b"\0")
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
 def load_fixture(directory: Path) -> LoadedFixture:
     case_path = directory / CASE_FILE_NAME
     if case_path.is_symlink() or not case_path.is_file():
         raise FixtureError(f"missing {CASE_FILE_NAME} in {directory}")
+    case_json = case_path.read_text()
     try:
-        fixture = ReviewFixture.model_validate_json(case_path.read_text())
+        fixture = ReviewFixture.model_validate_json(case_json)
     except (OSError, ValidationError) as error:
         raise FixtureError(f"invalid fixture {directory.name}: {error}") from error
     if fixture.case_id != directory.name:
@@ -237,16 +285,24 @@ def load_fixture(directory: Path) -> LoadedFixture:
         directory=directory,
         diff_text=diff_text,
         contexts=tuple(contexts),
+        digest=fixture_digest(case_json, diff_text),
     )
 
 
 def load_fixtures(root: Path) -> list[LoadedFixture]:
+    """Every fixture under `root`. A directory that is not one is an error.
+
+    Skipping a directory without a `case.json` would make the suite silently
+    shrink: rename one file and the run covers seven cases instead of eight with
+    nothing red. The golden comparison catches that afterwards, but only once a
+    golden exists, and the fixture set is the thing the golden is captured
+    from.
+    """
+
     if not root.is_dir():
         raise FixtureError(f"fixture directory not found: {root}")
     directories = sorted(
-        child
-        for child in root.iterdir()
-        if child.is_dir() and not child.is_symlink() and (child / CASE_FILE_NAME).is_file()
+        child for child in root.iterdir() if child.is_dir() and not child.is_symlink()
     )
     if not directories:
         raise FixtureError(f"no fixtures under {root}")
@@ -355,6 +411,43 @@ def run_fixture(
         completion_tokens=split.candidate_completion,
         verifier_prompt_tokens=split.verifier_prompt,
         verifier_completion_tokens=split.verifier_completion,
+        fixture_digest=loaded.digest,
+    )
+
+
+def resolve_run_configuration(
+    support: review_engine.ReviewDepthSupport | None = None,
+) -> RunConfiguration:
+    """Read every environment value that moves the score, and what depth resolved to.
+
+    `resolve_review_depth_support` is the same call the worker makes at startup
+    and `review_cli` makes before its first model call. The harness has to make
+    it too, and for a second reason beyond reporting: a candidate model that
+    cannot express the requested depth is sent *nothing*, so a golden captured
+    that way would record a depth it never used. `evals/CAPTURE.md` recommends
+    capturing on a cheap model first, and the cheap model it names --
+    `openai/gpt-4.1-mini` -- is exactly that case.
+    """
+
+    if support is None:
+        support = review_engine.resolve_review_depth_support()
+    refusal = support.refusal()
+    if refusal is not None:
+        raise ValueError(refusal)
+    return RunConfiguration(
+        prompt_version=review_engine.PROMPT_VERSION,
+        min_review_confidence=review_engine.minimum_review_confidence(),
+        review_passes=list(review_engine.review_passes()),
+        requested_review_depth=support.depth,
+        depth_renderings=[
+            ReviewDepthRendering(
+                stage=stage,
+                model=plan.model,
+                mechanism=plan.mechanism.value,
+                effort=plan.effort,
+            )
+            for stage, plan in support.plans
+        ],
     )
 
 
@@ -366,50 +459,105 @@ def run_suite(
     verifier_model: str,
     pricing: ModelPricing,
     verifier_pricing: ModelPricing | None = None,
+    run_configuration: RunConfiguration | None = None,
     progress_callback: Callable[[], None] | None = None,
+    completed: dict[str, EvaluationCase] | None = None,
+    on_case: Callable[[EvaluationCase], None] | None = None,
 ) -> EvaluationSuite:
-    """Review every fixture and assemble the suite `score_evaluation` consumes."""
+    """Review every fixture and assemble the suite `score_evaluation` consumes.
 
-    cases = [
-        run_fixture(
+    `completed` supplies cases a previous attempt already paid for, and `on_case`
+    is called as each new one finishes. A full capture is 40 serial model calls
+    over 40-80 minutes; a provider error on the seventh of eight fixtures used to
+    discard all of it.
+    """
+
+    already_done = completed or {}
+    cases: list[EvaluationCase] = []
+    for loaded in fixtures:
+        reusable = already_done.get(loaded.fixture.case_id)
+        if reusable is not None and reusable.fixture_digest == loaded.digest:
+            cases.append(reusable)
+            continue
+        case = run_fixture(
             loaded,
             candidate_model=candidate_model,
             verifier_model=verifier_model,
             progress_callback=progress_callback,
         )
-        for loaded in fixtures
-    ]
+        cases.append(case)
+        if on_case is not None:
+            on_case(case)
     return EvaluationSuite(
-        schema_version="diffuse-evaluation-v1",
+        schema_version="diffuse-evaluation-v2",
         name=name,
         model=candidate_model,
         pricing=pricing,
         verifier_model=verifier_model,
         verifier_pricing=verifier_pricing,
+        run_configuration=run_configuration,
         cases=cases,
     )
 
 
 def golden_from_score(score: EvaluationScore) -> Golden:
+    if score.run_configuration is None:
+        raise ValueError(
+            "this suite records no run configuration, so a golden captured from it "
+            "could not refuse a later run at a different confidence floor, prompt "
+            "version, review-pass set or review depth. Produce the suite with "
+            "`python -m service.eval_harness run`."
+        )
     by_case = {case.case_id: case for case in score.cases}
     return Golden(
         schema_version=GOLDEN_SCHEMA_VERSION,
         suite_name=score.suite_name,
         model=score.model,
         verifier_model=score.verifier_model,
+        run_configuration=score.run_configuration,
         precision=score.precision,
         recall=score.recall,
         f1=score.f1,
+        category_mismatches=score.category_mismatches,
         cases=[
             GoldenCase(
                 case_id=case_id,
                 expected_finding_count=case.true_positives + case.false_negatives,
+                fixture_digest=case.fixture_digest,
                 true_positives=case.true_positives,
                 false_positives=case.false_positives,
                 false_negatives=case.false_negatives,
             )
             for case_id, case in sorted(by_case.items())
         ],
+    )
+
+
+def category_mismatch_delta(score: EvaluationScore, golden: Golden) -> str | None:
+    """How the category confusion moved, or None when it did not.
+
+    Deliberately not a regression. Category disagreement says something about
+    the reviewer's taxonomy, not about whether it found the bug, and the table
+    itself is non-minimal by construction (see `_score_case`), so failing a
+    deletion on it would be wrong on both counts. Reported so the drift is
+    legible rather than invisible.
+    """
+
+    if score.category_mismatches == golden.category_mismatches:
+        return None
+    direction = (
+        "up from"
+        if score.category_mismatches > golden.category_mismatches
+        else "down from"
+    )
+    detail = ", ".join(
+        f"{item.expected.value}->{item.observed.value} x{item.count}"
+        for item in score.category_confusion
+    )
+    return (
+        f"category mismatches {direction} the golden: "
+        f"{score.category_mismatches} vs {golden.category_mismatches}"
+        + (f" ({detail})" if detail else "")
     )
 
 
@@ -449,6 +597,21 @@ def compare_to_golden(
                 f"captured against {reference.expected_finding_count}; recapture the "
                 f"golden (see evals/CAPTURE.md)"
             )
+        if (
+            reference.fixture_digest is not None
+            and observed.fixture_digest != reference.fixture_digest
+        ):
+            # Editing `diff.patch` rebases the comparison exactly as editing the
+            # labels does, and the label count cannot see it: make the bug more
+            # obvious and recall rises while the golden keeps passing, so the
+            # gate now measures an easier task than the one it was calibrated
+            # on.
+            regressions.append(
+                f"case {case_id!r} was captured against different fixture content "
+                f"(digest {reference.fixture_digest[:12]}, now "
+                f"{(observed.fixture_digest or 'none')[:12]}); recapture the golden "
+                f"(see evals/CAPTURE.md)"
+            )
         if observed.false_negatives > reference.false_negatives:
             regressions.append(
                 f"case {case_id!r} missed {observed.false_negatives} labeled findings, "
@@ -480,6 +643,24 @@ def compare_to_golden(
             f"golden was captured against verifier {golden.verifier_model!r} but this "
             f"run used {score.verifier_model!r}; the comparison is not meaningful"
         )
+    # The model name was the only condition the golden used to pin. Everything
+    # here is read from the environment at call time and moves the score just as
+    # far: capture with MIN_REVIEW_CONFIDENCE=0.99 left in the shell and the
+    # golden records near-zero recall and near-zero false positives that every
+    # later run at the default 0.75 clears trivially, forever. Refused exactly
+    # as a different model is refused.
+    if score.run_configuration is None:
+        regressions.append(
+            "this run recorded no configuration, so it cannot be shown to have used "
+            "the same confidence floor, prompt version, review passes and review "
+            "depth as the golden; the comparison is not meaningful"
+        )
+    else:
+        for difference in score.run_configuration.differences(golden.run_configuration):
+            regressions.append(
+                f"the golden was captured under a different configuration: "
+                f"{difference}; the comparison is not meaningful"
+            )
     return regressions
 
 
@@ -519,12 +700,46 @@ def _pricing(prefix: str, args: argparse.Namespace) -> ModelPricing | None:
     )
 
 
+def _resume_cases(path: Path, fixtures: list[LoadedFixture]) -> dict[str, EvaluationCase]:
+    """Cases a previous attempt already paid for, keyed by case id.
+
+    A partial file is expected here -- it is written after every fixture
+    precisely so an interrupted run leaves one -- so it is parsed leniently and
+    a case whose fixture has since changed is dropped rather than reused.
+    """
+
+    if not path.is_file() or path.is_symlink():
+        return {}
+    digests = {loaded.fixture.case_id: loaded.digest for loaded in fixtures}
+    try:
+        payload = json.loads(path.read_text())
+        raw_cases = payload["cases"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    resumed: dict[str, EvaluationCase] = {}
+    for entry in raw_cases if isinstance(raw_cases, list) else []:
+        try:
+            case = EvaluationCase.model_validate(entry)
+        except ValidationError:
+            continue
+        if case.fixture_digest == digests.get(case.case_id):
+            resumed[case.case_id] = case
+    return resumed
+
+
 def _run(args: argparse.Namespace) -> None:
     fixtures = load_fixtures(args.fixtures)
     # No default model, on purpose: these raise and name the variable when
     # REVIEW_MODEL is unset. See service/review_engine.review_model.
     candidate_model = review_engine.review_model()
     verifier_model = review_engine.review_verifier_model()
+    # Names what each model will actually be sent, and refuses a depth the
+    # candidate cannot express -- before anything is billed, and before the
+    # golden can record a depth that was never sent.
+    depth_support = review_engine.resolve_review_depth_support()
+    for line in depth_support.report_lines():
+        print(line, file=sys.stderr)
+    run_configuration = resolve_run_configuration(depth_support)
     pricing = _pricing("", args) or ModelPricing()
     verifier_pricing = _pricing("verifier_", args)
     # `EvaluationSuite` refuses a cross-family pair with only one rate card, and
@@ -542,6 +757,32 @@ def _run(args: argparse.Namespace) -> None:
         f"verifier={verifier_model}",
         file=sys.stderr,
     )
+    completed = _resume_cases(args.output, fixtures) if args.resume else {}
+    if completed:
+        print(
+            f"resuming: reusing {len(completed)} case(s) already in {args.output}",
+            file=sys.stderr,
+        )
+    done: list[EvaluationCase] = []
+
+    def _record(case: EvaluationCase) -> None:
+        # Written after every fixture, not only at the end. A provider error on
+        # the seventh of eight fixtures otherwise discards 35 completed model
+        # calls -- 40-80 minutes and several dollars.
+        done.append(case)
+        _write_json(
+            args.output,
+            {
+                "schema_version": "diffuse-evaluation-v2",
+                "name": args.name,
+                "model": candidate_model,
+                "cases": [case.model_dump(mode="json") for case in done],
+                "partial": True,
+            },
+        )
+
+    for case in completed.values():
+        done.append(case)
     suite = run_suite(
         fixtures,
         name=args.name,
@@ -549,6 +790,9 @@ def _run(args: argparse.Namespace) -> None:
         verifier_model=verifier_model,
         pricing=pricing,
         verifier_pricing=verifier_pricing,
+        run_configuration=run_configuration,
+        completed=completed,
+        on_case=_record,
     )
     _write_json(args.output, suite.model_dump(mode="json"))
     print(f"wrote {args.output}", file=sys.stderr)
@@ -556,10 +800,26 @@ def _run(args: argparse.Namespace) -> None:
 
 def _capture(args: argparse.Namespace) -> None:
     score = score_evaluation(load_suite(args.suite))
+    if score.true_positives == 0 and not args.allow_zero_recall:
+        # A golden with no true positives is structurally valid and passes
+        # against *any* later run -- including one where the engine returns
+        # nothing at all, because precision is 1.0 when TP+FP is 0. That is a
+        # gate that cannot fail, which is the one thing this harness exists not
+        # to be. Refused here rather than warned about in prose.
+        raise ValueError(
+            f"this suite found none of its {score.expected_finding_count} labeled "
+            f"defects, so a golden captured from it would pass against every later "
+            f"run, including one that reports nothing at all. Read the findings "
+            f"before deciding what this means; a real zero is a finding about the "
+            f"review engine, not a reason to weaken the labels (evals/CAPTURE.md). "
+            f"Pass --allow-zero-recall to record it anyway."
+        )
     _write_json(args.golden, golden_from_score(score).model_dump(mode="json"))
     print(
         f"wrote {args.golden}: precision={score.precision:.4f} "
-        f"recall={score.recall:.4f} f1={score.f1:.4f}",
+        f"recall={score.recall:.4f} f1={score.f1:.4f} "
+        f"category_mismatches={score.category_mismatches} "
+        f"severity_mismatches={score.severity_mismatches}",
         file=sys.stderr,
     )
 
@@ -569,6 +829,21 @@ def _check(args: argparse.Namespace) -> None:
     golden = load_golden(args.golden)
     regressions = compare_to_golden(score, golden, tolerance=args.tolerance)
     print(json.dumps(score.model_dump(mode="json"), indent=2, sort_keys=True))
+    drift = category_mismatch_delta(score, golden)
+    if drift is not None:
+        print(f"\nnote: {drift}", file=sys.stderr)
+        print(
+            "      taxonomy drift is reported, not gated: it says what the reviewer "
+            "called the defect, not whether it found it.",
+            file=sys.stderr,
+        )
+    if score.severity_mismatches:
+        print(
+            f"\nnote: {score.severity_mismatches} labeled finding(s) were located and "
+            f"graded differently. The severity gate charges each of those as a false "
+            f"negative and a false positive; see evals/README.md.",
+            file=sys.stderr,
+        )
     if regressions:
         print("\nREGRESSION against " + str(args.golden) + ":", file=sys.stderr)
         for regression in regressions:
@@ -622,6 +897,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument("--verifier-output-usd-per-million", type=float, default=None)
+    run.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Reuse the cases already in --output instead of paying for them "
+            "again. The file is rewritten after every fixture, so an interrupted "
+            "run leaves one to resume from. A case whose fixture changed since "
+            "is re-run."
+        ),
+    )
     run.set_defaults(handler=_run)
 
     capture = subparsers.add_parser(
@@ -630,6 +915,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capture.add_argument("--suite", type=Path, required=True)
     capture.add_argument("--golden", type=Path, default=DEFAULT_GOLDEN_PATH)
+    capture.add_argument(
+        "--allow-zero-recall",
+        action="store_true",
+        help=(
+            "Record a golden that found none of its labeled defects. Such a "
+            "golden passes against every later run, so this has to be asked for "
+            "explicitly."
+        ),
+    )
     capture.set_defaults(handler=_capture)
 
     check = subparsers.add_parser(

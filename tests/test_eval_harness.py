@@ -28,6 +28,7 @@ from service.evaluation import (
     EvaluationSuite,
     ModelPricing,
     ObservedFinding,
+    RunConfiguration,
     score_evaluation,
 )
 from service.review_models import (
@@ -163,13 +164,63 @@ def _candidate(line: int = 1, confidence: float = 0.95) -> CandidateFinding:
 
 def test_committed_fixtures_all_load_and_validate():
     fixtures = eval_harness.load_fixtures(FIXTURE_ROOT)
-    assert len(fixtures) >= 5, "the unit calls for 5-10 committed fixtures"
-    assert [loaded.fixture.case_id for loaded in fixtures] == sorted(
-        loaded.fixture.case_id for loaded in fixtures
-    )
+    # Pinned, not a floor. A golden is captured against a fixture set, and a
+    # `>= 5` assertion stays green while three of them quietly stop loading.
+    assert [loaded.fixture.case_id for loaded in fixtures] == [
+        "clean-settings-refactor",
+        "invite-redemption-race",
+        "missing-null-check",
+        "n-plus-one-rollup",
+        "off-by-one-page-slice",
+        "path-traversal-attachment",
+        "sql-injection-sort-column",
+        "unhandled-error-path",
+    ]
     for loaded in fixtures:
         assert loaded.diff_text.startswith("diff --git ")
         assert loaded.contexts, f"{loaded.fixture.case_id} has no retrieved context"
+        assert loaded.digest
+
+
+def test_a_directory_without_a_case_file_is_an_error_not_a_skip(tmp_path):
+    """Silently skipping one would shrink the suite with nothing red.
+
+    Renaming `case.json` to `case.jsonc` used to drop that fixture from every
+    run while every test stayed green -- and the fixture set is what a golden is
+    captured from.
+    """
+
+    _write_fixture(tmp_path, "present")
+    (tmp_path / "absent").mkdir()
+
+    with pytest.raises(eval_harness.FixtureError, match="missing case.json"):
+        eval_harness.load_fixtures(tmp_path)
+
+
+def test_every_committed_label_claims_at_most_a_couple_of_lines():
+    """Location is the whole match gate, so the span is the whole discriminator.
+
+    There is no finding text to fall back on, so any finding inside a label's
+    span is credited as having found the labeled defect. Every committed label
+    sits exactly on a changed line, so none of them needs more than one line of
+    slack.
+    """
+
+    for loaded in eval_harness.load_fixtures(FIXTURE_ROOT):
+        for expected in loaded.fixture.expected:
+            assert expected.line_tolerance <= 1, (
+                f"{loaded.fixture.case_id}/{expected.finding_id} claims "
+                f"{2 * expected.line_tolerance + 1} lines"
+            )
+
+
+def test_a_fixture_digest_changes_when_the_diff_changes(tmp_path):
+    directory = _write_fixture(tmp_path, "hashed")
+    before = eval_harness.load_fixture(directory).digest
+
+    (directory / "diff.patch").write_text(DIFF.replace("user_value", "other_value"))
+
+    assert eval_harness.load_fixture(directory).digest != before
 
 
 def test_committed_fixtures_include_a_case_with_no_expected_findings():
@@ -295,7 +346,7 @@ def test_run_fixture_emits_the_observed_structure_the_scorer_consumes(
     # The scorer accepts it without any transcription step.
     score = score_evaluation(
         EvaluationSuite(
-            schema_version="diffuse-evaluation-v1",
+            schema_version="diffuse-evaluation-v2",
             name="plumbing",
             model="openai/gpt-4.1-mini",
             verifier_model="openai/gpt-4.1-mini",
@@ -477,7 +528,7 @@ def test_every_committed_label_is_reachable_through_the_whole_engine(monkeypatch
         )
         score = score_evaluation(
             EvaluationSuite(
-                schema_version="diffuse-evaluation-v1",
+                schema_version="diffuse-evaluation-v2",
                 name=loaded.fixture.case_id,
                 model="openai/gpt-4.1-mini",
                 verifier_model="openai/gpt-4.1-mini",
@@ -493,11 +544,31 @@ def test_every_committed_label_is_reachable_through_the_whole_engine(monkeypatch
 # ---------------------------------------------------------------------------
 
 
-def _suite(*, observed_per_case: dict[str, list[ObservedFinding]]) -> EvaluationSuite:
+def _configuration(**overrides) -> RunConfiguration:
+    return RunConfiguration(
+        **{
+            "prompt_version": "native-review-v6-review-diagrams",
+            "min_review_confidence": 0.75,
+            "review_passes": ["security"],
+            "requested_review_depth": None,
+            "depth_renderings": [],
+            **overrides,
+        }
+    )
+
+
+def _suite(
+    *,
+    observed_per_case: dict[str, list[ObservedFinding]],
+    run_configuration: RunConfiguration | None = None,
+    digest_per_case: dict[str, str] | None = None,
+) -> EvaluationSuite:
+    digests = digest_per_case or {}
     return EvaluationSuite(
-        schema_version="diffuse-evaluation-v1",
+        schema_version="diffuse-evaluation-v2",
         name="gate",
         model="openai/gpt-4.1-mini",
+        run_configuration=run_configuration or _configuration(),
         cases=[
             EvaluationCase(
                 case_id=case_id,
@@ -511,6 +582,7 @@ def _suite(*, observed_per_case: dict[str, list[ObservedFinding]]) -> Evaluation
                 ],
                 observed=observed,
                 latency_ms=10,
+                fixture_digest=digests.get(case_id, f"digest-of-{case_id}"),
             )
             for case_id, observed in sorted(observed_per_case.items())
         ],
@@ -606,6 +678,45 @@ def test_a_fixture_with_no_golden_entry_is_reported():
     assert any("has no golden entry" in line for line in regressions)
 
 
+def test_recategorising_a_found_defect_is_not_a_regression():
+    """The gate measures whether the bug was found, not what it was called.
+
+    Before DEV-292 this ran as a lost true positive *and* a gained false
+    positive, so a run that found exactly the same defects would have failed the
+    gate twice over for a taxonomy disagreement. Goldens are captured next, so
+    the wrong answer here would have been frozen into them.
+    """
+
+    good = _suite(observed_per_case={"alpha": [_finding()], "beta": [_finding()]})
+    golden = eval_harness.golden_from_score(score_evaluation(good))
+    recategorised = _suite(
+        observed_per_case={
+            "alpha": [_finding()],
+            "beta": [_finding(category="correctness")],
+        }
+    )
+
+    score = score_evaluation(recategorised)
+
+    assert eval_harness.compare_to_golden(score, golden) == []
+    assert score.category_mismatches == 1
+    assert [item.count for item in score.category_confusion] == [1]
+
+
+def test_a_finding_that_drifts_out_of_the_span_is_still_a_regression():
+    """Widening what counts as the same place must not hide a real miss."""
+
+    good = _suite(observed_per_case={"alpha": [_finding()]})
+    golden = eval_harness.golden_from_score(score_evaluation(good))
+    # The label sits at line 1 with the default tolerance of 3.
+    drifted = _suite(observed_per_case={"alpha": [_finding(line=5)]})
+
+    regressions = eval_harness.compare_to_golden(score_evaluation(drifted), golden)
+
+    assert any("missed 1 labeled findings" in line for line in regressions)
+    assert any("reported 1 unlabeled findings" in line for line in regressions)
+
+
 def test_a_golden_case_that_did_not_run_is_reported():
     golden = eval_harness.golden_from_score(
         score_evaluation(_suite(observed_per_case={"alpha": [_finding()], "beta": []}))
@@ -625,6 +736,165 @@ def test_comparing_against_a_golden_from_another_model_is_refused():
     regressions = eval_harness.compare_to_golden(score_evaluation(suite), other)
 
     assert any("is not meaningful" in line for line in regressions)
+
+
+def test_a_golden_captured_at_a_different_confidence_floor_is_refused():
+    """The trigger is a variable left in a shell, not an exotic misuse.
+
+    Capture with MIN_REVIEW_CONFIDENCE=0.99 and the golden records near-zero
+    recall and near-zero false positives, which every later run at the default
+    0.75 clears trivially and forever -- with the precision guard pinned to a
+    floor nobody chose.
+    """
+
+    strict = _suite(
+        observed_per_case={"alpha": [_finding()]},
+        run_configuration=_configuration(min_review_confidence=0.99),
+    )
+    golden = eval_harness.golden_from_score(score_evaluation(strict))
+    default = _suite(observed_per_case={"alpha": [_finding()]})
+
+    regressions = eval_harness.compare_to_golden(score_evaluation(default), golden)
+
+    assert any("MIN_REVIEW_CONFIDENCE" in line for line in regressions)
+    assert any("not meaningful" in line for line in regressions)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "needle"),
+    (
+        ("prompt_version", "native-review-v7-something-else", "PROMPT_VERSION"),
+        ("review_passes", ["security", "correctness"], "REVIEW_PASSES"),
+        ("requested_review_depth", "thorough", "review depth"),
+    ),
+)
+def test_a_golden_captured_under_other_configuration_is_refused(field, value, needle):
+    captured = _suite(
+        observed_per_case={"alpha": [_finding()]},
+        run_configuration=_configuration(**{field: value}),
+    )
+    golden = eval_harness.golden_from_score(score_evaluation(captured))
+    now = _suite(observed_per_case={"alpha": [_finding()]})
+
+    regressions = eval_harness.compare_to_golden(score_evaluation(now), golden)
+
+    assert any(needle in line for line in regressions)
+
+
+def test_a_golden_captured_at_a_depth_the_model_never_received_is_refused():
+    """Asking for a depth and being sent one are different things.
+
+    A route with no reasoning control is sent nothing whatever the request says,
+    so two runs that agree on `REVIEW_DEPTH` can still differ on what reached the
+    model.
+    """
+
+    honored = _configuration(
+        requested_review_depth="thorough",
+        depth_renderings=[
+            {
+                "stage": "candidate and verifier",
+                "model": "anthropic/claude-sonnet-5",
+                "mechanism": "effort-scale",
+                "effort": "xhigh",
+            }
+        ],
+    )
+    dropped = _configuration(
+        requested_review_depth="thorough",
+        depth_renderings=[
+            {
+                "stage": "candidate and verifier",
+                "model": "anthropic/claude-sonnet-5",
+                "mechanism": "none",
+                "effort": None,
+            }
+        ],
+    )
+    golden = eval_harness.golden_from_score(
+        score_evaluation(
+            _suite(observed_per_case={"alpha": [_finding()]}, run_configuration=honored)
+        )
+    )
+
+    regressions = eval_harness.compare_to_golden(
+        score_evaluation(
+            _suite(observed_per_case={"alpha": [_finding()]}, run_configuration=dropped)
+        ),
+        golden,
+    )
+
+    assert any("candidate and verifier" in line for line in regressions)
+    assert any("no reasoning parameter" in line for line in regressions)
+
+
+def test_editing_a_fixtures_diff_after_capture_is_reported():
+    """Making the bug more obvious raises recall without the engine changing.
+
+    The label count cannot see it: the labels are untouched, only the code the
+    reviewer is asked to read got easier.
+    """
+
+    golden = eval_harness.golden_from_score(
+        score_evaluation(_suite(observed_per_case={"alpha": [_finding()]}))
+    )
+    rewritten = _suite(
+        observed_per_case={"alpha": [_finding()]},
+        digest_per_case={"alpha": "a-different-fixture-entirely"},
+    )
+
+    regressions = eval_harness.compare_to_golden(score_evaluation(rewritten), golden)
+
+    assert any("different fixture content" in line for line in regressions)
+
+
+def test_a_run_that_recorded_no_configuration_cannot_defend_a_golden():
+    golden = eval_harness.golden_from_score(
+        score_evaluation(_suite(observed_per_case={"alpha": [_finding()]}))
+    )
+    anonymous = _suite(observed_per_case={"alpha": [_finding()]})
+    anonymous.run_configuration = None
+
+    regressions = eval_harness.compare_to_golden(score_evaluation(anonymous), golden)
+
+    assert any("recorded no configuration" in line for line in regressions)
+
+
+def test_a_golden_cannot_be_captured_from_a_suite_with_no_configuration():
+    suite = _suite(observed_per_case={"alpha": [_finding()]})
+    suite.run_configuration = None
+
+    with pytest.raises(ValueError, match="records no run configuration"):
+        eval_harness.golden_from_score(score_evaluation(suite))
+
+
+def test_the_golden_records_category_mismatches_and_reports_the_delta():
+    """Taxonomy drift is recorded and named, and never fails the gate.
+
+    A reviewer that starts filing every injection as `maintainability` is saying
+    something worth reading, but it is a statement about taxonomy rather than
+    about whether the bug was found -- and the table it comes from is
+    non-minimal by construction.
+    """
+
+    agreeing = _suite(observed_per_case={"alpha": [_finding()], "beta": [_finding()]})
+    golden = eval_harness.golden_from_score(score_evaluation(agreeing))
+    assert golden.category_mismatches == 0
+
+    drifted = score_evaluation(
+        _suite(
+            observed_per_case={
+                "alpha": [_finding(category="maintainability")],
+                "beta": [_finding(category="maintainability")],
+            }
+        )
+    )
+
+    assert eval_harness.compare_to_golden(drifted, golden) == []
+    delta = eval_harness.category_mismatch_delta(drifted, golden)
+    assert delta is not None
+    assert "up from" in delta
+    assert "security->maintainability" in delta
 
 
 def test_tolerance_outside_zero_to_one_is_refused():
@@ -698,6 +968,215 @@ def test_check_exits_one_on_a_seeded_regression(tmp_path, capsys):
 
     assert raised.value.code == 1
     assert "REGRESSION" in capsys.readouterr().err
+
+
+def test_capture_refuses_a_golden_that_found_nothing(tmp_path, capsys):
+    """A golden with no true positives passes against every later run.
+
+    Including one where the review engine returns nothing at all, because
+    precision is 1.0 when there is nothing to be precise about. `scripts/eval.sh`
+    and `evals/CAPTURE.md` both warn about this in prose; the plan asks for a
+    machine check.
+    """
+
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        _suite(observed_per_case={"alpha": [], "beta": []}).model_dump_json()
+    )
+
+    exit_code = eval_harness.main(
+        ["capture", "--suite", str(suite_path), "--golden", str(tmp_path / "g.json")]
+    )
+
+    assert exit_code == 2
+    assert "--allow-zero-recall" in capsys.readouterr().err
+    assert not (tmp_path / "g.json").exists()
+
+
+def test_capture_records_a_zero_recall_golden_when_asked_explicitly(tmp_path):
+    suite_path = tmp_path / "suite.json"
+    golden_path = tmp_path / "g.json"
+    suite_path.write_text(
+        _suite(observed_per_case={"alpha": [], "beta": []}).model_dump_json()
+    )
+
+    assert (
+        eval_harness.main(
+            [
+                "capture",
+                "--suite",
+                str(suite_path),
+                "--golden",
+                str(golden_path),
+                "--allow-zero-recall",
+            ]
+        )
+        == 0
+    )
+    assert eval_harness.load_golden(golden_path).recall == 0.0
+
+
+def test_run_records_the_configuration_that_moves_the_score(tmp_path, monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.delenv("REVIEW_VERIFIER_MODEL", raising=False)
+    monkeypatch.setenv("REVIEW_PASSES", "security")
+    monkeypatch.setenv("MIN_REVIEW_CONFIDENCE", "0.6")
+    monkeypatch.delenv("REVIEW_DEPTH", raising=False)
+    monkeypatch.delenv("REVIEW_EFFORT", raising=False)
+    _stub_call(monkeypatch, findings=[_candidate()], keep={"candidate-0"})
+    _write_fixture(tmp_path, "configured")
+    output = tmp_path / "suite.json"
+
+    assert (
+        eval_harness.main(["run", "--fixtures", str(tmp_path), "--output", str(output)])
+        == 0
+    )
+
+    configuration = eval_harness.load_suite(output).run_configuration
+    assert configuration is not None
+    assert configuration.min_review_confidence == 0.6
+    assert configuration.review_passes == ["security"]
+    assert configuration.prompt_version == review_engine.PROMPT_VERSION
+    assert configuration.requested_review_depth is None
+
+
+def test_run_records_what_the_model_was_actually_sent_for_a_depth(
+    tmp_path, monkeypatch
+):
+    """`CAPTURE.md` recommends a cheap model, and the cheap one honours nothing.
+
+    A golden that recorded only the requested depth would let a run at
+    `REVIEW_DEPTH=thorough` on a route with no reasoning control defend a run at
+    the same depth on a route that has one.
+    """
+
+    monkeypatch.setenv("REVIEW_MODEL", "anthropic/claude-sonnet-5")
+    monkeypatch.delenv("REVIEW_VERIFIER_MODEL", raising=False)
+    monkeypatch.setenv("REVIEW_PASSES", "security")
+    monkeypatch.setenv("REVIEW_DEPTH", "thorough")
+    monkeypatch.delenv("REVIEW_EFFORT", raising=False)
+    _stub_call(monkeypatch, findings=[_candidate()], keep={"candidate-0"})
+    _write_fixture(tmp_path, "deep")
+    output = tmp_path / "suite.json"
+
+    assert (
+        eval_harness.main(["run", "--fixtures", str(tmp_path), "--output", str(output)])
+        == 0
+    )
+
+    configuration = eval_harness.load_suite(output).run_configuration
+    assert configuration is not None
+    assert configuration.requested_review_depth == "thorough"
+    assert configuration.depth_renderings
+    assert all(
+        rendering.effort is not None for rendering in configuration.depth_renderings
+    )
+
+
+def test_run_refuses_a_depth_the_candidate_model_cannot_express(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.delenv("REVIEW_VERIFIER_MODEL", raising=False)
+    monkeypatch.setenv("REVIEW_DEPTH", "thorough")
+    monkeypatch.delenv("REVIEW_EFFORT", raising=False)
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("a model was called at a depth it cannot express")
+
+    monkeypatch.setattr(review_engine, "_call_structured", never)
+    _write_fixture(tmp_path, "undeliverable-depth")
+
+    exit_code = eval_harness.main(
+        ["run", "--fixtures", str(tmp_path), "--output", str(tmp_path / "suite.json")]
+    )
+
+    assert exit_code == 2
+    assert "cannot be honored" in capsys.readouterr().err
+    assert not (tmp_path / "suite.json").exists()
+
+
+def test_run_resumes_from_the_cases_a_previous_attempt_paid_for(
+    tmp_path, monkeypatch
+):
+    """A provider error on fixture 7 of 8 used to discard 35 completed calls."""
+
+    fixtures = tmp_path / "fixtures"
+    _write_fixture(fixtures, "alpha")
+    _write_fixture(fixtures, "beta")
+    output = tmp_path / "suite.json"
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.delenv("REVIEW_VERIFIER_MODEL", raising=False)
+    monkeypatch.setenv("REVIEW_PASSES", "security")
+
+    calls: list[str] = []
+    real_run_fixture = eval_harness.run_fixture
+
+    def counting(loaded, **kwargs):
+        calls.append(loaded.fixture.case_id)
+        if loaded.fixture.case_id == "beta" and len(calls) == 2:
+            raise RuntimeError("provider is down")
+        return real_run_fixture(loaded, **kwargs)
+
+    _stub_call(monkeypatch, findings=[_candidate()], keep={"candidate-0"})
+    monkeypatch.setattr(eval_harness, "run_fixture", counting)
+
+    with pytest.raises(RuntimeError, match="provider is down"):
+        eval_harness.main(
+            ["run", "--fixtures", str(fixtures), "--output", str(output)]
+        )
+    assert calls == ["alpha", "beta"]
+    # The partial file is the point: alpha's model calls are already paid for.
+    assert [case["case_id"] for case in json.loads(output.read_text())["cases"]] == [
+        "alpha"
+    ]
+
+    calls.clear()
+    assert (
+        eval_harness.main(
+            ["run", "--fixtures", str(fixtures), "--output", str(output), "--resume"]
+        )
+        == 0
+    )
+
+    assert calls == ["beta"]
+    suite = eval_harness.load_suite(output)
+    assert [case.case_id for case in suite.cases] == ["alpha", "beta"]
+
+
+def test_resuming_re_runs_a_case_whose_fixture_changed(tmp_path, monkeypatch):
+    fixtures = tmp_path / "fixtures"
+    directory = _write_fixture(fixtures, "alpha")
+    output = tmp_path / "suite.json"
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.delenv("REVIEW_VERIFIER_MODEL", raising=False)
+    monkeypatch.setenv("REVIEW_PASSES", "security")
+    _stub_call(monkeypatch, findings=[_candidate()], keep={"candidate-0"})
+
+    assert (
+        eval_harness.main(["run", "--fixtures", str(fixtures), "--output", str(output)])
+        == 0
+    )
+    (directory / "diff.patch").write_text(DIFF.replace("user_value", "other_value"))
+
+    calls: list[str] = []
+    real_run_fixture = eval_harness.run_fixture
+    monkeypatch.setattr(
+        eval_harness,
+        "run_fixture",
+        lambda loaded, **kwargs: (
+            calls.append(loaded.fixture.case_id),
+            real_run_fixture(loaded, **kwargs),
+        )[1],
+    )
+
+    assert (
+        eval_harness.main(
+            ["run", "--fixtures", str(fixtures), "--output", str(output), "--resume"]
+        )
+        == 0
+    )
+    assert calls == ["alpha"]
 
 
 def test_run_refuses_a_cross_family_pair_before_calling_any_model(

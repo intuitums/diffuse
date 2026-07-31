@@ -9,7 +9,7 @@
       "file_path": "reports/query.py",
       "line": 23,
       "category": "security",
-      "line_tolerance": 3
+      "line_tolerance": 1
     }
   ],
   "addressed_finding_ids": [],
