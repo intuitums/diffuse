@@ -533,6 +533,7 @@ def _begin_native_review(
                 event,
                 provenance,
                 model_plan,
+                depth_support,
             ),
             learned_rules=policy.approved_learned_rules,
             custom_contexts=policy.approved_custom_contexts,
@@ -546,17 +547,42 @@ def _review_context_fingerprint(
     event: PullRequestEvent,
     provenance: PullRequestProvenance,
     model_plan: ReviewModelPlan,
+    depth_support: ReviewDepthSupport,
 ) -> str:
-    identity = "\0".join(
-        (
-            context_plan.fingerprint,
-            policy.fingerprint,
-            event.trigger_fingerprint,
-            provenance.fingerprint,
-            model_plan.fingerprint,
-        )
-    )
-    return hashlib.sha256(identity.encode()).hexdigest()
+    """Everything that decides what a review would say, in one value.
+
+    This is the identity of a review run. `begin_review_run` serves an existing
+    run whose (pull request, base, head, model, prompt version, fingerprint)
+    already matches, and a run that is already `ready` is republished without
+    generating anything -- so an input left out here is an input an operator can
+    change while still being served the previous review.
+
+    Review depth was such an input. It is *recorded* on the run
+    (`review_depth_resolution`), but recording is not identity: raising
+    `REVIEW_DEPTH` and re-running found the shallower run ready and republished
+    it, which is the same silent no-op the depth work exists to delete. The
+    resolved summary is used rather than the bare variable because it names both
+    what was asked and what each stage will actually be sent, so a depth the
+    route steps down or refuses is distinguished from one it honours.
+
+    `summary()` is `None` exactly when no depth was requested, and contributes
+    nothing at all there -- not an empty component, which would still change the
+    hash -- so an installation that never set a depth keeps the fingerprints its
+    runs are already stored under and does not re-review every open pull request
+    on upgrade.
+    """
+
+    components = [
+        context_plan.fingerprint,
+        policy.fingerprint,
+        event.trigger_fingerprint,
+        provenance.fingerprint,
+        model_plan.fingerprint,
+    ]
+    depth_resolution = depth_support.summary()
+    if depth_resolution is not None:
+        components.append(depth_resolution)
+    return hashlib.sha256("\0".join(components).encode()).hexdigest()
 
 
 def _load_cross_repository_context_plan(

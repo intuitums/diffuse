@@ -20,7 +20,9 @@ request.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+from types import SimpleNamespace
 
 import litellm
 import pytest
@@ -534,3 +536,129 @@ def test_a_roomier_output_budget_leaves_the_same_model_working(
 
     assert support.refusal() is None
     assert dict(support.plans)["candidate and verifier"].thinking_tokens == 4096
+
+
+# --- A recorded depth is not an identified depth ------------------------------
+#
+# `begin_review_run` serves an existing run whose (pull request, base, head,
+# model, prompt version, context fingerprint) already matches, and a run that is
+# already `ready` is republished without generating anything. So what the
+# fingerprint leaves out is what an operator can change while still being handed
+# the previous review.
+
+
+def _fingerprint(depth_support, *, head_sha: str = "a" * 40) -> str:
+    """`worker._review_context_fingerprint` over one fixed review, one depth.
+
+    Every argument but the depth is a stub exposing only the fingerprint the
+    function reads, so the test states exactly one thing: whether the depth
+    reaches the identity of the run.
+    """
+
+    stub = SimpleNamespace(fingerprint="f" * 64)
+    event = SimpleNamespace(trigger_fingerprint=head_sha)
+    return worker._review_context_fingerprint(
+        stub,
+        stub,
+        event,
+        stub,
+        stub,
+        depth_support,
+    )
+
+
+def test_a_deeper_review_is_a_different_review_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Raising REVIEW_DEPTH must not be served the shallower review it replaces.
+
+    The depth was recorded on the run but was not part of its identity, so a
+    re-run at `exhaustive` found the `careful` run ready and republished it --
+    an operator asking for deeper review, getting none, and being told nothing:
+    the exact failure this unit exists to delete, arriving through the store
+    rather than through the request.
+    """
+
+    monkeypatch.setenv("REVIEW_MODEL", EFFORT_SCALE_MODEL)
+
+    monkeypatch.setenv("REVIEW_DEPTH", "careful")
+    careful = _fingerprint(resolve_review_depth_support())
+    monkeypatch.setenv("REVIEW_DEPTH", "exhaustive")
+    exhaustive = _fingerprint(resolve_review_depth_support())
+
+    assert careful != exhaustive
+
+
+def test_the_same_depth_is_still_the_same_review_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half: identity has to stay stable, or every push re-reviews."""
+
+    monkeypatch.setenv("REVIEW_MODEL", EFFORT_SCALE_MODEL)
+    monkeypatch.setenv("REVIEW_DEPTH", "thorough")
+
+    assert _fingerprint(resolve_review_depth_support()) == _fingerprint(
+        resolve_review_depth_support()
+    )
+
+
+def test_a_depth_the_route_cannot_honor_is_still_a_different_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provenance routing permutes the pair per pull request, so the pair that
+    actually reviews -- and what it will be sent -- is part of the identity too.
+
+    The same requested depth against a candidate that has no reasoning control
+    is not the same review as one against a candidate that honours it.
+    """
+
+    monkeypatch.setenv("REVIEW_MODEL", EFFORT_SCALE_MODEL)
+    monkeypatch.setenv("REVIEW_DEPTH", "thorough")
+
+    honored = _fingerprint(
+        resolve_review_depth_support(
+            candidate_model=EFFORT_SCALE_MODEL,
+            verifier_model=SAMPLING_ONLY_MODEL,
+        )
+    )
+    routed = _fingerprint(
+        resolve_review_depth_support(
+            candidate_model=SAMPLING_ONLY_MODEL,
+            verifier_model=EFFORT_SCALE_MODEL,
+            source="routed by provenance: opposing_anthropic_reviewer",
+        )
+    )
+
+    assert honored != routed
+
+
+def test_never_setting_a_depth_does_not_change_an_existing_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An installation with no depth configured must not re-review everything.
+
+    `summary()` is None exactly when nothing was asked, so the depth contributes
+    the empty string and the fingerprint is byte-identical to the one those runs
+    were stored under.
+    """
+
+    monkeypatch.setenv("REVIEW_MODEL", EFFORT_SCALE_MODEL)
+    support = resolve_review_depth_support()
+    assert support.summary() is None
+
+    # The identity these runs were already stored under: the five fingerprints,
+    # with no depth component at all.
+    stub_fingerprint = "f" * 64
+    previous = hashlib.sha256(
+        "\0".join(
+            (
+                stub_fingerprint,
+                stub_fingerprint,
+                "a" * 40,
+                stub_fingerprint,
+                stub_fingerprint,
+            )
+        ).encode()
+    ).hexdigest()
+
+    assert _fingerprint(support) == previous
