@@ -466,9 +466,22 @@ current `anthropic/` and OpenAI reasoning routes, a thinking-token budget on
 `claude-haiku-4-5`, `gemini/`, and `bedrock/`, an on/off switch on `ollama/`,
 and nothing at all on `openai/gpt-4.1-mini`. The resolution is reported at
 startup — what was asked for, what the model supports, and what will actually be
-sent — and a `REVIEW_MODEL` that cannot express the requested depth at all
-refuses to start rather than dropping it. `diffuse model` prints the same
-resolution, plus the full capability probe for both configured models.
+sent — and a `REVIEW_MODEL` LiteLLM knows about that cannot express the requested
+depth at all refuses to start rather than dropping it. A model LiteLLM holds no
+metadata for is reported rather than refused: an empty rendering there is an
+absence of knowledge, not a finding, and the self-hosted spellings
+`.env.example` documents produce exactly that. The unhonoured case is written to
+stderr rather than through `LOG_LEVEL`, which can silence it. `diffuse model`
+prints the same resolution, plus the full capability probe for both configured
+models.
+
+Provenance routing permutes the configured pair per pull request, so the
+candidate pass on an AI-authored change can run on the model configured as the
+verifier — a pair startup never saw, and one whose candidate need not support the
+depth the configured candidate did. That pair is resolved per review, reported,
+and recorded on the review run in `review_depth_resolution`, so what a given
+review was actually asked to do survives both `LOG_LEVEL` and a later
+configuration change.
 
 Thinking tokens are billed against `REVIEW_MAX_OUTPUT_TOKENS`, which also bounds
 the thinking budget a route derives from the depth, so raise it alongside.

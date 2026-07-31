@@ -320,13 +320,22 @@ def _supports_json_schema(model: str) -> bool:
 
 @dataclass(frozen=True)
 class ReviewDepthSupport:
-    """What each configured review stage will actually be sent for a depth.
+    """What one pair of review models will actually be sent for a depth.
 
-    Resolved once at startup rather than per call. A model control the operator
+    Resolved once per pair rather than per call. A model control the operator
     explicitly asked for and does not get is the failure this exists to make
     impossible to miss, and Diffuse has no structured logging, metrics, or
     alerting -- so a warning emitted mid-review is indistinguishable from
     silence.
+
+    There are two pairs, and both have to be resolved. Startup resolves the
+    *configured* pair, which is the only one an operator can act on before a
+    review exists. `select_review_model_plan` then permutes that pair per pull
+    request, so an AI-authored change routinely runs its candidate pass on the
+    model configured as the verifier -- a pair startup never looked at. That
+    second resolution is reported and recorded on the review run itself, since
+    refusing there would dead-letter a pull request over a configuration the
+    operator could only fix between runs.
     """
 
     #: None when neither REVIEW_DEPTH nor REVIEW_EFFORT is set.
@@ -334,53 +343,109 @@ class ReviewDepthSupport:
     variable: str
     #: (stage, plan), candidate first. Empty when no depth was requested.
     plans: tuple[tuple[str, ReasoningPlan], ...]
+    #: How this pair was arrived at, for the first line of the report.
+    source: str = "configured"
 
     def refusal(self) -> str | None:
         """The message to stop startup with, or None to proceed.
 
         A candidate model that cannot express the requested depth at all is a
         refusal: the operator asked for deeper review and would get exactly
-        none of it. A verifier that cannot is reported, not refused --
-        `.env.example` recommends a cross-family verifier precisely so the two
-        models differ, and `openai/gpt-4.1-mini` (a documented pairing) has no
-        reasoning control. Failing there would make review depth and
-        cross-family verification mutually exclusive.
+        none of it. Three things narrow that:
+
+        * A verifier that cannot is reported, not refused -- `.env.example`
+          recommends a cross-family verifier precisely so the two models
+          differ, and `openai/gpt-4.1-mini` (a documented pairing) has no
+          reasoning control. Failing there would make review depth and
+          cross-family verification mutually exclusive.
+        * A route LiteLLM has no metadata for is reported, not refused. An
+          empty rendering there is an absence of knowledge, not a finding, and
+          `.env.example` documents exactly the two spellings that produce it --
+          an unprefixed deployment name and the `openai/` prefix against
+          `REVIEW_API_BASE`. The same server behind `hosted_vllm/` renders a
+          graded effort, which disproves any assertion made from the silence.
+        * A refusal caused by `REVIEW_MAX_OUTPUT_TOKENS` says so and names that
+          variable, because "choose a different model" does not fix it.
         """
 
         for stage, plan in self.plans:
             if not stage.startswith("candidate") or plan.honored:
                 continue
+            if not plan.known_route:
+                continue
+            if plan.blocking_output_budget is not None:
+                remedy = (
+                    "Raise REVIEW_MAX_OUTPUT_TOKENS above the thinking budget this depth "
+                    f"needs, lower {self.variable}, or unset {self.variable} to accept "
+                    "this model's own default depth."
+                )
+            else:
+                remedy = (
+                    "Set REVIEW_MODEL to a model with a reasoning control, or unset "
+                    f"{self.variable} to accept this model's own default depth."
+                )
             return (
                 f"{self.variable}={self.depth} cannot be honored by REVIEW_MODEL "
-                f"{plan.model!r}: {plan.describe()} Set REVIEW_MODEL to a model with a "
-                f"reasoning control, or unset {self.variable} to accept this model's own "
-                "default depth. Run `diffuse model` to see what a model supports."
+                f"{plan.model!r}: {plan.describe()} {remedy} "
+                "Run `diffuse model` to see what a model supports."
             )
         return None
 
     def report_lines(self) -> tuple[str, ...]:
-        """A startup block naming what was asked, and what will be sent."""
+        """A report naming what was asked, and what will be sent."""
 
         if self.depth is None:
             return ()
-        lines = [f"Review depth: {self.variable}={self.depth}"]
+        lines = [f"Review depth: {self.variable}={self.depth} ({self.source})"]
         lines.extend(f"  {stage}: {plan.describe()}" for stage, plan in self.plans)
         return tuple(lines)
+
+    def summary(self) -> str | None:
+        """One bounded line to store on a review run, or None if nothing was asked.
+
+        `LOG_LEVEL` can silence any report and a log line outlives nothing, so
+        the resolution that actually applied to a given review is written down
+        with the run it applied to. Deliberately the same sentences the report
+        prints, joined, rather than a code -- what was asked and what was sent
+        is the whole content.
+        """
+
+        if self.depth is None:
+            return None
+        stages = " | ".join(f"{stage}: {plan.describe()}" for stage, plan in self.plans)
+        summary = f"{self.variable}={self.depth} ({self.source}) | {stages}"
+        return summary[:4096]
 
     @property
     def fully_honored(self) -> bool:
         return all(plan.exact for _stage, plan in self.plans)
 
 
-def resolve_review_depth_support() -> ReviewDepthSupport:
-    """Probe every configured review model against the requested depth."""
+def resolve_review_depth_support(
+    *,
+    candidate_model: str | None = None,
+    verifier_model: str | None = None,
+    source: str = "configured",
+) -> ReviewDepthSupport:
+    """Probe one pair of review models against the requested depth.
+
+    The pair defaults to the configured one, which is what every startup
+    validator asks for. `worker.process_review_job` passes the pair
+    `select_review_model_plan` actually chose, because that is the pair the
+    review will run on and it need not contain the configured candidate at all.
+    """
 
     depth = review_depth()
     if depth is None:
-        return ReviewDepthSupport(depth=None, variable=review_depth_variable(), plans=())
+        return ReviewDepthSupport(
+            depth=None,
+            variable=review_depth_variable(),
+            plans=(),
+            source=source,
+        )
     max_output_tokens = review_max_output_tokens()
-    candidate = review_model()
-    verifier = review_verifier_model()
+    candidate = candidate_model if candidate_model is not None else review_model()
+    verifier = verifier_model if verifier_model is not None else review_verifier_model()
     # The verifier defaults to the candidate, and repeating an identical line
     # reads as two independent findings that happen to agree.
     stages = (
@@ -395,6 +460,7 @@ def resolve_review_depth_support() -> ReviewDepthSupport:
             (stage, plan_reasoning(model, depth, max_output_tokens=max_output_tokens))
             for stage, model in stages
         ),
+        source=source,
     )
 
 

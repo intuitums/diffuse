@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import socket
+import sys
 import time
 from contextlib import closing
 from functools import partial
@@ -145,6 +146,7 @@ from service.repository_mirror import (
 )
 from service.review_engine import (
     PROMPT_VERSION,
+    ReviewDepthSupport,
     _model_api_base,
     _positive_int,
     _supports_json_schema,
@@ -475,6 +477,30 @@ def _set_mirror_state(
         )
 
 
+def report_review_depth_support(support: ReviewDepthSupport) -> None:
+    """Emit one depth resolution where `LOG_LEVEL` cannot delete it.
+
+    A depth that was honoured exactly is ordinary startup information and goes
+    to the log. A depth that was *not* is the only evidence an operator gets
+    that they are paying for a review shallower than the one they configured,
+    and `logging.basicConfig(level=LOG_LEVEL)` can throw it away -- `LOG_LEVEL`
+    is documented in both env files, and at `ERROR` the entire report vanished
+    while the refusal still fired. So the unhonoured case is written straight to
+    stderr, which is what `review_cli.report_review_depth` already does and for
+    the same reason.
+    """
+
+    lines = support.report_lines()
+    if not lines:
+        return
+    if support.fully_honored:
+        for line in lines:
+            LOGGER.info("%s", line)
+        return
+    for line in lines:
+        print(line, file=sys.stderr, flush=True)
+
+
 def _begin_native_review(
     job: WorkflowJob,
     event: PullRequestEvent,
@@ -482,6 +508,7 @@ def _begin_native_review(
     policy: ResolvedReviewPolicy,
     provenance: PullRequestProvenance,
     model_plan: ReviewModelPlan,
+    depth_support: ReviewDepthSupport,
 ) -> ReviewRunHandle:
     if job.pull_request_id is None:
         raise NonRetryableError("Review job does not reference a pull request")
@@ -498,6 +525,7 @@ def _begin_native_review(
             verifier_model=model_plan.verifier_model,
             provenance=provenance.to_dict(),
             model_routing_reason=model_plan.reason_code,
+            review_depth_resolution=depth_support.summary(),
             prompt_version=PROMPT_VERSION,
             context_fingerprint=_review_context_fingerprint(
                 context_plan,
@@ -1541,6 +1569,19 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
         verifier_model=review_verifier_model(),
         minimum_confidence=review_provenance_minimum_confidence(),
     )
+    # Startup validated the *configured* pair. Routing permutes it, so on an
+    # AI-authored pull request the candidate pass runs on the model configured
+    # as the verifier -- a pair no validator has looked at, and one that can
+    # have no reasoning control at all while the configured candidate had one.
+    # Resolve the pair that will actually be used, and record it on the run:
+    # refusing here would dead-letter the pull request over configuration the
+    # operator can only change between runs.
+    depth_support = resolve_review_depth_support(
+        candidate_model=model_plan.candidate_model,
+        verifier_model=model_plan.verifier_model,
+        source=f"routed by provenance: {model_plan.reason_code}",
+    )
+    report_review_depth_support(depth_support)
 
     review_run = await anyio.to_thread.run_sync(
         partial(
@@ -1551,6 +1592,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
             policy,
             provenance,
             model_plan,
+            depth_support,
         )
     )
     if review_run.status == "superseded":
@@ -2420,16 +2462,16 @@ def validate_worker_model_controls() -> None:
     parameter dropped mid-review is indistinguishable from silence. Every
     resolution is reported here, before a single job is claimed, naming what was
     requested, what the model supports, and what will actually be sent. A
-    candidate model that cannot express the request at all does not start.
+    candidate model LiteLLM *knows* cannot express the request does not start;
+    see `ReviewDepthSupport.refusal` for why a model it knows nothing about is
+    reported instead.
+
+    This only ever sees the configured pair. `process_review_job` resolves the
+    pair provenance routing actually chose, which startup cannot know.
     """
 
     support = resolve_review_depth_support()
-    lines = support.report_lines()
-    if not lines:
-        return
-    emit = LOGGER.info if support.fully_honored else LOGGER.warning
-    for line in lines:
-        emit("%s", line)
+    report_review_depth_support(support)
     refusal = support.refusal()
     if refusal is not None:
         raise ValueError(refusal)

@@ -191,17 +191,49 @@ def test_an_unknown_depth_is_refused_rather_than_approximated() -> None:
         plan_reasoning(EFFORT_SCALE_MODEL, "very-hard")
 
 
-def test_the_module_stays_a_leaf() -> None:
-    """`indexer` and `review_engine` both depend on this; a `service` import
-    here would make that a cycle. `model_providers` carries the same contract
-    and the same guard.
+@pytest.mark.parametrize("module", ["model_capabilities.py", "model_providers.py"])
+def test_the_leaf_modules_stay_leaves(module: str) -> None:
+    """`indexer` and `review_engine` both depend on these; a `service` import in
+    either would make that a cycle.
+
+    Read as source text this guard checked for the literal strings `from
+    service` and `import service`, which is three ways short of the contract it
+    states. `from .model_providers import ...` reaches the same module by a
+    relative path, `importlib.import_module("service.x")` never spells an import
+    at all, and `model_providers.py` -- which documents the identical contract
+    and is the reason this one is written the way it is -- had no guard
+    whatsoever. Asking the parse tree costs the same and answers the question
+    that was being asked.
     """
 
+    import ast
     from pathlib import Path
 
-    source = (
-        Path(__file__).resolve().parent.parent / "service" / "model_capabilities.py"
-    ).read_text()
+    path = Path(__file__).resolve().parent.parent / "service" / module
+    tree = ast.parse(path.read_text(), filename=str(path))
 
-    assert "from service" not in source
-    assert "import service" not in source
+    def is_service(name: str | None) -> bool:
+        return name == "service" or (name or "").startswith("service.")
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not is_service(alias.name), (
+                    f"{module} imports {alias.name}; it must stay a leaf."
+                )
+        elif isinstance(node, ast.ImportFrom):
+            assert node.level == 0, (
+                f"{module} uses a relative import, which reaches `service` "
+                "without naming it."
+            )
+            assert not is_service(node.module), (
+                f"{module} imports from {node.module}; it must stay a leaf."
+            )
+        elif isinstance(node, ast.Call):
+            target = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            if target not in {"import_module", "__import__"}:
+                continue
+            for argument in node.args:
+                assert not (
+                    isinstance(argument, ast.Constant) and is_service(argument.value)
+                ), f"{module} imports {argument.value!r} dynamically; it must stay a leaf."

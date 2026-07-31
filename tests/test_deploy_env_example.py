@@ -108,19 +108,40 @@ def test_release_requires_public_oci_artifacts():
     assert 'oras manifest fetch "${BUNDLE_ARTIFACT}:${RELEASE_TAG}"' in workflow
 
 
+_ASSIGNMENT = re.compile(
+    r"^(?P<comment>#[ \t]*)?(?P<name>[A-Z][A-Z0-9_]*)=(?P<value>.*)$", re.M
+)
+
+
 def _declared_values(path: Path) -> dict[str, str]:
     """Every assignment, whether it is live or a commented recommendation.
 
     `REVIEW_MODEL` ships commented out in both files so that `cp .env.example
     .env` cannot produce a working review model -- that would be the deleted
     code default moved into a file. The recommendation itself still has to stay
-    identical between the two, which is the drift a customer feels, so the
-    comparison below has to see a commented line as well as a live one.
+    identical between the two, which is the drift a customer feels, so this has
+    to see a commented line as well as a live one.
+
+    Reading both forms into one flat last-match-wins dictionary would have made
+    this test weaker than the one it replaced: an explanatory
+    `#EMBEDDING_DIMENSIONS=1536` written *below* a live
+    `EMBEDDING_DIMENSIONS=3072` would be read as the file's value, and a
+    divergence between the two files in exactly that shape would pass. A live
+    assignment is what the process gets, so a live assignment always wins here;
+    a commented one is only consulted when there is no live one at all.
+
+    The `#` is also allowed to be separated from the name, because
+    `# REVIEW_MODEL=...` is the comment style used throughout both files and
+    requiring adjacency made a correctly-written recommendation fail with a
+    message about a missing variable.
     """
 
-    return dict(
-        re.findall(r"^#?([A-Z][A-Z0-9_]*)=(.*)$", path.read_text(), re.M)
-    )
+    live: dict[str, str] = {}
+    commented: dict[str, str] = {}
+    for match in _ASSIGNMENT.finditer(path.read_text()):
+        target = commented if match["comment"] else live
+        target[match["name"]] = match["value"]
+    return commented | live
 
 
 def _live_assignments(path: Path) -> set[str]:
@@ -165,6 +186,33 @@ def test_customer_env_example_ships_the_same_model_defaults():
             f".env.example={source[name]!r} deploy/env.example={customer[name]!r}. "
             "A customer following deploy/README.md would get the second one."
         )
+
+
+def test_a_commented_recommendation_never_overrides_a_live_assignment(tmp_path: Path):
+    """Guard the guard: widening the scan to commented lines must not weaken it.
+
+    Both files explain a live setting with a commented alternative nearby, and
+    an explanation written below the assignment it explains is the ordinary way
+    to write one. Read as one flat last-match-wins mapping, that explanation
+    becomes the file's value -- so two files that genuinely disagree about
+    `EMBEDDING_DIMENSIONS` compare equal, which is precisely the drift this
+    module exists to catch.
+    """
+
+    path = tmp_path / "env.example"
+    path.write_text(
+        "EMBEDDING_DIMENSIONS=3072\n"
+        "#EMBEDDING_DIMENSIONS=1536\n"
+        "# REVIEW_MODEL=anthropic/claude-sonnet-5\n"
+    )
+
+    values = _declared_values(path)
+
+    assert values["EMBEDDING_DIMENSIONS"] == "3072"
+    # And a `#` separated from the name is still a recommendation. Requiring
+    # adjacency reported the commonest comment style in these files as a
+    # variable that was never documented at all.
+    assert values["REVIEW_MODEL"] == "anthropic/claude-sonnet-5"
 
 
 def test_no_code_default_can_drift_from_the_shipped_env_files():

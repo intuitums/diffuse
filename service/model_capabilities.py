@@ -63,6 +63,7 @@ __all__ = [
     "depth_for_effort",
     "describe",
     "effort_for_depth",
+    "is_known_route",
     "plan_reasoning",
     "supports_structured_output",
 ]
@@ -183,6 +184,39 @@ def accepts(
     return _render(model, parameter, value, max_output_tokens) is not None
 
 
+@lru_cache(maxsize=256)
+def is_known_route(model: str) -> bool:
+    """Whether LiteLLM holds metadata for this identifier, or only a prefix.
+
+    This is the difference between *"this model has no reasoning control"* and
+    *"nothing here knows anything about this model"*, and the two look identical
+    once a rendering comes back empty. LiteLLM answers a parameter question for
+    an unrecognised identifier from its provider defaults, so an OpenAI-compatible
+    self-hosted deployment reached through the conventional ``openai/`` prefix
+    renders exactly like ``openai/gpt-4.1-mini``: nothing.
+
+    Measured against the pinned ``litellm==1.93.0``::
+
+        openai/gpt-4.1-mini      known    -> genuinely has no reasoning control
+        openai/qwen3-32b         unknown  -> LiteLLM has never heard of it
+        hosted_vllm/qwen3-32b    unknown  -> and yet renders effort-scale
+
+    The same server behind ``hosted_vllm/`` proves an unknown identifier says
+    nothing about the model behind it, so callers must not treat ``NONE`` on an
+    unknown route as a positive finding. ``.env.example`` documents both the
+    unprefixed and ``openai/`` spellings for ``REVIEW_API_BASE`` deployments.
+    """
+
+    route = _route(model)
+    if route is None:
+        return False
+    try:
+        info = litellm.get_model_info(model=route[0], custom_llm_provider=route[1])
+    except Exception:
+        return False
+    return bool(info)
+
+
 def _at(rendered: Mapping[str, object], path: tuple[str, ...]) -> object | None:
     current: object = rendered
     for key in path:
@@ -222,6 +256,14 @@ class ReasoningPlan:
     thinking_tokens: int | None
     #: What LiteLLM would put on the wire. Empty when nothing will be sent.
     rendered: Mapping[str, object]
+    #: Whether LiteLLM actually knows this identifier. Only meaningful when the
+    #: mechanism is NONE, where it separates "this model has no reasoning
+    #: control" from "nothing here knows what this model has". See
+    #: `is_known_route`.
+    known_route: bool = True
+    #: The output budget that refused every thinking budget this route renders,
+    #: when that -- rather than the model -- is why nothing can be sent.
+    blocking_output_budget: int | None = None
 
     @property
     def honored(self) -> bool:
@@ -244,6 +286,27 @@ class ReasoningPlan:
 
         requested = f"{self.depth} ({effort_for_depth(self.depth)})"
         if self.mechanism is ReasoningMechanism.NONE:
+            if self.blocking_output_budget is not None:
+                # The model does have a reasoning control; the output budget is
+                # what refuses it. Saying "this model cannot reason" here sends
+                # the operator to change REVIEW_MODEL, which fixes nothing.
+                return (
+                    f"{self.model} expresses {requested} as a thinking budget, and every "
+                    "budget it renders is at least as large as "
+                    f"REVIEW_MAX_OUTPUT_TOKENS={self.blocking_output_budget} -- which the "
+                    "provider rejects -- so NOTHING will be sent. "
+                    "REVIEW_MAX_OUTPUT_TOKENS is the binding constraint here, not the model."
+                )
+            if not self.known_route:
+                return (
+                    f"LiteLLM has no metadata for {self.model}, so {requested} resolves to "
+                    "nothing and NOTHING will be sent. This says nothing about the model "
+                    "itself: an OpenAI-compatible deployment reached through an unprefixed "
+                    "name or the 'openai/' prefix renders identically to a model that "
+                    "genuinely has no reasoning control. If the endpoint does support a "
+                    "reasoning control, name it with the prefix of the server that serves "
+                    "it (for example 'hosted_vllm/') so LiteLLM can map the parameter."
+                )
             return (
                 f"{self.model} has no reasoning control on this route: "
                 f"{requested} cannot be expressed and NOTHING will be sent. "
@@ -327,6 +390,32 @@ def _plan_at(
     return None
 
 
+def _output_budget_blocked(model: str, depth: str, max_output_tokens: int | None) -> bool:
+    """Whether a thinking budget was rendered and only ``max_tokens`` refused it.
+
+    `_plan_at` discards such a rung, which is correct -- the request would be a
+    400 -- but the discarded reason is the only thing that separates *"choose a
+    different model"* from *"raise REVIEW_MAX_OUTPUT_TOKENS"*. At
+    ``REVIEW_MAX_OUTPUT_TOKENS=1024`` every rung of ``anthropic/claude-haiku-4-5``
+    renders a budget of at least 1024, so the route reports no mechanism at all
+    while the model's reasoning control is in perfect working order.
+    """
+
+    if max_output_tokens is None:
+        return False
+    for index in range(REVIEW_DEPTHS.index(depth), -1, -1):
+        rendered = _render(model, "reasoning_effort", EFFORT_LEVELS[index], max_output_tokens)
+        if rendered is None:
+            continue
+        for path in _BUDGET_PATHS:
+            value = _at(rendered, path)
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            if value >= max_output_tokens:
+                return True
+    return False
+
+
 def plan_reasoning(
     model: str,
     depth: str,
@@ -357,6 +446,12 @@ def plan_reasoning(
         rendered_effort=None,
         thinking_tokens=None,
         rendered=MappingProxyType({}),
+        known_route=is_known_route(model),
+        blocking_output_budget=(
+            max_output_tokens
+            if _output_budget_blocked(model, depth, max_output_tokens)
+            else None
+        ),
     )
 
 
