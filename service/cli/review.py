@@ -33,13 +33,27 @@ from repository_policy.resolve import (
     resolve_review_policy,
 )
 from retriever.retrieve import parse_changed_files, retrieve_context_from_plan
-from service.cli import cluster as cluster_cli
-from service.cli import database as database_cli
-from service.cli import evaluation as evaluation_cli
-from service.cli import learning as learning_cli
-from service.cli import model as model_cli
-from service.cli import repository as repository_cli
-from service.cli import token as token_cli
+from service.cli import (
+    cluster as cluster_cli,
+)
+from service.cli import (
+    database as database_cli,
+)
+from service.cli import (
+    evaluation as evaluation_cli,
+)
+from service.cli import (
+    learning as learning_cli,
+)
+from service.cli import (
+    model as model_cli,
+)
+from service.cli import (
+    repository as repository_cli,
+)
+from service.cli import (
+    token as token_cli,
+)
 from service.cross_repository import resolve_cross_repository_context_plan
 from service.diff_parser import ParsedDiff, parse_unified_diff
 from service.model_providers import resolve_provider
@@ -62,7 +76,7 @@ MAX_ERROR_LINES = 12
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 
 # Documented, stable exit codes. CI depends on these; keep them and the help
-# epilog and README table in sync.
+# epilog and the table in docs/cli.md in sync.
 EXIT_OK = 0
 EXIT_FINDINGS = 1
 EXIT_USAGE = 2
@@ -1221,8 +1235,9 @@ def run_handler(args: argparse.Namespace) -> None:
 def _install_redacting_excepthook() -> None:
     """Redact secrets from an unhandled traceback.
 
-    ``DIFFUSE_CLI_TRACEBACK=1`` re-raises the original exception, and the README
-    advertises that as the way to file a bug report -- so its output is exactly
+    ``DIFFUSE_CLI_TRACEBACK=1`` re-raises the original exception, and
+    ``docs/cli.md`` advertises that as the way to file a bug report -- so its
+    output is exactly
     what an operator pastes into a ticket. Python's default handler would print
     it verbatim, and ``psycopg2.OperationalError`` routinely embeds the whole
     connection string, password included.

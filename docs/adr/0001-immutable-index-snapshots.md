@@ -2,9 +2,13 @@
 
 Date: 2026-07-23
 
-Status: Accepted. ADR 0043 removes embedding model and dimensions from the
-snapshot identity below, leaving repository, commit, and index-format version;
-everything else in this record remains binding.
+Status: Accepted, with the embedding parts superseded by ADR 0043. Snapshot
+identity is now repository, commit, and index-format version alone. Three
+statements in the Decision below no longer hold: unchanged chunks are copied
+forward without embeddings, because none are stored; retrieval matches a
+snapshot on index-format version rather than on embedding model and dimensions;
+and the vector-width note in the Consequences is void. Every other statement in
+this record remains binding.
 
 ## Context
 
