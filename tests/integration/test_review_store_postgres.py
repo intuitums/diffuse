@@ -1,7 +1,7 @@
-"""PostgreSQL coverage for `service/review_store.py`.
+"""PostgreSQL coverage for `service/storage/review.py`.
 
 These assertions used to live in `tests/integration/test_workflow_postgres.py`,
-which was named for `service/workflow.py` but was in fact the only durability
+which was named for `service/hosted/workflow.py` but was in fact the only durability
 suite for seven persistence modules the rebuild keeps. They are recovered here,
 per store, with the queue and worker assertions dropped.
 
@@ -18,8 +18,8 @@ import psycopg2
 
 from indexer.store import begin_index_snapshot
 from retriever.context_models import RepositoryContextSnapshot
-from service.repositories import register_repository
-from service.review_models import (
+from service.hosted.workflow import claim_workflow_job, enqueue_review_event
+from service.models.review import (
     Category,
     ReviewDiagram,
     ReviewFinding,
@@ -27,7 +27,9 @@ from service.review_models import (
     SecurityClassification,
     Severity,
 )
-from service.review_store import (
+from service.repositories import register_repository
+from service.scm import PullRequestEvent
+from service.storage.review import (
     begin_publication,
     begin_review_run,
     load_review_report,
@@ -35,8 +37,6 @@ from service.review_store import (
     mark_publication_published,
     persist_review_report,
 )
-from service.scm import PullRequestEvent
-from service.workflow import claim_workflow_job, enqueue_review_event
 
 
 def _claimed_job(connection, event, *, payload_sha256: str, worker_id: str):

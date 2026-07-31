@@ -3,7 +3,7 @@
 `service/evaluation.py` scores a labeled suite; until now nothing produced the
 `observed` half of that suite, so it had to be transcribed by hand from a
 Diffuse run. This module closes that gap. It loads fixture pull requests from
-`evals/fixtures/`, drives `service.review_engine.generate_review` on the real
+`evals/fixtures/`, drives `service.review.engine.generate_review` on the real
 call path -- no stubbed `_call_structured`, no synthesized findings -- and emits
 exactly the `EvaluationSuite` shape `score_evaluation` already consumes.
 
@@ -41,7 +41,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from retriever.retrieve import RetrievedContext
-from service import review_engine
 from service.diff_parser import parse_unified_diff
 from service.evaluation import (
     EvaluationCase,
@@ -54,7 +53,8 @@ from service.evaluation import (
     RunConfiguration,
     score_evaluation,
 )
-from service.review_models import VerificationBatch
+from service.models.review import VerificationBatch
+from service.review import engine as review_engine
 
 FIXTURE_SCHEMA_VERSION = "diffuse-eval-fixture-v1"
 #: Bumped from v1: a golden now pins the run configuration, the resolved review

@@ -26,9 +26,9 @@ This VM has no Docker. The dev stack runs natively:
   must stay installed on the server. The cluster is NOT auto-started on a
   fresh pod boot (no systemd); start it with `sudo pg_ctlcluster 17 main start` (check with
   `pg_lsclusters`).
-- **API/app** — `uvicorn service.webhook_server:app` on `127.0.0.1:8000` (serves REST `/api/v1`,
+- **API/app** — `uvicorn service.hosted.webhook_server:app` on `127.0.0.1:8000` (serves REST `/api/v1`,
   webhooks, MCP `/mcp`, `/docs`, `/health`, `/ready`). Single FastAPI process.
-- **worker** — `python -m service.worker` (leases jobs from the Postgres queue; there is no
+- **worker** — `python -m service.hosted.worker` (leases jobs from the Postgres queue; there is no
   separate broker/cache).
 
 Python dependencies live in `.venv` (created by the startup update script). Use `.venv/bin/...`

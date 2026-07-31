@@ -8,7 +8,7 @@ from retriever.context_models import (
 )
 from retriever.retrieve import RetrievedContext, RetrievedContextBundle
 from service import code_query
-from service.code_query_models import (
+from service.models.code_query import (
     CodeQueryCitation,
     CodeQueryClaim,
     CodeQueryModelResponse,

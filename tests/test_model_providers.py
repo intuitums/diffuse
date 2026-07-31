@@ -2,9 +2,9 @@
 
 import pytest
 
-from service import model_cli
+from service.cli import model as model_cli
 from service.model_providers import model_family, resolve_provider
-from service.review_engine import _model_api_base, _model_api_key
+from service.review.engine import _model_api_base, _model_api_key
 
 CREDENTIAL_VARIABLES = (
     "OPENAI_API_KEY",

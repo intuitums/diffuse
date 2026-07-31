@@ -11,7 +11,7 @@ from service.auto_approval import (
     assess_change_risk,
     evaluate_auto_approval,
 )
-from service.review_models import Category, ReviewFinding, ReviewReport, Severity
+from service.models.review import Category, ReviewFinding, ReviewReport, Severity
 from service.scm import PullRequestEvent
 
 

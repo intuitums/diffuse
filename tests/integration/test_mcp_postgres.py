@@ -8,14 +8,17 @@ import psycopg2
 import psycopg2.extras
 import pytest
 
-from service.analytics_store import get_review_analytics
-from service.custom_context_store import (
+from service.hosted.analytics_store import get_review_analytics
+from service.hosted.workflow import enqueue_review_event
+from service.mcp_actions import enqueue_mcp_review_trigger
+from service.repositories import register_repository
+from service.scm import PullRequestEvent
+from service.storage.custom_context import (
     create_custom_context,
     delete_custom_context,
     update_custom_context,
 )
-from service.mcp_actions import enqueue_mcp_review_trigger
-from service.mcp_store import (
+from service.storage.mcp import (
     get_mcp_code_review,
     get_mcp_custom_context,
     get_mcp_fix_all_handoff,
@@ -30,9 +33,6 @@ from service.mcp_store import (
     search_mcp_custom_context,
     search_mcp_review_comments,
 )
-from service.repositories import register_repository
-from service.scm import PullRequestEvent
-from service.workflow import enqueue_review_event
 
 
 def test_mcp_read_projections_use_durable_review_lineage_and_context():

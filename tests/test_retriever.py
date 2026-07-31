@@ -423,7 +423,7 @@ def test_worker_startup_rejects_a_malformed_context_budget(monkeypatch, capsys):
     check, `MAX_CONTEXT_CHUNKS=0` would not fail the process — it would claim
     each review job in turn and send it straight to the dead-letter state.
     """
-    from service import worker
+    from service.hosted import worker
 
     monkeypatch.setenv("MAX_CONTEXT_CHUNKS", "0")
     monkeypatch.setattr("sys.argv", ["worker", "--once"])
@@ -437,7 +437,7 @@ def test_worker_startup_rejects_a_malformed_context_budget(monkeypatch, capsys):
 
 
 def test_worker_startup_rejects_a_budget_above_the_ceiling(monkeypatch, capsys):
-    from service import worker
+    from service.hosted import worker
 
     monkeypatch.setenv("MAX_CONTEXT_CHUNKS", str(MAX_RETRIEVAL_TOP_K + 1))
     monkeypatch.setattr("sys.argv", ["worker", "--once"])

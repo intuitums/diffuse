@@ -16,11 +16,12 @@ from repository_policy.resolve import (
     resolve_review_policy,
 )
 from retriever.retrieve import RetrievedContext
-from service import code_query, conversation_engine, learning_engine, review_engine
-from service.conversation_models import ConversationTurn
+from service import code_query, conversation_engine, learning_engine
 from service.diff_parser import parse_unified_diff
-from service.learning_models import RuleLearningEvidence
-from service.review_models import (
+from service.hosted.workflow import NonRetryableError
+from service.models.conversation import ConversationTurn
+from service.models.learning import RuleLearningEvidence
+from service.models.review import (
     CandidateBatch,
     CandidateFinding,
     Category,
@@ -32,8 +33,8 @@ from service.review_models import (
     VerificationBatch,
     VerificationDecision,
 )
+from service.review import engine as review_engine
 from service.scm import ReviewConversationEvent
-from service.workflow import NonRetryableError
 
 DIFF = """\
 diff --git a/app.py b/app.py

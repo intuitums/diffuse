@@ -231,6 +231,6 @@ def test_no_code_default_can_drift_from_the_shipped_env_files():
     can no longer disagree. The sibling test above still keeps the two env
     files themselves in sync, which is the drift a customer can actually feel.
     """
-    from service import review_engine
+    from service.review import engine as review_engine
 
     assert not hasattr(review_engine, "DEFAULT_REVIEW_MODEL")

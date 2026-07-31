@@ -1,13 +1,14 @@
-"""Unit coverage for `service/review_store.py`'s destructive guards.
+"""Unit coverage for `service/storage/review.py`'s destructive guards.
 
 These two tests were the only thing pinning the `worker_id` lease predicate on
 `mark_review_superseded`'s `UPDATE review_runs`. They lived in
 `tests/test_worker.py` purely because the caller did, and went out with it --
 but the guard they protect is in a module the rebuild keeps, and
-`review_store.py` calls `discard_unpublished_finding_lineage` from that path.
+`service/storage/review.py` calls `discard_unpublished_finding_lineage` from that
+path.
 """
 
-from service import review_store
+from service.storage import review as review_store
 
 
 class _ScriptedCursor:

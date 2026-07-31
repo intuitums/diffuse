@@ -27,15 +27,15 @@ from types import SimpleNamespace
 import litellm
 import pytest
 
-from service import worker
+from service.hosted import worker as worker
 from service.model_capabilities import is_known_route, plan_reasoning
-from service.review_engine import (
+from service.review.engine import (
     REVIEW_TEMPERATURE,
     resolve_review_depth_support,
     review_depth,
     verify_model_connection,
 )
-from service.review_provenance import PullRequestProvenance, select_review_model_plan
+from service.review.provenance import PullRequestProvenance, select_review_model_plan
 
 EFFORT_SCALE_MODEL = "anthropic/claude-sonnet-5"
 THINKING_BUDGET_MODEL = "anthropic/claude-haiku-4-5"
@@ -334,7 +334,7 @@ def test_an_honored_request_is_reported_without_alarm(
     monkeypatch.setenv("REVIEW_MODEL", EFFORT_SCALE_MODEL)
     monkeypatch.setenv("REVIEW_DEPTH", "careful")
 
-    with caplog.at_level(logging.INFO, logger="service.worker"):
+    with caplog.at_level(logging.INFO, logger="service.hosted.worker"):
         worker.validate_worker_model_controls()
 
     assert resolve_review_depth_support().fully_honored

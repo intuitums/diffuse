@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from service import eval_harness, review_engine
+from service import eval_harness
 from service.diff_parser import parse_unified_diff
 from service.evaluation import (
     EvaluationCase,
@@ -31,7 +31,7 @@ from service.evaluation import (
     RunConfiguration,
     score_evaluation,
 )
-from service.review_models import (
+from service.models.review import (
     CandidateBatch,
     CandidateFinding,
     Category,
@@ -40,6 +40,7 @@ from service.review_models import (
     VerificationBatch,
     VerificationDecision,
 )
+from service.review import engine as review_engine
 
 FIXTURE_ROOT = Path("evals/fixtures")
 
