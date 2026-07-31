@@ -49,7 +49,6 @@ def _context(
         start_line=10,
         end_line=20,
         content="def authorize(account, tenant):\n    return account.tenant == tenant",
-        similarity=0.91,
         retrieval_reason="lexical+semantic",
         relevance_score=0.12,
         repository_full_name=repository_name,

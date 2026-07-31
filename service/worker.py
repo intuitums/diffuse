@@ -14,12 +14,6 @@ from functools import partial
 
 import anyio
 
-from indexer.embed import (
-    embedding_batch_size,
-    embedding_dimensions,
-    embedding_model,
-    verify_embedding_credential,
-)
 from indexer.index_repo import index_repo
 from indexer.store import get_conn
 from repository_policy.models import RepositoryPolicySnapshot, validate_repo_path
@@ -39,7 +33,6 @@ from retriever.retrieve import (
     compatible_snapshot_id,
     max_context_chars,
     max_context_chunks,
-    minimum_similarity,
     retrieve_context_from_plan,
     retrieve_context_from_snapshot,
 )
@@ -230,7 +223,7 @@ class IndexSupersededError(RuntimeError):
 
 
 class MissingRepositoryIndexError(RuntimeError):
-    """The repository has no index snapshot compatible with the current embedder.
+    """The repository has no index snapshot in the current index format.
 
     Deliberately a ``RuntimeError`` rather than a ``NonRetryableError``: the
     condition is transient. A pull request opened while the initial index job is
@@ -597,8 +590,6 @@ def _load_cross_repository_context_plan(
             primary_repository_id=repository_id,
             primary_snapshot_id=snapshot_id,
             explicit_repositories=policy.context_repositories,
-            model=embedding_model(),
-            dimensions=embedding_dimensions(),
         )
         record_dropped_context_repositories(
             conn,
@@ -2396,12 +2387,8 @@ def _probe_base_url(name: str, default: str) -> None:
 # means one malformed value stops the worker at startup instead.
 _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("WORKFLOW_LEASE_SECONDS", _lease_seconds),
-    ("EMBEDDING_MODEL", embedding_model),
-    ("EMBEDDING_DIMENSIONS", embedding_dimensions),
-    ("EMBEDDING_BATCH_SIZE", embedding_batch_size),
     ("MAX_CONTEXT_CHUNKS", max_context_chunks),
     ("MAX_CONTEXT_CHARS", max_context_chars),
-    ("MIN_CONTEXT_SIMILARITY", minimum_similarity),
     ("REVIEW_MODEL", review_model),
     ("REVIEW_VERIFIER_MODEL", review_verifier_model),
     ("REVIEW_EFFORT", review_effort),
@@ -2503,20 +2490,6 @@ def validate_worker_model_controls() -> None:
         raise ValueError(refusal)
 
 
-def validate_worker_credentials() -> None:
-    """Check that configured providers have a usable credential.
-
-    Deliberately separate from `validate_worker_configuration`, which asks only
-    whether the configuration *parses*. Presence of a secret is a different
-    question with a different answer per environment -- the unit suite and the
-    packaging smoke test both run with no provider keys at all and must keep
-    validating configuration. Folding this into the probe list also placed a
-    credential failure ahead of every later variable, masking the parse error
-    the probe list exists to name.
-    """
-    verify_embedding_credential()
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
@@ -2537,7 +2510,6 @@ def main() -> None:
     try:
         validate_worker_configuration()
         validate_worker_model_controls()
-        validate_worker_credentials()
     except ValueError as error:
         parser.error(str(error))
     with closing(get_conn()) as conn:

@@ -26,8 +26,7 @@
       "file_path": "ledger/db.py",
       "symbol_name": "Connection",
       "retrieval_reason": "graph_callee",
-      "relevance_score": 0.79,
-      "similarity": 0.74
+      "relevance_score": 0.79
     }
   ]
 }

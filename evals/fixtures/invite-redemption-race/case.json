@@ -19,8 +19,7 @@
       "file_path": "invites/db.py",
       "symbol_name": "Connection",
       "retrieval_reason": "graph_callee",
-      "relevance_score": 0.77,
-      "similarity": 0.72
+      "relevance_score": 0.77
     }
   ]
 }

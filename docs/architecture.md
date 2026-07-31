@@ -16,7 +16,7 @@ frozen packaged baseline; subsequent migrations are consecutive append-only
 SQL files. A migrator holds one transaction-scoped advisory lock, applies all
 pending versions atomically, and records immutable checksums plus operator
 identity. A populated unversioned database requires an explicit adoption
-command and must first satisfy every baseline table/column and pgvector check.
+command and must first satisfy every baseline table/column check.
 The supported Compose profile gates API and worker startup on a successful
 migration job.
 
@@ -41,9 +41,9 @@ GitHub / CLI / MCP / Web app
         |            |             |
         +------ code intelligence -+
                      |
-       PostgreSQL + pgvector / cache / object store
+           PostgreSQL / cache / object store
                      |
-           model and embedding gateway
+                   model gateway
 ```
 
 > **Target, not current state.** The web app, the runtime validator and its
@@ -60,7 +60,7 @@ Self-hosted
         |
   Diffuse API + workers + web app
         |
-  Operator PostgreSQL/pgvector + repository storage
+  Operator PostgreSQL + repository storage
 ```
 
 There is no Diffuse-hosted control plane and no managed service; see
@@ -150,7 +150,7 @@ distribution decision.
 An index snapshot records an index-format identifier derived from the adapter
 schema, Python runtime, Tree-sitter runtime, and every installed grammar
 version. Retrieval refuses a snapshot built by an incompatible format, while
-unchanged chunk embeddings may still be copied when their exact boundaries and
+unchanged chunks may still be copied forward when their exact boundaries and
 content hashes match. The format also identifies the repository-policy schema.
 Strict `.diffuse` layers, referenced context, and common instruction files are
 written in the same activation transaction; snapshot readiness includes their
@@ -162,7 +162,6 @@ unknown fields fail indexing explicitly.
 Retrieval combines:
 
 - exact path/symbol and lexical search;
-- vector similarity;
 - graph expansion over callers, callees, dependencies, tests, and contracts;
 - explicit configuration/context files;
 - approved team memory and rules; and
@@ -175,8 +174,8 @@ The foundation stores a weighted PostgreSQL `tsvector` beside each immutable
 chunk: paths and symbol names receive the highest weight, followed by content.
 Review retrieval extracts only bounded code identifiers from changed lines,
 excludes changed files from reference candidates, and uses weighted reciprocal
-rank fusion across graph, lexical, and thresholded semantic channels. Combined
-channel provenance is passed to the review engine with the pinned snapshot ID.
+rank fusion across the graph and lexical channels. Combined channel provenance
+is passed to the review engine with the pinned snapshot ID.
 
 Cross-repository review context has two inputs: cascading, version-controlled
 `context.repos` and operator-managed repository clusters. Every referenced
@@ -189,10 +188,10 @@ deduplicated, and limited to seven related repositories.
 Before a review run is created, the worker resolves each selected repository to
 one compatible active snapshot and fingerprints the ordered plan. The review
 stores every related repository ID/name, snapshot ID, commit, relationship
-source, cluster IDs, and ordinal in `review_run_context_snapshots`. Retrieval
-embeds the filtered diff once. The primary snapshot contributes graph, lexical,
-and semantic candidates; related snapshots contribute read-only lexical and
-semantic candidates. Fusion keys include repository identity, formatted
+source, cluster IDs, and ordinal in `review_run_context_snapshots`. The
+primary snapshot contributes graph and lexical candidates; related snapshots
+contribute read-only lexical candidates. Fusion keys include repository
+identity, formatted
 context uses `owner/repo::path`, and the review verifier still permits findings
 only on changed primary-repository lines. Cluster shell access is the current
 operator authorization boundary; tenant/RBAC enforcement and cross-repository
@@ -546,7 +545,7 @@ the API or review container is prohibited.
   one audit event per accepted delivery.
 - Source search resolves the caller-authorized repository descriptor to one
   compatible active index, freezes its exact snapshot plan, and then runs a
-  first-class text query through lexical, vector, and graph-neighbor channels.
+  first-class text query through lexical and graph-neighbor channels.
   Optional cluster context is intersected with the token's repository claims.
   Literal path prefixes constrain seeds and graph results. Every result includes
   repository-qualified lines, snapshot/commit identity, retrieval provenance,
@@ -625,15 +624,15 @@ contract remains portable.
 >
 > Absent today: `organizations`, `teams`, `memberships`, `roles`,
 > `scm_connections`, `repository_access`, `commits`, `index_jobs`, the separate
-> `files`/`symbols`/`symbol_relationships`/`embeddings` tables (graph and vector
-> data currently live in snapshot-scoped tables), `rules`, `context_files`,
+> `files`/`symbols`/`symbol_relationships` tables (graph data currently lives in
+> snapshot-scoped tables), `rules`, `context_files`,
 > `memory_signals`, `finding_resolutions`, `runtime_runs`, `runtime_artifacts`,
 > and `usage_events`.
 
 - `organizations`, `teams`, `users`, `memberships`, `roles`
 - `scm_connections`, `repositories`, `repository_access`
 - `commits`, `index_snapshots`, `index_jobs`
-- `files`, `symbols`, `symbol_relationships`, `code_chunks`, `embeddings`
+- `files`, `symbols`, `symbol_relationships`, `code_chunks`
 - `repository_clusters`, `repository_cluster_members`
 - `repository_policy_layers`, `repository_guidance_documents`
 - `rules`, `context_files`, `memory_signals`, `learned_rules`,
@@ -655,8 +654,8 @@ The target tenant-owned rows carry an organization identifier. The initial
 service-token tables are installation-scoped until the organization model is
 introduced. Repository- and
 commit-scoped records use foreign keys rather than a free-form `owner/repo`
-string. Deletion is explicit and cascades through code, embeddings, review
-history, and artifacts according to configured retention policy.
+string. Deletion is explicit and cascades through code, review history, and
+artifacts according to configured retention policy.
 
 ## Deployment profiles
 
@@ -670,21 +669,21 @@ history, and artifacts according to configured retention policy.
 
 ### Developer
 
-- One API process, one worker, PostgreSQL + pgvector.
+- One API process, one worker, PostgreSQL.
 - Local filesystem object storage.
 - Local CLI authentication.
 
 ### Docker Compose
 
 - Reverse proxy, web/API, webhook ingress, general worker, index worker,
-  review worker, PostgreSQL + pgvector, Redis-compatible cache, and
+  review worker, PostgreSQL, Redis-compatible cache, and
   S3-compatible object storage.
 - Designed for a small team on one trusted Linux host.
 
 ### Kubernetes
 
 - Independently autoscaled stateless services and workers.
-- Managed PostgreSQL/pgvector, Redis-compatible cache, and object storage.
+- Managed PostgreSQL, Redis-compatible cache, and object storage.
 - Dedicated sandbox node pool, network policies, pod security standards,
   external secrets, ingress TLS, and migration jobs.
 

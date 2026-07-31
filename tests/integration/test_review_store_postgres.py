@@ -158,8 +158,6 @@ def test_native_review_report_and_publication_are_durable_and_idempotent():
             connection,
             related_repository.full_name,
             "6" * 40,
-            "integration-context-model",
-            1536,
         )
         context_snapshots = (
             RepositoryContextSnapshot(

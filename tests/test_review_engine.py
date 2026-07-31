@@ -1014,7 +1014,6 @@ def _render_conversation_prompt(text: str) -> str:
         start_line=1,
         end_line=2,
         content=text,
-        similarity=0.9,
         retrieval_reason="graph",
     )
     return conversation_engine._conversation_user_prompt(
@@ -1039,7 +1038,6 @@ def _render_code_query_prompt(text: str) -> str:
         content_truncated=False,
         retrieval_reason="lexical",
         relevance_score=0.5,
-        similarity=0.9,
         source_url="https://github.example.com/owner/repo/blob/app.py",
     )
     return code_query._answer_user_prompt(text, (source,))
