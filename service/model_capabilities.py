@@ -38,6 +38,16 @@ other than what was asked, which a raise/no-raise probe reports as success:
 * ``openrouter/anthropic/claude-sonnet-4.6`` silently clamps ``max`` to
   ``xhigh``, and ``azure/gpt-5`` refuses ``xhigh`` while accepting ``max``.
 
+**And the same premise applies to side effects on a different parameter.**
+Asking for reasoning depth can change what a route does with a parameter you did
+not touch. On the two ``anthropic/`` routes that reach structured output through
+a tool, LiteLLM forces that tool with ``tool_choice`` only when thinking is off
+(``AnthropicConfig.map_openai_params`` guards the assignment with
+``not is_thinking_enabled``), so a depth request silently makes the JSON tool
+optional and the model may answer in prose instead. That is unrepresentable in a
+per-parameter probe: it is only visible by rendering the *combination*. See
+``plan_structured_output``.
+
 This module is deliberately a leaf, like ``model_providers``: it imports nothing
 from ``service``, so ``review_engine`` and ``indexer`` can both depend on it
 without a cycle. Keep it that way.
@@ -59,12 +69,14 @@ __all__ = [
     "ModelCapabilities",
     "ReasoningMechanism",
     "ReasoningPlan",
+    "StructuredOutputPlan",
     "accepts",
     "depth_for_effort",
     "describe",
     "effort_for_depth",
     "is_known_route",
     "plan_reasoning",
+    "plan_structured_output",
     "supports_structured_output",
 ]
 
@@ -451,6 +463,181 @@ def plan_reasoning(
             max_output_tokens
             if _output_budget_blocked(model, depth, max_output_tokens)
             else None
+        ),
+    )
+
+
+@lru_cache(maxsize=512)
+def _render_structured(
+    model: str,
+    response_model: object,
+    effort: str | None,
+    forced_tool: str | None,
+    max_output_tokens: int | None,
+) -> Mapping[str, object] | None:
+    """Render a whole structured-output request, not one parameter of it.
+
+    `_render` answers "does the mapper refuse this parameter in isolation?",
+    which cannot see a parameter changing what the route does with a *different*
+    one. Structured output and reasoning depth interact, so the only honest
+    probe renders them together.
+    """
+
+    route = _route(model)
+    if route is None:
+        return None
+    resolved, provider = route
+    arguments: dict[str, object] = {"response_format": response_model}
+    if max_output_tokens is not None:
+        arguments["max_tokens"] = max_output_tokens
+    if effort is not None:
+        arguments["reasoning_effort"] = effort
+    if forced_tool is not None:
+        arguments["tool_choice"] = {"type": "function", "function": {"name": forced_tool}}
+    try:
+        rendered = litellm.utils.get_optional_params(
+            model=resolved,
+            custom_llm_provider=provider,
+            **arguments,
+        )
+    except Exception:
+        return None
+    if not isinstance(rendered, dict):
+        return None
+    return MappingProxyType(dict(rendered))
+
+
+def _forced_tool_name(rendered: Mapping[str, object]) -> str | None:
+    """The tool a rendering forces, in either the native or OpenAI shape."""
+
+    choice = rendered.get("tool_choice")
+    if not isinstance(choice, Mapping):
+        return None
+    name = choice.get("name")
+    if isinstance(name, str) and name:
+        return name
+    function = choice.get("function")
+    if isinstance(function, Mapping):
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            return name
+    return None
+
+
+def _rendered_tool_names(rendered: Mapping[str, object]) -> frozenset[str]:
+    """Every tool name present in a rendering, in either shape."""
+
+    tools = rendered.get("tools")
+    if not isinstance(tools, list):
+        return frozenset()
+    names: set[str] = set()
+    for tool in tools:
+        if not isinstance(tool, Mapping):
+            continue
+        name = tool.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+        function = tool.get("function")
+        if isinstance(function, Mapping):
+            name = function.get("name")
+            if isinstance(name, str) and name:
+                names.add(name)
+    return frozenset(names)
+
+
+@dataclass(frozen=True)
+class StructuredOutputPlan:
+    """Whether asking for reasoning depth un-forces structured output.
+
+    Some routes reach structured output by forcing a synthetic JSON tool. On
+    those, enabling thinking makes the tool *optional*, so the model may answer
+    in prose -- which fails schema validation, is classified as a transient
+    fault, and burns every retry the workflow has. Nothing raises: the request
+    is valid, it just stopped being constrained.
+    """
+
+    model: str
+    #: Whether the route forces structured output when no depth is requested.
+    forced_without_depth: bool
+    #: Whether it is still forced once the depth request is added.
+    forced_with_depth: bool
+    #: The `tool_choice` to send explicitly to restore forcing, or None when
+    #: nothing needs restoring (or nothing can restore it).
+    tool_choice: Mapping[str, object] | None
+
+    @property
+    def unforced_by_depth(self) -> bool:
+        """Whether the depth request is what dropped the constraint."""
+
+        return self.forced_without_depth and not self.forced_with_depth
+
+    @property
+    def repaired(self) -> bool:
+        """Whether sending `tool_choice` explicitly puts the constraint back."""
+
+        return self.tool_choice is not None
+
+
+def plan_structured_output(
+    model: str,
+    response_model: object,
+    *,
+    depth: str | None,
+    max_output_tokens: int | None = None,
+) -> StructuredOutputPlan:
+    """Resolve whether a depth request loosens this route's structured output.
+
+    Deliberately narrow, because the blanket version is a guaranteed 400 on four
+    documented route families. Measured against the pinned ``litellm==1.93.0``:
+
+    * ``anthropic/claude-sonnet-5`` and ``anthropic/claude-haiku-4-5`` force a
+      ``json_tool_call`` tool, and lose ``tool_choice`` once depth is requested.
+      These are the routes that need repair, and the tool is still in ``tools``,
+      so naming it explicitly restores the constraint.
+    * ``anthropic/claude-sonnet-4-6`` and ``anthropic/claude-opus-4-6`` use
+      Anthropic's native ``output_format`` and render **no tools at all**. Depth
+      changes nothing for them -- and adding a ``tool_choice`` would force a tool
+      that does not exist.
+    * ``openai/``, ``hosted_vllm/`` and ``gemini/`` pass ``response_format``
+      through and likewise render no tools. Depth changes nothing.
+
+    So the repair is applied only where the probe shows forcing was present,
+    was lost to the depth request, and comes back when asked for by name.
+    """
+
+    plain = _render_structured(model, response_model, None, None, max_output_tokens)
+    if plain is None:
+        return StructuredOutputPlan(model, False, False, None)
+    tool = _forced_tool_name(plain)
+    if tool is None:
+        # Nothing was forced with a tool in the first place, so a depth request
+        # has no forcing to remove. Every non-tool route lands here.
+        return StructuredOutputPlan(model, False, False, None)
+    if depth is None:
+        return StructuredOutputPlan(model, True, True, None)
+
+    effort = effort_for_depth(depth)
+    with_depth = _render_structured(model, response_model, effort, None, max_output_tokens)
+    if with_depth is None or _forced_tool_name(with_depth) is not None:
+        # Either the depth request is refused outright -- `plan_reasoning` will
+        # not send it either -- or forcing survived it. Nothing to repair.
+        return StructuredOutputPlan(model, True, with_depth is not None, None)
+
+    if tool not in _rendered_tool_names(with_depth):
+        # The tool itself is gone, not merely unforced. Naming it would force a
+        # tool the request does not carry, which is a 400 rather than a fix.
+        return StructuredOutputPlan(model, True, False, None)
+
+    repaired = _render_structured(model, response_model, effort, tool, max_output_tokens)
+    if repaired is None or _forced_tool_name(repaired) != tool:
+        # Asked for the repair and did not get it. Report, do not send.
+        return StructuredOutputPlan(model, True, False, None)
+    return StructuredOutputPlan(
+        model=model,
+        forced_without_depth=True,
+        forced_with_depth=False,
+        tool_choice=MappingProxyType(
+            {"type": "function", "function": {"name": tool}}
         ),
     )
 

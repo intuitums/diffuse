@@ -12,6 +12,7 @@ would only assert that the classifier can read a dictionary the test wrote.
 from __future__ import annotations
 
 import pytest
+from pydantic import BaseModel
 
 from service.model_capabilities import (
     EFFORT_LEVELS,
@@ -22,6 +23,7 @@ from service.model_capabilities import (
     describe,
     effort_for_depth,
     plan_reasoning,
+    plan_structured_output,
 )
 
 # One model per mechanism, all four verified against the pinned LiteLLM.
@@ -189,6 +191,113 @@ def test_the_two_vocabularies_stay_the_same_length() -> None:
 def test_an_unknown_depth_is_refused_rather_than_approximated() -> None:
     with pytest.raises(ValueError, match="review depth must be one of"):
         plan_reasoning(EFFORT_SCALE_MODEL, "very-hard")
+
+
+# --- Acceptance is not honouring, applied to a *different* parameter ---------
+
+
+class _Probe(BaseModel):
+    ready: bool
+
+
+# Reaches structured output through a forced synthetic tool.
+TOOL_MODE_MODEL = "anthropic/claude-sonnet-5"
+# Same provider, but uses Anthropic's native `output_format` and renders no
+# tools at all -- so there is nothing to un-force and nothing to repair.
+NATIVE_FORMAT_MODEL = "anthropic/claude-sonnet-4-6"
+# Passes `response_format` straight through; likewise no tools.
+PASSTHROUGH_MODEL = "openai/gpt-5"
+
+
+def test_a_depth_request_un_forces_structured_output_on_a_tool_route() -> None:
+    """The finding, stated as a capability rather than a provider quirk.
+
+    LiteLLM assigns the forcing `tool_choice` only when thinking is off, so
+    asking for depth makes the JSON tool optional and the model may answer in
+    prose. No probe of `reasoning_effort` alone can see this: the parameter is
+    accepted and honoured, and it is `response_format` that quietly changes.
+    """
+
+    plan = plan_structured_output(
+        TOOL_MODE_MODEL, _Probe, depth="careful", max_output_tokens=MAX_OUTPUT_TOKENS
+    )
+
+    assert plan.forced_without_depth is True
+    assert plan.forced_with_depth is False
+    assert plan.unforced_by_depth is True
+
+
+def test_naming_the_tool_explicitly_restores_the_constraint() -> None:
+    """Depth and forced structured output are not actually a trade-off."""
+
+    plan = plan_structured_output(
+        TOOL_MODE_MODEL, _Probe, depth="careful", max_output_tokens=MAX_OUTPUT_TOKENS
+    )
+
+    assert plan.repaired is True
+    assert plan.tool_choice == {
+        "type": "function",
+        "function": {"name": "json_tool_call"},
+    }
+
+
+@pytest.mark.parametrize("depth", REVIEW_DEPTHS)
+def test_every_depth_is_repaired_not_just_the_deep_ones(depth: str) -> None:
+    """`brisk` enables thinking too, so it drops the forcing exactly the same."""
+
+    plan = plan_structured_output(
+        TOOL_MODE_MODEL, _Probe, depth=depth, max_output_tokens=MAX_OUTPUT_TOKENS
+    )
+
+    assert plan.unforced_by_depth is True
+    assert plan.repaired is True
+
+
+@pytest.mark.parametrize("model", [NATIVE_FORMAT_MODEL, PASSTHROUGH_MODEL])
+def test_routes_that_never_forced_a_tool_are_left_alone(model: str) -> None:
+    """The blanket fix is a guaranteed 400 here, which is why this is a probe.
+
+    These render no tools, so a `tool_choice` would force one the request does
+    not carry -- breaking a route that has no problem to begin with.
+    """
+
+    plan = plan_structured_output(
+        model, _Probe, depth="careful", max_output_tokens=MAX_OUTPUT_TOKENS
+    )
+
+    assert plan.forced_without_depth is False
+    assert plan.repaired is False
+    assert plan.tool_choice is None
+
+
+def test_a_route_with_no_reasoning_control_needs_no_repair() -> None:
+    """Nothing is sent to `gpt-4.1-mini`, so nothing can be un-forced."""
+
+    plan = plan_structured_output(
+        SAMPLING_ONLY_MODEL, _Probe, depth="exhaustive", max_output_tokens=MAX_OUTPUT_TOKENS
+    )
+
+    assert plan.repaired is False
+
+
+def test_no_depth_requested_leaves_the_forcing_where_it_was() -> None:
+    """With no depth there is no interaction, and nothing to add."""
+
+    plan = plan_structured_output(
+        TOOL_MODE_MODEL, _Probe, depth=None, max_output_tokens=MAX_OUTPUT_TOKENS
+    )
+
+    assert plan.forced_without_depth is True
+    assert plan.forced_with_depth is True
+    assert plan.repaired is False
+
+
+def test_an_unroutable_identifier_needs_no_repair() -> None:
+    """A typo must not become an exception on the review hot path."""
+
+    plan = plan_structured_output("not-a-real-provider/nope", _Probe, depth="careful")
+
+    assert plan.repaired is False
 
 
 @pytest.mark.parametrize("module", ["model_capabilities.py", "model_providers.py"])

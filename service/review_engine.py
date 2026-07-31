@@ -26,6 +26,7 @@ from service.model_capabilities import (
     depth_for_effort,
     describe,
     plan_reasoning,
+    plan_structured_output,
     supports_structured_output,
 )
 from service.model_providers import resolve_provider
@@ -535,6 +536,23 @@ def _call_structured[T: BaseModel](
         arguments["api_base"] = api_base
     if _supports_json_schema(model):
         arguments["response_format"] = response_model
+        # Asking for depth can un-force structured output on the routes that
+        # reach it through a tool -- the model may then answer in prose, which
+        # fails schema validation, is classified transient, and burns all five
+        # attempts. Sending `tool_choice` explicitly keeps both, so review depth
+        # and structured output do not have to be traded off against each other.
+        # Only where the probe shows forcing was lost and naming the tool
+        # restores it: on every other route this would force a tool the request
+        # does not carry. See `model_capabilities.plan_structured_output`.
+        if "reasoning_effort" in arguments:
+            structured = plan_structured_output(
+                model,
+                response_model,
+                depth=depth,
+                max_output_tokens=int(arguments["max_tokens"]),
+            )
+            if structured.repaired:
+                arguments["tool_choice"] = dict(structured.tool_choice or {})
 
     try:
         response = litellm.completion(**arguments)
