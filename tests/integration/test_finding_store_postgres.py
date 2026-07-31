@@ -1,7 +1,7 @@
-"""PostgreSQL coverage for `service/finding_store.py` and finding lineage.
+"""PostgreSQL coverage for `service/storage/finding.py` and finding lineage.
 
 Recovered from `tests/integration/test_workflow_postgres.py`, which was named
-for `service/workflow.py` but held the only durability assertions for finding
+for `service/hosted/workflow.py` but held the only durability assertions for finding
 lineage and its GitHub threads. Surviving `tests/test_finding_lineage.py` covers
 the pure classifier only -- nothing else drives `record_finding_threads`,
 `begin_thread_operations` or `load_review_continuity` against real SQL.
@@ -21,7 +21,20 @@ from contextlib import closing
 
 import psycopg2
 
-from service.finding_store import (
+from service.hosted.workflow import (
+    claim_workflow_job,
+    complete_workflow_job,
+    enqueue_review_event,
+)
+from service.models.review import (
+    Category,
+    ReviewFinding,
+    ReviewReport,
+    Severity,
+)
+from service.repositories import register_repository
+from service.scm import PullRequestEvent
+from service.storage.finding import (
     PublishedFindingComment,
     PublishedThreadOperation,
     begin_thread_operations,
@@ -30,25 +43,12 @@ from service.finding_store import (
     mark_thread_operation_published,
     record_finding_threads,
 )
-from service.repositories import register_repository
-from service.review_models import (
-    Category,
-    ReviewFinding,
-    ReviewReport,
-    Severity,
-)
-from service.review_store import (
+from service.storage.review import (
     begin_publication,
     begin_review_run,
     mark_publication_published,
     mark_review_superseded,
     persist_review_report,
-)
-from service.scm import PullRequestEvent
-from service.workflow import (
-    claim_workflow_job,
-    complete_workflow_job,
-    enqueue_review_event,
 )
 
 

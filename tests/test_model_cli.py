@@ -1,8 +1,8 @@
 import argparse
 import json
 
-from service import model_cli
-from service.model_cli import model_status
+from service.cli import model as model_cli
+from service.cli.model import model_status
 
 
 def test_openai_model_status_reports_names_without_secret(

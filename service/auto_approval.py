@@ -13,7 +13,7 @@ from repository_policy.resolve import (
     path_matches,
 )
 from service.diff_parser import ParsedDiff, parse_unified_diff
-from service.review_models import ReviewFinding, ReviewReport
+from service.models.review import ReviewFinding, ReviewReport
 from service.scm import PullRequestEvent
 
 MAX_AUTO_APPROVAL_DIFF_CHARS = 100_000

@@ -82,7 +82,7 @@ ruff check .
 `pytest` proves the review engine's plumbing; it says nothing about whether the
 engine finds bugs, because every review test stubs the model call.
 `scripts/eval.sh` is the other half: it runs the real engine over the labeled
-fixtures in `evals/fixtures/` and compares the scored result against a golden.
+fixtures in `evals/fixtures/` and compares the scored result against a baseline.
 
 ```bash
 ./scripts/eval.sh
@@ -90,7 +90,7 @@ fixtures in `evals/fixtures/` and compares the scored result against a golden.
 
 It needs `REVIEW_MODEL` and that provider's API key, and it costs money —
 roughly 40 model calls per run. **It currently exits non-zero on any machine,
-because no golden is committed:** capturing one requires live model calls. See
+because no baseline is committed:** capturing one requires live model calls. See
 [`evals/CAPTURE.md`](evals/CAPTURE.md) for the capture procedure and
 [`evals/README.md`](evals/README.md) for the fixture format.
 
@@ -102,7 +102,7 @@ but keep formatting-only churn out of functional pull requests.
 ## Run the integration tests
 
 The tests marked `integration` need a real PostgreSQL 17. Nothing in Diffuse
-uses pgvector any more, but the frozen version-1 baseline still runs
+uses pgvector any more, but the frozen version-1 SQL schema baseline still runs
 `CREATE EXTENSION IF NOT EXISTS vector` before migration 0010 drops it, so the
 server must still have the extension available. `README.md` points here rather
 than restating this; this is the whole recipe.
@@ -200,7 +200,7 @@ done. Do not commit it.
 **This is the rule most likely to bite you.**
 
 `sql/schema.sql` is the frozen version-1 migration (`0001_initial_schema`). Its
-SHA-256 is pinned in `BASELINE_SCHEMA_SHA256` in `service/database_migrations.py`
+SHA-256 is pinned in `BASELINE_SCHEMA_SHA256` in `service/storage/migrations.py`
 and verified every time the migration catalog is loaded. Editing the file — even
 adding a comment or a trailing newline — is a hard failure at load time, not a
 test failure you can defer:

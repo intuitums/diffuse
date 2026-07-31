@@ -1,9 +1,9 @@
 import pytest
 from pydantic import ValidationError
 
-from service import review_engine
 from service.diff_parser import parse_unified_diff
-from service.review_models import ReviewDiagram
+from service.models.review import ReviewDiagram
+from service.review import engine as review_engine
 
 
 @pytest.mark.parametrize(

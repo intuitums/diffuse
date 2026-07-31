@@ -5,13 +5,12 @@ import httpx
 import pytest
 
 from service.finding_lineage import FindingSnapshot, ReviewContinuity
-from service.github_review import (
+from service.github.review import (
     _finding_comment,
     format_review_body,
     publish_github_review,
 )
-from service.review_description import merge_review_description
-from service.review_models import (
+from service.models.review import (
     Category,
     ReviewDiagram,
     ReviewFinding,
@@ -19,6 +18,7 @@ from service.review_models import (
     SecurityClassification,
     Severity,
 )
+from service.review.description import merge_review_description
 from service.scm import PullRequestEvent
 
 

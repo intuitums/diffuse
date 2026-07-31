@@ -2,7 +2,7 @@ fastapi>=0.115,<1
 httpx>=0.28,<1
 litellm>=1.81,<2
 mcp>=1.27,<2
-# Direct: service/review_cli.py catches the openai exception hierarchy, which
+# Direct: service/cli/review.py catches the openai exception hierarchy, which
 # litellm builds its provider errors on. Already resolved transitively via
 # litellm and pinned in requirements.lock; declared so the import is not
 # depending on another package's dependency tree.

@@ -25,7 +25,7 @@ import pytest
 from litellm.utils import get_optional_params
 
 from service.model_capabilities import REVIEW_DEPTHS
-from service.review_engine import (
+from service.review.engine import (
     REVIEW_EFFORT_LEVELS,
     REVIEW_TEMPERATURE,
     verify_model_connection,

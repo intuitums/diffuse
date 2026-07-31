@@ -3,13 +3,13 @@ import json
 import httpx
 import pytest
 
-from service.github_check import (
+from service.github.check import (
     MAX_CHECK_ANNOTATIONS,
     complete_github_check_run,
     ensure_github_check_run,
     review_check_conclusion,
 )
-from service.review_models import Category, ReviewFinding, ReviewReport, Severity
+from service.models.review import Category, ReviewFinding, ReviewReport, Severity
 from service.scm import PullRequestEvent
 
 

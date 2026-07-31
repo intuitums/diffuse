@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from service.github_feedback import (
+from service.github.feedback import (
     MAX_REACTION_PAGES,
     fetch_github_review_reactions,
 )

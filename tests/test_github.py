@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from service.github import (
+from service.github.api import (
     fetch_manual_pull_request_event,
     fetch_pull_request_commits,
     fetch_pull_request_diff,

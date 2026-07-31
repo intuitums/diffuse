@@ -7,11 +7,11 @@ import os
 from collections.abc import Callable
 
 from repository_policy.resolve import neutralize_prompt_delimiters
-from service.learning_models import (
+from service.models.learning import (
     RuleLearningEvidence,
     SuggestedRuleBatch,
 )
-from service.review_engine import _call_structured, review_model
+from service.review.engine import _call_structured, review_model
 
 RULE_LEARNING_PROMPT_VERSION = "suggested-rules-v1-cited-feedback"
 
