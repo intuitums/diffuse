@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal
 
 import litellm
@@ -16,6 +17,17 @@ from pydantic import BaseModel, ValidationError
 from repository_policy.resolve import ResolvedReviewPolicy, neutralize_prompt_delimiters
 from retriever.retrieve import RetrievedContext, format_as_extra_instructions
 from service.diff_parser import ParsedDiff, pack_diff_files, parse_unified_diff
+from service.model_capabilities import (
+    EFFORT_LEVELS,
+    REVIEW_DEPTHS,
+    ModelCapabilities,
+    ReasoningPlan,
+    accepts,
+    depth_for_effort,
+    describe,
+    plan_reasoning,
+    supports_structured_output,
+)
 from service.model_providers import resolve_provider
 from service.review_models import (
     CandidateBatch,
@@ -36,6 +48,12 @@ LOGGER = logging.getLogger(__name__)
 
 PROMPT_VERSION = "native-review-v6-review-diagrams"
 REVIEW_TEMPERATURE = 0.1
+# Diffuse's own vocabulary for REVIEW_DEPTH: an intent, not provider syntax.
+REVIEW_DEPTH_LEVELS = REVIEW_DEPTHS
+# The LiteLLM effort rungs REVIEW_DEPTH's predecessor `REVIEW_EFFORT` accepts,
+# one per depth. Kept so an operator already on `REVIEW_EFFORT` keeps working;
+# `REVIEW_DEPTH` is the spelling documented from here on.
+REVIEW_EFFORT_LEVELS = EFFORT_LEVELS
 DEFAULT_PASSES = ("correctness", "security", "performance", "tests")
 PASS_INSTRUCTIONS = {
     "correctness": (
@@ -118,6 +136,60 @@ def review_verifier_model() -> str:
     return value or review_model()
 
 
+def review_effort() -> str | None:
+    """`REVIEW_EFFORT`, the LiteLLM-rung spelling of `REVIEW_DEPTH`.
+
+    Superseded by `REVIEW_DEPTH`, which names an intent rather than a provider's
+    effort vocabulary, and still read so an operator already configured on this
+    variable is not broken. Deliberately has no default.
+    """
+
+    value = os.environ.get("REVIEW_EFFORT", "").strip().lower()
+    if not value:
+        return None
+    if value not in REVIEW_EFFORT_LEVELS:
+        raise ValueError(f"REVIEW_EFFORT must be one of {', '.join(REVIEW_EFFORT_LEVELS)}")
+    return value
+
+
+def review_depth() -> str | None:
+    """How carefully to review, or `None` to leave it entirely to the model.
+
+    This says what Diffuse wants, not what a provider calls it:
+    `service.model_capabilities` decides whether a depth becomes a graded effort
+    word, a thinking-token budget, an on/off switch, or nothing at all on the
+    resolved route.
+
+    Deliberately has no default. An unset depth sends no reasoning parameter of
+    any kind, because choosing one for the operator changes both the bill and
+    the latency of every review.
+    """
+
+    depth = os.environ.get("REVIEW_DEPTH", "").strip().lower()
+    effort = review_effort()
+    if depth and effort:
+        raise ValueError(
+            "REVIEW_DEPTH and REVIEW_EFFORT are both set and they configure the same "
+            f"thing (REVIEW_DEPTH={depth}, REVIEW_EFFORT={effort}). Keep REVIEW_DEPTH "
+            "and unset REVIEW_EFFORT."
+        )
+    if depth:
+        if depth not in REVIEW_DEPTH_LEVELS:
+            raise ValueError(
+                f"REVIEW_DEPTH must be one of {', '.join(REVIEW_DEPTH_LEVELS)}"
+            )
+        return depth
+    if effort:
+        return depth_for_effort(effort)
+    return None
+
+
+def review_depth_variable() -> str:
+    """Which variable the operator actually set, for use in diagnostics."""
+
+    return "REVIEW_DEPTH" if os.environ.get("REVIEW_DEPTH", "").strip() else "REVIEW_EFFORT"
+
+
 def review_provenance_minimum_confidence() -> float:
     value = float(os.environ.get("REVIEW_PROVENANCE_MIN_CONFIDENCE", "0.8"))
     if not 0 <= value <= 1:
@@ -154,6 +226,20 @@ def model_retries() -> int:
     if value < 0:
         raise ValueError("REVIEW_MODEL_RETRIES must not be negative")
     return value
+
+
+def review_max_output_tokens() -> int:
+    """Total output budget per call.
+
+    Models that think before answering bill those tokens here, and current
+    frontier models think adaptively whenever the request omits a thinking
+    configuration. Too small a budget is spent reasoning and truncates the JSON,
+    which surfaces as a retryable structured-output fault rather than as the
+    limit it actually is. It also bounds the thinking budget a route derives
+    from a requested depth, which is why the capability probe is given it.
+    """
+
+    return _positive_int("REVIEW_MAX_OUTPUT_TOKENS", 16000)
 
 
 def minimum_review_confidence() -> float:
@@ -229,40 +315,97 @@ def _supports_json_schema(model: str) -> bool:
         return True
     if mode == "prompt":
         return False
-    try:
-        return bool(litellm.supports_response_schema(model=model))
-    except Exception:
-        return False
+    return supports_structured_output(model)
 
 
-def _maps_parameter(model: str, name: str, value: object) -> bool:
-    """Whether `model` accepts `name=value`, asked of LiteLLM rather than guessed.
+@dataclass(frozen=True)
+class ReviewDepthSupport:
+    """What each configured review stage will actually be sent for a depth.
 
-    Claude Sonnet 5, Opus 4.7/4.8, and Fable 5 removed the sampling parameters:
-    anything other than the default temperature is refused. LiteLLM raises
-    `UnsupportedParamsError` client-side, before any request is sent, and that
-    is neither an authentication failure nor a `ValueError` -- so an
-    unconditional temperature made `run_once` treat a permanent
-    misconfiguration as retryable, burning five attempts per review and posting
-    a failure notice on every pull request.
-
-    This probes LiteLLM's public parameter mapping instead of hardcoding model
-    names, so a newer restricted model needs no code change and the providers
-    that still honor a parameter keep it. Omitting a parameter is the safe
-    direction -- the model falls back to its own default -- so any probe failure
-    declines to send it.
+    Resolved once at startup rather than per call. A model control the operator
+    explicitly asked for and does not get is the failure this exists to make
+    impossible to miss, and Diffuse has no structured logging, metrics, or
+    alerting -- so a warning emitted mid-review is indistinguishable from
+    silence.
     """
 
-    try:
-        resolved, provider, _, _ = litellm.get_llm_provider(model=model)
-        litellm.utils.get_optional_params(
-            model=resolved,
-            custom_llm_provider=provider,
-            **{name: value},
-        )
-    except Exception:
-        return False
-    return True
+    #: None when neither REVIEW_DEPTH nor REVIEW_EFFORT is set.
+    depth: str | None
+    variable: str
+    #: (stage, plan), candidate first. Empty when no depth was requested.
+    plans: tuple[tuple[str, ReasoningPlan], ...]
+
+    def refusal(self) -> str | None:
+        """The message to stop startup with, or None to proceed.
+
+        A candidate model that cannot express the requested depth at all is a
+        refusal: the operator asked for deeper review and would get exactly
+        none of it. A verifier that cannot is reported, not refused --
+        `.env.example` recommends a cross-family verifier precisely so the two
+        models differ, and `openai/gpt-4.1-mini` (a documented pairing) has no
+        reasoning control. Failing there would make review depth and
+        cross-family verification mutually exclusive.
+        """
+
+        for stage, plan in self.plans:
+            if not stage.startswith("candidate") or plan.honored:
+                continue
+            return (
+                f"{self.variable}={self.depth} cannot be honored by REVIEW_MODEL "
+                f"{plan.model!r}: {plan.describe()} Set REVIEW_MODEL to a model with a "
+                f"reasoning control, or unset {self.variable} to accept this model's own "
+                "default depth. Run `diffuse model` to see what a model supports."
+            )
+        return None
+
+    def report_lines(self) -> tuple[str, ...]:
+        """A startup block naming what was asked, and what will be sent."""
+
+        if self.depth is None:
+            return ()
+        lines = [f"Review depth: {self.variable}={self.depth}"]
+        lines.extend(f"  {stage}: {plan.describe()}" for stage, plan in self.plans)
+        return tuple(lines)
+
+    @property
+    def fully_honored(self) -> bool:
+        return all(plan.exact for _stage, plan in self.plans)
+
+
+def resolve_review_depth_support() -> ReviewDepthSupport:
+    """Probe every configured review model against the requested depth."""
+
+    depth = review_depth()
+    if depth is None:
+        return ReviewDepthSupport(depth=None, variable=review_depth_variable(), plans=())
+    max_output_tokens = review_max_output_tokens()
+    candidate = review_model()
+    verifier = review_verifier_model()
+    # The verifier defaults to the candidate, and repeating an identical line
+    # reads as two independent findings that happen to agree.
+    stages = (
+        (("candidate and verifier", candidate),)
+        if verifier == candidate
+        else (("candidate", candidate), ("verifier", verifier))
+    )
+    return ReviewDepthSupport(
+        depth=depth,
+        variable=review_depth_variable(),
+        plans=tuple(
+            (stage, plan_reasoning(model, depth, max_output_tokens=max_output_tokens))
+            for stage, model in stages
+        ),
+    )
+
+
+def model_capabilities(model: str) -> ModelCapabilities:
+    """What `model` supports, for readiness output and `diffuse init`."""
+
+    return describe(
+        model,
+        temperature=REVIEW_TEMPERATURE,
+        max_output_tokens=review_max_output_tokens(),
+    )
 
 
 def _call_structured[T: BaseModel](
@@ -287,19 +430,9 @@ def _call_structured[T: BaseModel](
     arguments: dict[str, object] = {
         "model": model,
         "messages": messages,
-        # The sampling temperature is added below, and only where the model
-        # accepts it. See `_maps_parameter`.
-        "max_tokens": (
-            max_tokens
-            if max_tokens is not None
-            # Models that think before answering bill those tokens against
-            # `max_tokens`, and the current frontier models think adaptively
-            # whenever the request omits a thinking configuration, as this one
-            # does. Too small a budget is spent reasoning and truncates the
-            # JSON, which surfaces as a retryable structured-output fault
-            # rather than as the limit it actually is.
-            else _positive_int("REVIEW_MAX_OUTPUT_TOKENS", 16000)
-        ),
+        # Sampling and reasoning parameters are added below, and only in the
+        # form the resolved route accepts. See `service.model_capabilities`.
+        "max_tokens": (max_tokens if max_tokens is not None else review_max_output_tokens()),
         "timeout": (
             timeout_seconds
             if timeout_seconds is not None
@@ -315,8 +448,19 @@ def _call_structured[T: BaseModel](
     }
     if int(arguments["max_tokens"]) <= 0 or int(arguments["timeout"]) <= 0:
         raise ValueError("Structured model limits must be positive")
-    if _maps_parameter(model, "temperature", REVIEW_TEMPERATURE):
+    if accepts(model, "temperature", REVIEW_TEMPERATURE):
         arguments["temperature"] = REVIEW_TEMPERATURE
+    depth = review_depth()
+    if depth is not None:
+        # One resolution per (model, depth, budget), memoised in the capability
+        # module. Whether the result is exact is reported at startup rather than
+        # here: raising mid-review would dead-letter every pull request in the
+        # fleet, and a warning here is what the startup report replaces.
+        plan = plan_reasoning(
+            model, depth, max_output_tokens=int(arguments["max_tokens"])
+        )
+        if plan.effort is not None:
+            arguments["reasoning_effort"] = plan.effort
     api_key = _model_api_key(model)
     if api_key:
         arguments["api_key"] = api_key

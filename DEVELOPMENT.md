@@ -119,6 +119,10 @@ cp .env.example .env
 # Edit .env and set POSTGRES_PASSWORD and DIFFUSE_API_TOKEN.
 # Both are in the "REQUIRED" block at the top of the file.
 # Use URL-safe values, for example: openssl rand -hex 32
+#
+# REVIEW_MODEL ships commented out, so that copying this file cannot hand you a
+# model you never chose. Uncomment it (or name your own) before running a
+# review; the worker refuses to start until you do.
 
 docker compose up -d db
 ```

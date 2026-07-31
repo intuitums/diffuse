@@ -14,7 +14,10 @@ commercial agreement, license key, entitlement file, or registry credential.
 ## Install
 
 1. Copy `env.example` to `.env`, restrict it with `chmod 600 .env`, and fill
-   every required value. Release bundles already pin `DIFFUSE_IMAGE` to the
+   every required value — including `REVIEW_MODEL`, which ships commented out so
+   that copying this file cannot hand you a review model you never chose.
+   Uncomment the recommendation or name your own; the worker refuses to start
+   until one is set. Release bundles already pin `DIFFUSE_IMAGE` to the
    immutable release digest.
 2. Verify the image signature before starting it:
 

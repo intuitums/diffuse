@@ -151,6 +151,9 @@ from service.review_engine import (
     generate_review,
     minimum_review_confidence,
     model_retries,
+    resolve_review_depth_support,
+    review_depth,
+    review_effort,
     review_model,
     review_passes,
     review_provenance_minimum_confidence,
@@ -2333,6 +2336,8 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("MIN_CONTEXT_SIMILARITY", minimum_similarity),
     ("REVIEW_MODEL", review_model),
     ("REVIEW_VERIFIER_MODEL", review_verifier_model),
+    ("REVIEW_EFFORT", review_effort),
+    ("REVIEW_DEPTH", review_depth),
     ("REVIEW_PASSES", review_passes),
     ("MIN_REVIEW_CONFIDENCE", minimum_review_confidence),
     ("REVIEW_PROVENANCE_MIN_CONFIDENCE", review_provenance_minimum_confidence),
@@ -2403,6 +2408,33 @@ def validate_worker_configuration() -> None:
             raise ValueError(f"{name} is invalid: {error}") from error
 
 
+def validate_worker_model_controls() -> None:
+    """Report what the configured models will be sent, and refuse the unhonorable.
+
+    A third validator alongside the two below for the same reason they are
+    separate from each other: this asks whether the *models* can express what
+    the operator configured, which `validate_worker_configuration` -- a parse
+    check -- cannot answer and should not grow to.
+
+    Diffuse has no structured logging, no metrics, and no alerting, so a
+    parameter dropped mid-review is indistinguishable from silence. Every
+    resolution is reported here, before a single job is claimed, naming what was
+    requested, what the model supports, and what will actually be sent. A
+    candidate model that cannot express the request at all does not start.
+    """
+
+    support = resolve_review_depth_support()
+    lines = support.report_lines()
+    if not lines:
+        return
+    emit = LOGGER.info if support.fully_honored else LOGGER.warning
+    for line in lines:
+        emit("%s", line)
+    refusal = support.refusal()
+    if refusal is not None:
+        raise ValueError(refusal)
+
+
 def validate_worker_credentials() -> None:
     """Check that configured providers have a usable credential.
 
@@ -2436,6 +2468,7 @@ def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     try:
         validate_worker_configuration()
+        validate_worker_model_controls()
         validate_worker_credentials()
     except ValueError as error:
         parser.error(str(error))

@@ -449,6 +449,30 @@ error naming the variable rather than failing every pull request against a
 provider you may not have an account with. `REVIEW_VERIFIER_MODEL`
 optionally selects an independent verifier from another model family, and
 falls back to `REVIEW_MODEL` when unset.
+
+`REVIEW_DEPTH` optionally sets how carefully to review: `brisk`, `standard`,
+`careful`, `thorough`, or `exhaustive`. Unset sends nothing and leaves the model
+on its own default; `thorough` is the recommendation for repositories where a
+missed defect costs more than the tokens.
+
+This names an intent, not a provider parameter, because there is no single
+provider parameter to name. Diffuse probes what the configured model actually
+supports and decides what the intent becomes there: a graded effort level on
+current `anthropic/` and OpenAI reasoning routes, a thinking-token budget on
+`claude-haiku-4-5`, `gemini/`, and `bedrock/`, an on/off switch on `ollama/`,
+and nothing at all on `openai/gpt-4.1-mini`. The resolution is reported at
+startup — what was asked for, what the model supports, and what will actually be
+sent — and a `REVIEW_MODEL` that cannot express the requested depth at all
+refuses to start rather than dropping it. `diffuse model` prints the same
+resolution, plus the full capability probe for both configured models.
+
+Thinking tokens are billed against `REVIEW_MAX_OUTPUT_TOKENS`, which also bounds
+the thinking budget a route derives from the depth, so raise it alongside.
+
+`REVIEW_EFFORT` is the previous spelling, in LiteLLM's own effort vocabulary
+(`low`, `medium`, `high`, `xhigh`, `max` — one rung per depth, in the same
+order). It is still honoured so an existing deployment keeps working; set one or
+the other, never both.
 OpenAI, Anthropic, Google Gemini, Azure, AWS Bedrock, Ollama, and other LiteLLM
 routes use their conventional provider configuration in the data plane. A
 provider prefix Diffuse does not name explicitly—`mistral/…`, `groq/…`,
