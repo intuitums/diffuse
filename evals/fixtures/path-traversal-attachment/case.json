@@ -1,0 +1,26 @@
+{
+  "schema_version": "diffuse-eval-fixture-v1",
+  "case_id": "path-traversal-attachment",
+  "description": "The containment check on the resolved attachment path is dropped and `Path` is swapped for `os.path.join`, so a request-supplied name containing `../` reads any file the process can read, across tenants and outside the attachment root.",
+  "diff_path": "diff.patch",
+  "expected": [
+    {
+      "finding_id": "attachment-name-escapes-tenant-root",
+      "file_path": "web/attachments.py",
+      "line": 18,
+      "category": "security",
+      "line_tolerance": 3
+    }
+  ],
+  "addressed_finding_ids": [],
+  "contexts": [
+    {
+      "path": "context/web_routes.py",
+      "file_path": "web/routes.py",
+      "symbol_name": "download_attachment",
+      "retrieval_reason": "graph_caller",
+      "relevance_score": 0.86,
+      "similarity": 0.8
+    }
+  ]
+}

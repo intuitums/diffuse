@@ -17,15 +17,19 @@ must leave a deployable, observable system.
 - A versioned review-evaluation *scorer* exists: given labeled and observed
   findings it computes true bugs, false positives/negatives, addressed
   findings, precision/recall/F1, median latency, tokens, and estimated cost.
-  It does not yet run a review — `observed` is transcribed by hand into the
-  input file, so nothing measures review quality automatically. This is the
-  largest single gap in the product: every confidence threshold, severity
-  floor, and finding cap is an unmeasured constant. Build a harness that
-  invokes the review engine against fixtures, replace the committed synthetic
-  example (whose recorded run has 0% recall) with reviewed private PR fixtures,
-  and establish release gates. `evals/` is now packaged into the image and
-  verified in CI, but the documented relative path does not resolve there — the
-  in-image fixture is `/opt/diffuse/_internal/evals/baseline.example.json`.
+  `service/eval_harness.py` now runs the review engine against committed
+  fixtures and emits that `observed` half directly, so it no longer has to be
+  transcribed by hand; `evals/fixtures/` holds eight labeled cases and
+  `scripts/eval.sh` runs them and compares the scored result against a golden.
+  **The gate is not live yet: no golden is committed.** Capturing one requires
+  live model calls, so `scripts/eval.sh` exits non-zero with instructions rather
+  than passing vacuously — see `evals/CAPTURE.md`. Until a golden exists, every
+  confidence threshold, severity floor, and finding cap remains an unmeasured
+  constant. Remaining work: capture the goldens, add reviewed private PR
+  fixtures alongside the synthetic ones, and establish release gates. `evals/`
+  is packaged into the image and verified in CI, but the documented relative
+  path does not resolve there — the in-image fixture is
+  `/opt/diffuse/_internal/evals/baseline.example.json`.
 - Configuration validation is in place for the worker: `validate_worker_configuration`
   resolves every hot-path variable at startup and names the one that fails, and
   `validate_worker_credentials` separately refuses to start without a usable

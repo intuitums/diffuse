@@ -1,0 +1,24 @@
+diff --git a/ledger/commit.py b/ledger/commit.py
+index 47bb56f..5306c9c 100644
+--- a/ledger/commit.py
++++ b/ledger/commit.py
+@@ -10,15 +10,10 @@ def batch_size(rows: list[dict]) -> int:
+ 
+ 
+ def commit_batch(connection: Connection, rows: list[dict]) -> int:
+     """Write ``rows`` inside one transaction and return the number written."""
+     connection.begin()
+-    try:
+-        for row in rows:
+-            connection.insert("ledger_entries", row)
+-        connection.commit()
+-    except ConstraintViolation:
+-        connection.rollback()
+-        return 0
+-    finally:
+-        connection.close()
++    for row in rows:
++        connection.insert("ledger_entries", row)
++    connection.commit()
++    connection.close()
+     return len(rows)

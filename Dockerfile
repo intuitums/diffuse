@@ -35,7 +35,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && python -m pip install --require-hashes -r requirements-build.lock \
     && python -m pip check
 
-COPY evals ./evals
+# Only the two files pyproject.toml's data-files list ships, not the whole
+# directory. evals/fixtures/ holds .py sources used as review fixtures, and
+# `--add-data /src/evals:evals` below is recursive -- copying those in would put
+# .py files in the frozen image and trip the assertion at the end of the
+# pyinstaller step. They are development tooling for scripts/eval.sh and have no
+# place in the runtime image.
+COPY evals/baseline.example.json evals/README.md ./evals/
 COPY indexer ./indexer
 COPY repository_policy ./repository_policy
 COPY retriever ./retriever
