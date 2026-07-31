@@ -9,7 +9,7 @@ import psycopg2
 import pytest
 from psycopg2 import sql
 
-from service.database_migrations import (
+from service.storage.migrations import (
     METADATA_TABLE,
     Migration,
     MigrationDriftError,

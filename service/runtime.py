@@ -68,7 +68,7 @@ def _run_api(arguments: Sequence[str]) -> None:
 
     import uvicorn
 
-    from service.webhook_server import app
+    from service.hosted.webhook_server import app
 
     # Both env files describe LOG_LEVEL as applying to "the worker and API", but
     # only the worker configured logging. Diffuse's own loggers here fell through
@@ -94,7 +94,7 @@ def _run_api(arguments: Sequence[str]) -> None:
 
 
 def _run_worker(arguments: Sequence[str]) -> None:
-    from service.worker import main as worker_main
+    from service.hosted.worker import main as worker_main
 
     _replace_process_arguments(arguments)
     worker_main()
@@ -110,7 +110,7 @@ def _run_healthcheck(arguments: Sequence[str]) -> None:
 
 
 def _run_cli(arguments: Sequence[str]) -> None:
-    from service.review_cli import main as cli_main
+    from service.cli.review import main as cli_main
 
     _replace_process_arguments(arguments)
     cli_main()
@@ -141,7 +141,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         # escape as an unformatted traceback with the credential in it.
         import psycopg2
 
-        from service.review_cli import (
+        from service.cli.review import (
             EXIT_CONFIG,
             EXIT_INTERNAL,
             database_error_message,

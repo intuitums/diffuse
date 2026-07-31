@@ -1,4 +1,4 @@
-"""PostgreSQL coverage for `service/feedback_store.py`.
+"""PostgreSQL coverage for `service/storage/feedback.py`.
 
 Recovered from `tests/integration/test_workflow_postgres.py`. Nothing in the
 surviving suite exercises `record_review_comment_feedback`,
@@ -15,38 +15,38 @@ from contextlib import closing
 
 import psycopg2
 
-from service.feedback_models import ReviewReaction
-from service.feedback_store import (
-    begin_feedback_sync,
-    load_repository_feedback_summary,
-    reconcile_review_reactions,
-    record_review_comment_feedback,
+from service.hosted.workflow import (
+    claim_workflow_job,
+    complete_workflow_job,
+    enqueue_review_event,
+    schedule_due_feedback_sync_jobs,
 )
-from service.finding_store import PublishedFindingComment, record_finding_threads
-from service.repositories import register_repository
-from service.review_models import (
+from service.models.feedback import ReviewReaction
+from service.models.review import (
     Category,
     ReviewFinding,
     ReviewReport,
     SecurityClassification,
     Severity,
 )
-from service.review_store import (
-    begin_publication,
-    begin_review_run,
-    mark_publication_published,
-    persist_review_report,
-)
+from service.repositories import register_repository
 from service.scm import (
     FeedbackSyncEvent,
     PullRequestEvent,
     ReviewFeedbackCommentEvent,
 )
-from service.workflow import (
-    claim_workflow_job,
-    complete_workflow_job,
-    enqueue_review_event,
-    schedule_due_feedback_sync_jobs,
+from service.storage.feedback import (
+    begin_feedback_sync,
+    load_repository_feedback_summary,
+    reconcile_review_reactions,
+    record_review_comment_feedback,
+)
+from service.storage.finding import PublishedFindingComment, record_finding_threads
+from service.storage.review import (
+    begin_publication,
+    begin_review_run,
+    mark_publication_published,
+    persist_review_report,
 )
 
 

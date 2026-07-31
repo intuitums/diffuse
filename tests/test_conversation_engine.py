@@ -4,12 +4,12 @@ from retriever.retrieve import (
     parse_changed_line_ranges,
 )
 from service import conversation_engine
-from service.conversation_models import (
+from service.models.conversation import (
     ConversationReference,
     ConversationResponse,
     ConversationTurn,
 )
-from service.review_models import Category, ReviewFinding, Severity
+from service.models.review import Category, ReviewFinding, Severity
 from service.scm import ReviewConversationEvent
 
 

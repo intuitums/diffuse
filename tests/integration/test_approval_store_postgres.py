@@ -1,4 +1,4 @@
-"""PostgreSQL coverage for `service/approval_store.py`.
+"""PostgreSQL coverage for `service/storage/approval.py`.
 
 Recovered from `tests/integration/test_workflow_postgres.py`. This is W1.3's
 done-when: an auto-approval decision and its publication must be durable and
@@ -11,22 +11,22 @@ from contextlib import closing
 
 import psycopg2
 
-from service.approval_store import (
+from service.auto_approval import AutoApprovalDecision, AutoApprovalRisk
+from service.hosted.workflow import claim_workflow_job, enqueue_review_event
+from service.models.review import ReviewReport
+from service.repositories import register_repository
+from service.scm import PullRequestEvent
+from service.storage.approval import (
     begin_auto_approval,
     mark_auto_approval_failed,
     mark_auto_approval_published,
 )
-from service.auto_approval import AutoApprovalDecision, AutoApprovalRisk
-from service.repositories import register_repository
-from service.review_models import ReviewReport
-from service.review_store import (
+from service.storage.review import (
     begin_publication,
     begin_review_run,
     mark_publication_published,
     persist_review_report,
 )
-from service.scm import PullRequestEvent
-from service.workflow import claim_workflow_job, enqueue_review_event
 
 
 def _claimed_job(connection, event, *, payload_sha256: str, worker_id: str):

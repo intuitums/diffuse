@@ -13,15 +13,15 @@ from repository_policy.resolve import (
     repository_failure_comment_enabled,
     resolve_review_policy,
 )
-from service.github import normalize_manual_review_request
-from service.github_review import post_github_review_failure_notice
-from service.review_failure_notice import (
+from service.github.api import normalize_manual_review_request
+from service.github.review import post_github_review_failure_notice
+from service.review.failure_notice import (
     TerminalReviewFailure,
     format_failure_notice,
     redact_credentials,
     terminal_review_failure,
 )
-from service.review_interaction import is_diffuse_generated
+from service.review.interaction import is_diffuse_generated
 from service.scm import PullRequestEvent
 
 
@@ -249,7 +249,7 @@ def test_no_failure_notice_on_a_pull_request_diffuse_would_not_review(monkeypatc
     `except Exception` turned that AttributeError into fail-open -- the gate did
     nothing while its test still passed. This asserts the suppression directly.
     """
-    from service import worker
+    from service.hosted import worker
 
     snapshot = _snapshot()
     monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_a: 11)
@@ -266,7 +266,7 @@ def test_no_failure_notice_on_a_pull_request_diffuse_would_not_review(monkeypatc
 
 
 def test_failure_notice_still_posts_for_an_eligible_pull_request(monkeypatch):
-    from service import worker
+    from service.hosted import worker
 
     snapshot = _snapshot()
     monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_a: 11)
@@ -283,7 +283,7 @@ def test_unenriched_metadata_does_not_suppress_the_failure_notice(monkeypatch):
     cause of the very failure being reported. Treating that as "not eligible"
     would silence the notice in exactly the case it exists for.
     """
-    from service import worker
+    from service.hosted import worker
 
     monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_a: 11)
     monkeypatch.setattr(worker, "get_conn", lambda: _NullConn())
@@ -300,7 +300,7 @@ def test_unenriched_metadata_does_not_suppress_the_failure_notice(monkeypatch):
 
 
 def test_failure_notice_respects_the_repository_opt_out_before_eligibility(monkeypatch):
-    from service import worker
+    from service.hosted import worker
 
     monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_a: 11)
     monkeypatch.setattr(worker, "get_conn", lambda: _NullConn())

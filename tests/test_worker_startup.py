@@ -2,7 +2,7 @@
 
 `validate_worker_configuration()` is the probe list that resolves every hot-path
 variable before any job is claimed, and it is live configuration validation that
-merely happens to be hosted in `service/worker.py` today -- W5.1 makes it the
+merely happens to be hosted in `service/hosted/worker.py` today -- W5.1 makes it the
 shared implementation for every entry point. Its tests went out with
 `tests/test_worker.py`, leaving `REVIEW_MODEL`'s no-default refusal (PR #45's
 headline behaviour) with nothing holding it, so they are recovered here in a
@@ -15,7 +15,7 @@ accident.
 
 import pytest
 
-from service import worker
+from service.hosted import worker
 
 
 @pytest.mark.parametrize(

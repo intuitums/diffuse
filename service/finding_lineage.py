@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Literal
 
-from service.review_models import ReviewFinding
+from service.models.review import ReviewFinding
 
 LineageStatus = Literal["active", "addressed"]
 TransitionKind = Literal["new", "persistent", "reopened", "addressed"]

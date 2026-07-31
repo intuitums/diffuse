@@ -1,7 +1,7 @@
 import pytest
 
 from service import learning_engine
-from service.learning_models import (
+from service.models.learning import (
     RuleLearningEvidence,
     RuleLearningJobEvent,
     SuggestedRuleBatch,

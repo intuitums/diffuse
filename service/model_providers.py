@@ -1,11 +1,11 @@
 """Single source of truth for LiteLLM model-identifier resolution.
 
 Three call sites need to answer questions about the same model string: which
-credential it needs (``review_engine._model_api_key``), whether an
+credential it needs (``review.engine._model_api_key``), whether an
 operator-configured ``REVIEW_API_BASE`` applies to it
-(``review_engine._model_api_base``), which provider to report in readiness
-output (``model_cli``), and which family it belongs to for provenance routing
-(``review_provenance.model_family``).
+(``review.engine._model_api_base``), which provider to report in readiness
+output (``cli.model``), and which family it belongs to for provenance routing
+(``review.provenance.model_family``).
 
 Those answers previously lived in three independently maintained prefix tables
 that had already drifted: identifiers such as ``vertex_ai/…``, ``azure_ai/…``,
@@ -14,7 +14,7 @@ credential requirement, so ``diffuse model`` reported a deployment ready when
 no credential was set at all.
 
 This module is deliberately a leaf: it imports nothing from ``service`` so that
-``review_provenance`` and ``review_engine`` can both depend on it without a
+``review.provenance`` and ``review.engine`` can both depend on it without a
 cycle.
 
 Provider and family are separate resolutions because they genuinely differ. A

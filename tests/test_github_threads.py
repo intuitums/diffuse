@@ -3,9 +3,9 @@ import json
 import httpx
 import pytest
 
-from service.finding_store import ThreadOperationHandle
-from service.github_threads import apply_github_thread_operation
+from service.github.threads import apply_github_thread_operation
 from service.scm import PullRequestEvent
+from service.storage.finding import ThreadOperationHandle
 
 
 def _event() -> PullRequestEvent:
