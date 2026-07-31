@@ -214,7 +214,11 @@ untracked choice, index snapshot, policy fingerprint, model, and prompt version
 are unchanged; completed or drifted runs require a new review.
 
 `diffuse model` reports the selected LiteLLM provider, expected credential
-variable names, and readiness booleans without printing secret values.
+variable names, and readiness booleans without printing secret values. It also
+reports what each configured model actually supports — sampling parameters,
+structured output, and which reasoning mechanism it exposes, if any — together
+with the resolution of `REVIEW_DEPTH` against it. All of that is probed offline,
+so it answers before any credential is configured.
 `diffuse model --live` makes a small schema-validated request and should be run
 before onboarding the first review repository.
 
