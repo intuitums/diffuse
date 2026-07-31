@@ -76,6 +76,7 @@ subdirectory:
     "enabled": false,
     "risk_ceiling": "low",
     "filters": {
+      "allow_paths": ["docs/**", "src/ui/**"],
       "exclude_paths": ["src/auth/**", "db/migrations", ".github/workflows/**"],
       "exclude_authors": ["dependabot[bot]"],
       "file_change_limit": 10
@@ -129,11 +130,30 @@ conversation, feedback, and learning records, and labels GitHub reviews and
 check annotations as either `🔒 Security vulnerability` or
 `🛡️ Preventative security risk`.
 
-`auto_approval.enabled` defaults to `false`. When requested, Diffuse records an
-inspectable decision after the ordinary review and status check finish, and
-submits a commit-pinned GitHub review only when all of these hold:
+`auto_approval.enabled` defaults to `false`, and so does every path: approving
+is a write action, so `auto_approval.filters.allow_paths` is the list of places
+where you permit it. A repository that enables auto-approval without naming any
+path approves nothing, and so does one that names paths the pull request does
+not touch. Diffuse deliberately does not infer this list — no denylist it ships
+can know whether your authorization code lives in `src/auth/`, `internal/perms/`,
+or `pkg/tenancy/`, and the paths it fails to name are the ones that would be
+approved by accident. An empty `allow_paths` list is a decision rather than an
+omission: it withdraws a grant a parent scope made.
+
+Keeping the allowlist in the repository is safe because Diffuse resolves it from
+the indexed default-branch snapshot rather than from the pull request's head
+commit. A pull request that edits `.diffuse/config.json` is reviewed under the
+configuration that was already merged, so it cannot allowlist the paths it needs
+approved in the same change; the new allowlist takes effect after it lands and
+the repository is reindexed. Those edits are also critical-risk in their own
+right, so the pull request making them is never a candidate for approval.
+
+When requested, Diffuse records an inspectable decision after the ordinary
+review and status check finish, and submits a commit-pinned GitHub review only
+when all of these hold:
 
 - every touched path scope enables auto-approval;
+- every changed path is named by the allowlist of every scope that governs it;
 - authoritative PR metadata and the diff are complete, including both sides of
   renames;
 - all configured author, target-branch, label, keyword, repository, path, and
@@ -143,14 +163,22 @@ submits a commit-pinned GitHub review only when all of these hold:
 - Diffuse's deterministic change-risk class does not exceed the strictest
   configured ceiling.
 
-Low covers documentation, tests, styling, and very small changes; ordinary
-application changes are medium; dependency/build/runtime/shared-core changes
-are high. Auth, public API, secret, billing/payment, schema/migration, CI, and
-infrastructure paths are critical and are never automatically approved,
-including when `risk_ceiling` is set to `critical`. Nested scopes merge
-strictest-wins: every scope must enable the feature, the lowest ceiling and
-smallest file limit win, exclusion filters union, and every applicable
-inclusion filter must match. Approval state and attempts are durable. Before
+Low covers documentation, styling, and very small changes; ordinary application
+changes are medium; dependency/build/runtime/shared-core changes are high. Test
+paths are never low, however small the diff: a test file carries the evidence
+that production behaviour is correct, and removing one assertion is a one-line
+change that makes nothing fail, so a test-only pull request needs a
+`risk_ceiling` of at least `medium` and an allowlist that names it. Auth, public
+API, secret, billing/payment, schema/migration, CI, and infrastructure paths are
+critical and are never automatically approved, including when `risk_ceiling` is
+set to `critical` and including when `allow_paths` names them — the built-in
+critical list is a floor under the allowlist, not an alternative to it, which is
+what keeps a pull request from allowlisting the configuration that approves it.
+Nested scopes merge strictest-wins: every scope must enable the feature, every
+scope's allowlist must cover the path (nested patterns are rooted at their own
+scope, so a nested `**` cannot widen a parent's grant), the lowest ceiling and
+smallest file limit win, exclusion filters union, and every applicable inclusion
+filter must match. Approval state and attempts are durable. Before
 posting, Diffuse re-fetches the pull request and cancels approval if it closed,
 became a draft, or moved to another head commit. A hidden per-run/head marker
 recovers remote-create crash windows.
@@ -280,7 +308,7 @@ On an inline finding created by Diffuse, an authorized repository member can
 reply with `@diffuse <question>` to ask for clarification, alternatives,
 testing guidance, or related repository patterns. Diffuse verifies that the
 root is one of its stored finding threads and checks GitHub owner/member/
-collaborator authority. It then retrieves hybrid graph/lexical/vector context
+collaborator authority. It then retrieves hybrid graph/lexical context
 around the finding, includes prior published turns, and posts a structured
 answer with only validated code references into the same GitHub thread.
 Questions on the same thread
