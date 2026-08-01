@@ -13,6 +13,7 @@ from service.approval_publication import (
 )
 from service.auto_approval import AutoApprovalDecision
 from service.github.api import GITHUB_API_VERSION
+from service.github.app import github_token
 from service.scm import (
     PullRequestEvent,
     scm_api_timeout_seconds,
@@ -20,9 +21,9 @@ from service.scm import (
 
 
 def _headers() -> dict[str, str]:
-    token = os.environ.get("GITHUB_TOKEN", "")
+    token = github_token()
     if not token:
-        raise RuntimeError("GITHUB_TOKEN is required to approve pull requests")
+        raise RuntimeError("GitHub authentication is required to approve pull requests")
     return {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",

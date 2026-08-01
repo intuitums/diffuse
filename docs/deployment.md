@@ -52,6 +52,46 @@ never be set in production.
 Do not commit `.env`, copy it into an image, or place its values on command
 lines. Back it up separately in an encrypted secret manager.
 
+### Configure the GitHub App
+
+Diffuse authenticates automation as a GitHub App installation. Do not mint an
+installation token by hand and do not create a PAT: installation tokens expire
+after one hour, and Diffuse creates and refreshes them itself.
+
+Create a private GitHub App owned by the organization and configure:
+
+- repository permissions: **Contents: read**, **Pull requests: read and
+  write**, **Issues: read** (required for the `issue_comment` event), and
+  **Checks: read and write** when status checks will be enabled;
+- webhook events: `push`, `pull_request`, `issue_comment`, and
+  `pull_request_review_comment`;
+- webhook URL: `https://diffuse.example.com/webhook/github`; and
+- a high-entropy webhook secret copied into `GITHUB_WEBHOOK_SECRET`.
+
+Install the App only on the pilot repositories. Then set:
+
+- `GITHUB_APP_ID` to the App's client ID (GitHub's recommended JWT issuer) or
+  numeric App ID;
+- `GITHUB_APP_INSTALLATION_ID` to the trailing number in the organization's
+  installed-App settings URL; and
+- one of `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_FILE`.
+
+The default release profile is easiest with a secret manager that injects
+`GITHUB_APP_PRIVATE_KEY`. If you use a file, mount it read-only into both
+`app` and `worker`, set the container-visible path in
+`GITHUB_APP_PRIVATE_KEY_FILE`, and use mode `600` where the platform permits.
+The migration container does not need the key. A file-backed key is re-read
+when the in-memory installation token refreshes, but recreate `app` and
+`worker` when rotating it so the new key is exercised immediately.
+
+`GITHUB_TOKEN` remains only as a compatibility fallback. Leave it empty for
+App authentication. A partial App configuration fails closed rather than
+silently falling back to a different identity.
+
+GitHub permits overlapping App private keys. Rotate without downtime by
+generating a second key, replacing the secret-manager value, recreating app and
+worker, confirming a token can be minted, and only then deleting the old key.
+
 ### Browser sign-in is not usable yet
 
 Leave `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET_FILE`, and

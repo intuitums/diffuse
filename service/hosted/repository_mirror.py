@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from service.github.app import github_token
 from service.repositories import RegisteredRepository
 
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
@@ -110,7 +111,10 @@ class RepositoryMirror:
         environment = {
             key: value for key, value in os.environ.items() if key in allowed_environment
         }
-        token = os.environ.get("GITHUB_TOKEN", "")
+        # `x-access-token` is already the username a GitHub App installation
+        # token clones with, so this line needed no change when App
+        # authentication landed -- only the credential behind it did.
+        token = github_token()
         username = "x-access-token"
         environment.update(
             {

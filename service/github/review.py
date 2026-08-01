@@ -12,6 +12,7 @@ import httpx
 
 from service.finding_lineage import ReviewContinuity
 from service.github.api import GITHUB_API_VERSION
+from service.github.app import github_token
 from service.models.review import (
     Category,
     ReviewFinding,
@@ -311,9 +312,9 @@ def format_review_body(
 
 
 def _headers() -> dict[str, str]:
-    token = os.environ.get("GITHUB_TOKEN", "")
+    token = github_token()
     if not token:
-        raise RuntimeError("GITHUB_TOKEN is required to publish reviews")
+        raise RuntimeError("GitHub authentication is required to publish reviews")
     return {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
