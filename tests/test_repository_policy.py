@@ -771,7 +771,7 @@ def _trigger_policy(config: dict):
     )
 
 
-def test_trigger_defaults_skip_drafts_and_updates_but_manual_bypasses_filters():
+def test_trigger_defaults_skip_drafts_but_review_pushes_and_manual_bypasses_filters():
     policy = resolve_review_policy(RepositoryPolicySnapshot(), {"src/api.py"})
 
     assert evaluate_trigger(policy, _trigger_context()).eligible
@@ -782,7 +782,7 @@ def test_trigger_defaults_skip_drafts_and_updates_but_manual_bypasses_filters():
     assert evaluate_trigger(
         policy,
         _trigger_context(action="synchronize"),
-    ).reason_code == "updates_disabled"
+    ).eligible
     manual = evaluate_trigger(
         policy,
         _trigger_context(
@@ -793,6 +793,35 @@ def test_trigger_defaults_skip_drafts_and_updates_but_manual_bypasses_filters():
     )
     assert manual.eligible
     assert manual.reason_code == "manual_trigger"
+
+
+def test_default_policy_reaches_finding_lineage_on_a_pushed_revision():
+    """`synchronize` is the only action that runs lineage and addressed-detection.
+
+    `worker._review_pull_request` derives `touched_paths` from the diff between the
+    previously reviewed head and the new one, and that branch is guarded by
+    `decision.eligible`. While `review_updates` defaulted to `False` the guard was
+    closed on every default install, so finding lineage, addressed-detection, and
+    the indexes DEV-202 added for their join were built, tested, and never
+    executed. This asserts the reachability directly: if the default flips back, or
+    a new filter starts dropping pushed revisions, the whole continuity subsystem
+    goes dormant again and only this test says so.
+    """
+    policy = resolve_review_policy(RepositoryPolicySnapshot(), {"src/api.py"})
+
+    decision = evaluate_trigger(policy, _trigger_context(action="synchronize"))
+
+    assert decision.eligible
+    assert decision.reason_code == "automatic_trigger"
+
+
+def test_review_updates_can_still_be_turned_off_per_repository():
+    policy = _trigger_policy({"review_updates": False})
+
+    decision = evaluate_trigger(policy, _trigger_context(action="synchronize"))
+
+    assert not decision.eligible
+    assert decision.reason_code == "updates_disabled"
 
 
 @pytest.mark.parametrize(

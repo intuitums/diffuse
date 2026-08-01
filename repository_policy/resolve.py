@@ -367,7 +367,15 @@ class ApprovedCustomContext:
 class ResolvedTriggerPolicy:
     automatic: bool = True
     review_drafts: bool = False
-    review_updates: bool = False
+    # A reviewer that reads the first commit and then goes quiet is not a
+    # reviewer: the most valuable review is the one on the change made in
+    # response to the last review, and with this off it never happened. It also
+    # left finding lineage and addressed-detection -- built, tested, and indexed
+    # -- unreachable on a default install, because both only run on
+    # `synchronize`. The cost of a model call per push is real, and is answered
+    # by debouncing a burst of pushes into one review of the final head
+    # (`REVIEW_UPDATE_DEBOUNCE_SECONDS`) rather than by reviewing nothing.
+    review_updates: bool = True
     labels: tuple[str, ...] = ()
     disabled_labels: tuple[str, ...] = ()
     include_authors: tuple[str, ...] = ()

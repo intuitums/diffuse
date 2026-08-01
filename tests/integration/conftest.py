@@ -44,6 +44,23 @@ def pytest_configure() -> None:
         )
 
 
+@pytest.fixture(autouse=True)
+def no_update_debounce(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Claim a pushed revision immediately unless the test is about the wait.
+
+    Most store tests reach `enqueue_review_event` only for the `workflow_jobs`
+    row their schema requires, and several of those fixtures use a `synchronize`
+    action because lineage is what they are testing. With the shipped
+    `REVIEW_UPDATE_DEBOUNCE_SECONDS` those jobs are not claimable for a minute
+    and `claim_workflow_job` returns `None`, which reads as a queue bug rather
+    than as the debounce doing its job.
+
+    A test that *is* about the wait sets the variable itself; `monkeypatch.setenv`
+    in the test body wins over the value this fixture set first.
+    """
+    monkeypatch.setenv("REVIEW_UPDATE_DEBOUNCE_SECONDS", "0")
+
+
 _HERE = pathlib.Path(__file__).parent
 
 # Node ids of everything collected from this directory, and of everything from it
