@@ -184,8 +184,12 @@ async def test_ineligible_synchronize_still_creates_and_completes_skipped_check(
         lambda *_a: ReviewRunHandle(id=42, status="generating", index_snapshot_id=41),
     )
     monkeypatch.setattr(worker, "_persist_trigger_skip", fake_persist)
+    async def fake_extend(_job, _worker_id):
+        return None
+
     monkeypatch.setattr(worker, "_ensure_native_check", fake_ensure)
     monkeypatch.setattr(worker, "_complete_native_check", fake_complete)
+    monkeypatch.setattr(worker, "_extend_publication_lease", fake_extend)
     monkeypatch.setattr(worker, "_load_native_report", lambda *_a: persisted[0])
     monkeypatch.setattr(worker, "_load_native_continuity", lambda *_a: ReviewContinuity())
     monkeypatch.setattr(worker, "_complete", lambda *_a: True)
