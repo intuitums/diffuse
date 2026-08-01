@@ -1,4 +1,17 @@
 .env
+# `.env` alone only matches that exact name. A deployment secret is just as
+# likely to land in `.env.production`, `prod.env`, or a `secrets/` directory,
+# and the repository is public, so ignore the whole shape rather than one name.
+.env.*
+!.env.example
+*.env
+secrets/
+# Nothing reads a key file today. This becomes load-bearing the moment GitHub
+# App JWT authentication lands and a private key is mounted on the host.
+*.pem
+*.key
+*.p12
+*.pfx
 .venv/
 __pycache__/
 *.py[cod]

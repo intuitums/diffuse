@@ -92,6 +92,93 @@ GitHub permits overlapping App private keys. Rotate without downtime by
 generating a second key, replacing the secret-manager value, recreating app and
 worker, confirming a token can be minted, and only then deleting the old key.
 
+### Sourcing the environment from a secret manager
+
+Diffuse has no built-in secret-manager integration, and choosing one is the
+operator's responsibility. What it does provide is `DIFFUSE_ENV_FILE`: every
+service reads `env_file: ${DIFFUSE_ENV_FILE:-.env}`, so the environment can be
+rendered somewhere other than a checked-out `.env` without changing the Compose
+file.
+
+The pattern that keeps a plaintext credential off persistent disk is to render
+it into a tmpfs at start time and let the unit that renders it own the
+lifetime:
+
+```ini
+# /etc/systemd/system/diffuse.service
+[Service]
+RuntimeDirectory=diffuse
+RuntimeDirectoryMode=0700
+Environment=DIFFUSE_ENV_FILE=/run/diffuse/env
+# Any renderer that writes KEY=VALUE lines works. Examples:
+#   op inject -i /etc/diffuse/env.tpl -o /run/diffuse/env
+#   aws secretsmanager get-secret-value --secret-id diffuse/prod \
+#     --query SecretString --output text > /run/diffuse/env
+ExecStartPre=/usr/local/bin/render-diffuse-env /run/diffuse/env
+ExecStart=/usr/bin/docker compose --env-file /run/diffuse/env up -d
+```
+
+`/run` is tmpfs, so the rendered file does not survive a reboot and is never
+captured by a filesystem backup. Keep the mode at `600` and the owner at the
+account that runs Compose.
+
+Two properties of Diffuse constrain how rotation works:
+
+- **The process reads its credentials from its own environment.** A rotated
+  value does not reach a running container; re-render and recreate the
+  containers. The one exception is the browser sign-in client secret, which is
+  read from a file per call — and that flow is disabled, so it does not help
+  here.
+- **`POSTGRES_PASSWORD` is not rotatable by editing the file.** Compose
+  interpolates it into `DATABASE_URL`, and PostgreSQL stores the password in the
+  data volume on first initialization. Changing it later requires an
+  `ALTER ROLE` against the running database as well. Choose it before the first
+  `up`.
+
+Rotating `GITHUB_WEBHOOK_SECRET` has a delivery gap: the server verifies against
+exactly one secret, so deliveries signed with the old value are rejected from
+the moment the new one is live until GitHub's webhook configuration is updated.
+Rotate it during a quiet period and re-deliver anything GitHub records as
+failed.
+
+Whatever the source of the values, the security property that matters is that
+the credential's home of record is somewhere with access control, an audit
+trail, and rotation — not a file that exists only on one host. `.env` on the
+server is a cache of that record, not the record itself.
+
+### Model credentials without a long-lived key
+
+Retrieval is graph and lexical search inside PostgreSQL, so indexing needs no
+model credential at all and the only credential a deployment must hold is the
+one its `REVIEW_MODEL` resolves. Running Diffuse with no OpenAI account is
+therefore just a matter of not naming an OpenAI model.
+
+For the cloud providers, ambient credential chains work and are preferable to a
+stored key: `bedrock/…` resolves the AWS chain (so an instance role or IRSA
+works) and `vertex_ai/…` resolves Google application default credentials. Both
+apply to `REVIEW_MODEL`; note that `boto3` is not a Diffuse runtime dependency,
+so Bedrock needs it installed first. `REVIEW_API_BASE` points review generation
+at a self-hosted OpenAI-compatible endpoint, which needs no managed provider
+credential either.
+
+Two questions come up often enough to answer directly, both about OpenAI
+specifically.
+
+**Can Diffuse sign in with a ChatGPT account instead of an API key?** No, and
+not because Diffuse has not implemented it. The OpenAI Platform API has no
+authorization-code flow that mints platform access on a user's behalf;
+"Sign in with ChatGPT" covers apps *inside* ChatGPT and the Codex CLI, which is
+an interactive desktop session, not a headless worker. There is nothing for
+Diffuse to call.
+
+**Can it use OpenAI workload identity federation?** That is the right shape —
+a workload exchanges an OIDC token from AWS, GCP, Azure, Kubernetes, or GitHub
+Actions for a short-lived OpenAI token, with no stored key — and the OpenAI
+Python SDK accepts a `workload_identity` client parameter. Diffuse cannot reach
+it today: every model call goes through LiteLLM, and LiteLLM has no passthrough
+for that parameter and no way to inject a pre-built client. The blocker is
+upstream.
+
 ### Browser sign-in is not usable yet
 
 Leave `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET_FILE`, and
