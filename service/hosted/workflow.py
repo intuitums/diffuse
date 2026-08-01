@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -42,6 +43,44 @@ WEBHOOK_REJECTION_REASONS = frozenset({REPOSITORY_NOT_ONBOARDED_REASON})
 # deliberately absent: those are decisions Diffuse made about a revision that no
 # longer matters, not failures, so re-enqueueing them would undo the decision.
 TERMINAL_JOB_STATUSES = frozenset({"dead", "failed"})
+
+# The action GitHub sends for "new commits were pushed to an open pull request".
+UPDATE_ACTION = "synchronize"
+
+DEFAULT_UPDATE_DEBOUNCE_SECONDS = 60
+
+
+def review_update_debounce_seconds() -> int:
+    """How long a pushed revision waits before it becomes claimable.
+
+    `triggers.review_updates` defaults on, so a push costs a model call. Pushes
+    arrive in bursts -- a fixup, a lint fix, a force-push -- and reviewing each
+    one charges for a revision the author had already replaced. Holding a
+    `synchronize` job for this many seconds lets `enqueue_review_event`'s existing
+    supersede collapse the burst into a single review of the final head.
+
+    The window is measured from the *first* push of a burst, not the last: the new
+    job inherits the deadline of the queued job it supersedes. A trailing-edge
+    debounce would let a steady drip of pushes defer the review forever, which is
+    the off-by-default behaviour this replaces wearing a different hat.
+
+    `0` disables the wait and reviews every push immediately.
+    """
+    raw = os.environ.get(
+        "REVIEW_UPDATE_DEBOUNCE_SECONDS",
+        str(DEFAULT_UPDATE_DEBOUNCE_SECONDS),
+    ).strip()
+    if not raw:
+        return DEFAULT_UPDATE_DEBOUNCE_SECONDS
+    try:
+        seconds = int(raw)
+    except ValueError as error:
+        raise ValueError(
+            "REVIEW_UPDATE_DEBOUNCE_SECONDS must be a whole number of seconds"
+        ) from error
+    if seconds < 0:
+        raise ValueError("REVIEW_UPDATE_DEBOUNCE_SECONDS must not be negative")
+    return seconds
 
 
 class DeliveryConflictError(RuntimeError):
@@ -490,8 +529,30 @@ def enqueue_review_event(
                 updated_at = now()
             WHERE scope_key = %s
               AND status = 'queued'
+            RETURNING available_at
             """,
             (event.scope_key,),
+        )
+        pending_deadlines = [row[0] for row in cursor.fetchall()]
+        # A manual trigger carries action `manual`, so it never waits: someone is
+        # watching for that review.
+        debounce_seconds = (
+            review_update_debounce_seconds() if event.action == UPDATE_ACTION else 0
+        )
+        # Clamping to the earliest deadline this revision just superseded is what
+        # makes the window run from the first push of a burst rather than the
+        # last, so a steady drip of commits cannot defer the review forever. It
+        # also means a push can only ever bring a review forward: superseding a
+        # queued `opened` job that was already due leaves it due.
+        #
+        # Only a waiting revision has a deadline to clamp. An `edited`,
+        # `labeled`, or `ready_for_review` arriving mid-burst is a fresh decision
+        # someone just made and is watching for, so it cancels the wait rather
+        # than joining it.
+        inherited_deadline = (
+            min(pending_deadlines)
+            if debounce_seconds and pending_deadlines
+            else None
         )
         cursor.execute(
             """
@@ -503,9 +564,16 @@ def enqueue_review_event(
                 scope_key,
                 base_revision,
                 revision,
-                payload
+                payload,
+                available_at
             )
-            VALUES (%s, %s, 'review_pull_request', %s, %s, %s, %s, %s)
+            VALUES (
+                %s, %s, 'review_pull_request', %s, %s, %s, %s, %s,
+                LEAST(
+                    now() + (%s * interval '1 second'),
+                    COALESCE(%s, 'infinity'::timestamptz)
+                )
+            )
             RETURNING id
             """,
             (
@@ -516,6 +584,8 @@ def enqueue_review_event(
                 event.base_sha,
                 event.head_sha,
                 psycopg2.extras.Json(event.to_payload()),
+                debounce_seconds,
+                inherited_deadline,
             ),
         )
         job_id = int(cursor.fetchone()[0])

@@ -230,8 +230,9 @@ Every flag, output mode, and the stable exit-code table scripts branch on are in
 Diffuse reads per-repository settings from version-controlled `.diffuse/` files
 in the repository under review, with deterministic root-to-leaf inheritance.
 Defaults worth knowing before a first deployment: a pull request is reviewed
-when it opens but **not** when further commits are pushed to it
-(`triggers.review_updates`, default `false`), and no status check is published
+when it opens and again when further commits are pushed to it
+(`triggers.review_updates`, default `true`, debounced by
+`REVIEW_UPDATE_DEBOUNCE_SECONDS`), and no status check is published
 (`triggers.status_check`, default `false`).
 
 The complete reference — every file, field, default, and inheritance rule — is

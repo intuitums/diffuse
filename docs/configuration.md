@@ -103,9 +103,14 @@ enabled state, severity, or category through `rule_overrides`. Globs use `/`,
 `*` does not cross a directory boundary, and `**` does. Patterns in a nested
 layer are relative to that layer.
 
-Automatic reviews run for newly opened and reopened PRs by default. Draft PRs
-and new commits are skipped unless `review_drafts` and `review_updates` are
-enabled. Ready-for-review, label, keyword-edit, and relevant label-removal
+Automatic reviews run by default for newly opened and reopened PRs and for new
+commits pushed to an open one. Draft PRs are skipped unless `review_drafts` is
+enabled, and `review_updates: false` turns the re-review on push back off.
+Because a push costs a model call, a pushed revision is held for
+`REVIEW_UPDATE_DEBOUNCE_SECONDS` (a deployment setting, default `60`) before the
+worker may claim it, so a burst of pushes produces one review of the final head
+rather than one per commit; the wait is measured from the first push of the
+burst. Ready-for-review, label, keyword-edit, and relevant label-removal
 events can create a new decision even when the commit SHA did not change.
 Label, author, and target-branch patterns are case-insensitive and support
 `*`, `**`, `?`, and bounded `{a,b}` alternatives; square brackets and leading

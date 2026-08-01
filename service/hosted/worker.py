@@ -89,6 +89,7 @@ from service.hosted.workflow import (
     complete_workflow_job,
     fail_workflow_job,
     heartbeat_workflow_job,
+    review_update_debounce_seconds,
     schedule_due_feedback_sync_jobs,
     supersede_workflow_job,
     workflow_job_is_current,
@@ -2391,6 +2392,9 @@ def _probe_base_url(name: str, default: str) -> None:
 # means one malformed value stops the worker at startup instead.
 _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("WORKFLOW_LEASE_SECONDS", _lease_seconds),
+    # Read by the API process rather than the worker, but both run this
+    # validator and a webhook is a bad place to discover a malformed integer.
+    ("REVIEW_UPDATE_DEBOUNCE_SECONDS", review_update_debounce_seconds),
     ("MAX_CONTEXT_CHUNKS", max_context_chunks),
     ("MAX_CONTEXT_CHARS", max_context_chars),
     ("REVIEW_MODEL", review_model),
