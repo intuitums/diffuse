@@ -69,7 +69,7 @@ def _write_fixture(
     (directory / "diff.patch").write_text(diff)
     (directory / "context" / "helper.py").write_text("def helper():\n    return 1\n")
     payload = {
-        "schema_version": "diffuse-eval-fixture-v1",
+        "schema_version": "diffuse-eval-fixture-v2",
         "case_id": case_id_in_json or case_id,
         "description": "A synthetic fixture used only to exercise the harness.",
         "expected": expected
@@ -77,8 +77,10 @@ def _write_fixture(
         else [
             {
                 "finding_id": f"{case_id}-1",
+                "title": "Authorization bypass",
                 "file_path": "app.py",
                 "line": 1,
+                "side": "RIGHT",
                 "category": "security",
                 "line_tolerance": 3,
             }
@@ -199,12 +201,10 @@ def test_a_directory_without_a_case_file_is_an_error_not_a_skip(tmp_path):
 
 
 def test_every_committed_label_claims_at_most_a_couple_of_lines():
-    """Location is the whole match gate, so the span is the whole discriminator.
+    """Even with title overlap, a wider span creates more collision surface.
 
-    There is no finding text to fall back on, so any finding inside a label's
-    span is credited as having found the labeled defect. Every committed label
-    sits exactly on a changed line, so none of them needs more than one line of
-    slack.
+    Every committed label sits exactly on a changed line, so none of them needs
+    more than one line of slack.
     """
 
     for loaded in eval_harness.load_fixtures(FIXTURE_ROOT):
@@ -252,10 +252,12 @@ def test_fixture_labeling_a_line_the_diff_does_not_change_is_refused(tmp_path):
         tmp_path,
         "unreachable-label",
         expected=[
-            {
-                "finding_id": "unreachable-1",
-                "file_path": "app.py",
-                "line": 42,
+                {
+                    "finding_id": "unreachable-1",
+                    "title": "Unreachable defect",
+                    "file_path": "app.py",
+                    "line": 42,
+                    "side": "RIGHT",
                 "category": "security",
                 "line_tolerance": 3,
             }
@@ -270,16 +272,47 @@ def test_fixture_labeling_a_file_the_diff_does_not_touch_is_refused(tmp_path):
         tmp_path,
         "wrong-file",
         expected=[
-            {
-                "finding_id": "wrong-file-1",
-                "file_path": "service/webhook.py",
-                "line": 1,
+                {
+                    "finding_id": "wrong-file-1",
+                    "title": "Wrong-file defect",
+                    "file_path": "service/webhook.py",
+                    "line": 1,
+                    "side": "RIGHT",
                 "category": "security",
                 "line_tolerance": 3,
             }
         ],
     )
     with pytest.raises(eval_harness.FixtureError, match="which the diff does not change"):
+        eval_harness.load_fixtures(tmp_path)
+
+
+def test_fixture_labeling_the_wrong_diff_side_is_refused(tmp_path):
+    addition_only = """\
+diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -0,0 +1 @@
++unsafe_call()
+"""
+    _write_fixture(
+        tmp_path,
+        "wrong-side",
+        diff=addition_only,
+        expected=[
+            {
+                "finding_id": "wrong-side-1",
+                "title": "Unsafe call lacks validation",
+                "file_path": "app.py",
+                "line": 1,
+                "side": "LEFT",
+                "category": "security",
+                "line_tolerance": 0,
+            }
+        ],
+    )
+
+    with pytest.raises(eval_harness.FixtureError, match=r"app.py:1 \(LEFT\)"):
         eval_harness.load_fixtures(tmp_path)
 
 
@@ -337,8 +370,10 @@ def test_run_fixture_emits_the_observed_structure_the_scorer_consumes(
     assert case.case_id == "one-finding"
     assert case.observed == [
         ObservedFinding(
+            title="Authorization bypass",
             file_path="app.py",
             line=1,
+            side="RIGHT",
             category=Category.SECURITY,
             severity=Severity.HIGH,
             fingerprint=case.observed[0].fingerprint,
@@ -348,7 +383,7 @@ def test_run_fixture_emits_the_observed_structure_the_scorer_consumes(
     # The scorer accepts it without any transcription step.
     score = score_evaluation(
         EvaluationSuite(
-            schema_version="diffuse-evaluation-v2",
+            schema_version="diffuse-evaluation-v3",
             name="plumbing",
             model="openai/gpt-4.1-mini",
             verifier_model="openai/gpt-4.1-mini",
@@ -489,14 +524,13 @@ def test_every_committed_label_is_reachable_through_the_whole_engine(monkeypatch
         for expected in loaded.fixture.expected:
             placement = next(
                 (
-                    (side, line)
-                    for side in ("RIGHT", "LEFT")
+                    (expected.side, line)
                     for line in range(
                         expected.line - expected.line_tolerance,
                         expected.line + expected.line_tolerance + 1,
                     )
                     if line > 0
-                    and parsed.is_commentable(expected.file_path, side, line)
+                    and parsed.is_commentable(expected.file_path, expected.side, line)
                 ),
                 None,
             )
@@ -507,7 +541,7 @@ def test_every_committed_label_is_reachable_through_the_whole_engine(monkeypatch
             side, line = placement
             candidates.append(
                 CandidateFinding(
-                    title=f"Defect at {expected.file_path}:{line}",
+                    title=expected.title,
                     body="A concrete defect introduced by this change.",
                     severity=expected.severity or Severity.HIGH,
                     category=expected.category,
@@ -530,7 +564,7 @@ def test_every_committed_label_is_reachable_through_the_whole_engine(monkeypatch
         )
         score = score_evaluation(
             EvaluationSuite(
-                schema_version="diffuse-evaluation-v2",
+                schema_version="diffuse-evaluation-v3",
                 name=loaded.fixture.case_id,
                 model="openai/gpt-4.1-mini",
                 verifier_model="openai/gpt-4.1-mini",
@@ -567,7 +601,7 @@ def _suite(
 ) -> EvaluationSuite:
     digests = digest_per_case or {}
     return EvaluationSuite(
-        schema_version="diffuse-evaluation-v2",
+        schema_version="diffuse-evaluation-v3",
         name="gate",
         model="openai/gpt-4.1-mini",
         run_configuration=run_configuration or _configuration(),
@@ -577,8 +611,10 @@ def _suite(
                 expected=[
                     {
                         "finding_id": f"{case_id}-1",
+                        "title": "Authorization bypass",
                         "file_path": "app.py",
                         "line": 1,
+                        "side": "RIGHT",
                         "category": "security",
                     }
                 ],
@@ -591,10 +627,18 @@ def _suite(
     )
 
 
-def _finding(line: int = 1, category: str = "security") -> ObservedFinding:
+def _finding(
+    line: int = 1,
+    category: str = "security",
+    *,
+    title: str = "Authorization bypass",
+    side: str = "RIGHT",
+) -> ObservedFinding:
     return ObservedFinding(
+        title=title,
         file_path="app.py",
         line=line,
+        side=side,
         category=Category(category),
         severity=Severity.HIGH,
     )

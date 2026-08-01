@@ -1,13 +1,15 @@
 {
-  "schema_version": "diffuse-eval-fixture-v1",
+  "schema_version": "diffuse-eval-fixture-v2",
   "case_id": "path-traversal-attachment",
   "description": "The `is_relative_to` containment check on the resolved attachment path is dropped, so a request-supplied name containing `../` reads any file the process can read, across tenants and outside the attachment root. `Path` is used on both sides: an earlier revision also swapped it for `os.path.join` without importing `os`, which bought no extra signal and charged a reviewer that correctly flagged the missing import with a false positive.",
   "diff_path": "diff.patch",
   "expected": [
     {
       "finding_id": "attachment-name-escapes-tenant-root",
+      "title": "Attachment name can escape the tenant root",
       "file_path": "web/attachments.py",
       "line": 18,
+      "side": "RIGHT",
       "category": "security",
       "line_tolerance": 1
     }
