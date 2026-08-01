@@ -10,6 +10,7 @@ from urllib.parse import quote
 import httpx
 
 from service.github.api import GITHUB_API_VERSION
+from service.github.app import github_token
 from service.models.conversation import ConversationReference
 from service.scm import (
     ReviewConversationEvent,
@@ -90,10 +91,10 @@ def format_conversation_reply(
 
 
 def _headers() -> dict[str, str]:
-    token = os.environ.get("GITHUB_TOKEN", "")
+    token = github_token()
     if not token:
         raise RuntimeError(
-            "GITHUB_TOKEN with pull-request write permission is required"
+            "GitHub authentication with pull-request write permission is required"
         )
     return {
         "Accept": "application/vnd.github+json",

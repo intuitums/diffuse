@@ -17,8 +17,10 @@ commercial agreement, license key, entitlement file, or registry credential.
    every required value — including `REVIEW_MODEL`, which ships commented out so
    that copying this file cannot hand you a review model you never chose.
    Uncomment the recommendation or name your own; the worker refuses to start
-   until one is set. Release bundles already pin `DIFFUSE_IMAGE` to the
-   immutable release digest.
+   until one is set. Configure the GitHub App ID, installation ID, private key,
+   and webhook secret; Diffuse mints and refreshes installation tokens, so do
+   not paste a one-hour token into `GITHUB_TOKEN`. Release bundles already pin
+   `DIFFUSE_IMAGE` to the immutable release digest.
 2. Verify the image signature before starting it:
 
    ```bash

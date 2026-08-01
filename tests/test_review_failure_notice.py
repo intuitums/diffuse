@@ -101,15 +101,23 @@ def test_github_ignores_its_own_failure_notice_as_a_manual_trigger():
 
 
 def test_credential_shaped_text_is_redacted():
+    # GitHub's stateless installation tokens are long `ghs_` JWTs carrying dots,
+    # hyphens and underscores, so the classic `[A-Za-z0-9]` body would have
+    # redacted only the prefix and left the signature in the notice.
+    stateless_installation_token = (
+        "ghs_" + "app_id_with_underscores." + "payload-with-hyphens." + "signature_123456789"
+    )
     redacted = redact_credentials(
         "postgres://diffuse:hunter2@db:5432/diffuse "
         "ghp_abcdefghijklmnopqrstuvwxyz012345 "
+        f"{stateless_installation_token} "
         "glpat-abcdefghijklmnopqrst "
         "Authorization: Bearer abc.def.ghi"
     )
 
     assert "hunter2" not in redacted
     assert "ghp_abcdefghijklmnopqrstuvwxyz012345" not in redacted
+    assert stateless_installation_token not in redacted
     assert "glpat-abcdefghijklmnopqrst" not in redacted
     assert "abc.def.ghi" not in redacted
 

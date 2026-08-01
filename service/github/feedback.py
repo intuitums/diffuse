@@ -8,6 +8,7 @@ from urllib.parse import quote
 import httpx
 
 from service.github.api import GITHUB_API_VERSION
+from service.github.app import github_token
 from service.models.feedback import ReviewReaction
 from service.scm import (
     FeedbackSyncEvent,
@@ -18,9 +19,11 @@ MAX_REACTION_PAGES = 20
 
 
 def _headers() -> dict[str, str]:
-    token = os.environ.get("GITHUB_TOKEN", "")
+    token = github_token()
     if not token:
-        raise RuntimeError("GITHUB_TOKEN with pull-request read permission is required")
+        raise RuntimeError(
+            "GitHub authentication with pull-request read permission is required"
+        )
     return {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
