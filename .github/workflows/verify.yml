@@ -49,14 +49,14 @@ jobs:
             exit 0
           fi
           case "$BASE_REF" in
-            claude/*)
+            claude/*|cursor/*)
               echo "::notice::Stacked on $BASE_REF. Retarget to $DEFAULT_BRANCH before merging, or merge the parent first."
               exit 0
               ;;
           esac
           echo "::error::This pull request targets '$BASE_REF', not '$DEFAULT_BRANCH'." >&2
           echo "Merging here can strand the change on a branch that $DEFAULT_BRANCH has already moved past." >&2
-          echo "Retarget the pull request, or name the base 'claude/<feature>' if the stack is intentional." >&2
+          echo "Retarget the pull request, or name the base 'claude/<feature>' or 'cursor/<feature>' if the stack is intentional." >&2
           exit 1
 
   # Every deployment credential is operator-supplied and the repository is public,
