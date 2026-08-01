@@ -1,5 +1,5 @@
 {
-  "schema_version": "diffuse-evaluation-v2",
+  "schema_version": "diffuse-evaluation-v3",
   "name": "synthetic-review-baseline",
   "model": "openai/gpt-4.1-mini",
   "pricing": {
@@ -12,8 +12,10 @@
       "expected": [
         {
           "finding_id": "signature-bypass-1",
+          "title": "Missing webhook signature check",
           "file_path": "service/webhook.py",
           "line": 42,
+          "side": "RIGHT",
           "category": "security",
           "severity": "critical",
           "line_tolerance": 3

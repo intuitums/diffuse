@@ -56,16 +56,17 @@ from service.evaluation import (
 from service.models.review import VerificationBatch
 from service.review import engine as review_engine
 
-FIXTURE_SCHEMA_VERSION = "diffuse-eval-fixture-v1"
-#: Bumped from v1: a baseline now pins the run configuration, the resolved review
-#: depth and a per-case fixture digest, none of which a v1 baseline recorded. A v1
-#: baseline cannot be upgraded in place -- the missing values were never measured
-#: -- so it has to be recaptured rather than silently reinterpreted.
+#: Bumped from v1 because fixture labels now require semantic title text and an
+#: exact diff side; neither signal exists in a v1 fixture.
+FIXTURE_SCHEMA_VERSION = "diffuse-eval-fixture-v2"
+#: Bumped from v2 because a baseline captured by the location-only matcher can
+#: credit observations the title-and-side matcher correctly rejects. Reusing its
+#: scores would silently reinterpret the reference run, so it must be recaptured.
 #:
 #: Unrelated to the "baseline" in `service/storage/migrations.py`, which names
 #: the frozen version-1 SQL schema. This one versions the eval harness's
 #: recorded reference run; the two never meet.
-BASELINE_SCHEMA_VERSION = "diffuse-eval-baseline-v2"
+BASELINE_SCHEMA_VERSION = "diffuse-eval-baseline-v3"
 DEFAULT_FIXTURE_ROOT = Path("evals/fixtures")
 DEFAULT_BASELINE_PATH = Path("evals/baselines/review-baseline.json")
 CASE_FILE_NAME = "case.json"
@@ -100,7 +101,7 @@ class FixtureContext(HarnessModel):
 class ReviewFixture(HarnessModel):
     """A fixture pull request: a real diff, its context, and its labels."""
 
-    schema_version: Literal["diffuse-eval-fixture-v1"]
+    schema_version: Literal["diffuse-eval-fixture-v2"]
     case_id: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1, max_length=2000)
     diff_path: str = Field(default="diff.patch", min_length=1, max_length=512)
@@ -136,13 +137,12 @@ class BaselineCase(HarnessModel):
 class Baseline(HarnessModel):
     """The reference scores a later run must not fall below.
 
-    A baseline records *scores*, not model prose. Two runs of the same model
-    against the same diff do not produce byte-identical titles or summaries, so
-    a byte comparison would fail for reasons that have nothing to do with review
-    quality and would be silenced within a week. Findings are compared through
-    the scorer -- counts of true and false positives per case, plus the
-    aggregate precision, recall and F1 -- which is the thing a threshold change
-    in `service/review/engine.py` actually moves.
+    A baseline records *scores*, not model prose. Titles participate in the
+    scorer through normalized token overlap; they are not compared byte for
+    byte, because two runs of the same model need not use identical wording.
+    Findings are compared through counts of true and false positives per case,
+    plus aggregate precision, recall and F1 -- the measurements a threshold
+    change in `service/review/engine.py` actually moves.
 
     It also records the conditions the scores were produced under, because a
     score is only a standard while those hold. The model name was pinned from
@@ -153,7 +153,7 @@ class Baseline(HarnessModel):
     under a baseline that kept passing.
     """
 
-    schema_version: Literal["diffuse-eval-baseline-v2"]
+    schema_version: Literal["diffuse-eval-baseline-v3"]
     suite_name: str = Field(min_length=1, max_length=200)
     model: str = Field(min_length=1, max_length=512)
     verifier_model: str | None = Field(default=None, min_length=1, max_length=512)
@@ -208,27 +208,29 @@ def validate_fixture(fixture: ReviewFixture, diff_text: str) -> None:
     """
 
     parsed = parse_unified_diff(diff_text)
-    commentable: dict[str, set[int]] = {}
+    commentable: dict[tuple[str, str], set[int]] = {}
     for file in parsed.files:
         path = file.comment_path
         if path is None:
             continue
-        commentable.setdefault(path, set()).update(file.right_lines | file.left_lines)
+        commentable[path, "LEFT"] = file.left_lines
+        commentable[path, "RIGHT"] = file.right_lines
     if not commentable:
         raise FixtureError(
             f"fixture {fixture.case_id!r} has a diff with no reviewable changed lines"
         )
     for expected in fixture.expected:
-        lines = commentable.get(expected.file_path)
-        if lines is None:
+        file_is_changed = any(path == expected.file_path for path, _side in commentable)
+        if not file_is_changed:
             raise FixtureError(
                 f"fixture {fixture.case_id!r} labels {expected.file_path!r}, "
                 f"which the diff does not change"
             )
+        lines = commentable[expected.file_path, expected.side]
         if not any(abs(line - expected.line) <= expected.line_tolerance for line in lines):
             raise FixtureError(
                 f"fixture {fixture.case_id!r} label {expected.finding_id!r} points at "
-                f"{expected.file_path}:{expected.line}, which is not within "
+                f"{expected.file_path}:{expected.line} ({expected.side}), which is not within "
                 f"{expected.line_tolerance} lines of any changed line; the review engine "
                 f"can only comment on changed lines, so this label can never be matched"
             )
@@ -396,8 +398,10 @@ def run_fixture(
     latency_ms = max(0, round((time.monotonic() - started) * 1000))
     observed = [
         ObservedFinding(
+            title=finding.title,
             file_path=finding.file_path,
             line=finding.line,
+            side=finding.side,
             category=finding.category,
             severity=finding.severity,
             fingerprint=finding.fingerprint,
@@ -492,7 +496,7 @@ def run_suite(
         if on_case is not None:
             on_case(case)
     return EvaluationSuite(
-        schema_version="diffuse-evaluation-v2",
+        schema_version="diffuse-evaluation-v3",
         name=name,
         model=candidate_model,
         pricing=pricing,
@@ -776,7 +780,7 @@ def _run(args: argparse.Namespace) -> None:
         _write_json(
             args.output,
             {
-                "schema_version": "diffuse-evaluation-v2",
+                "schema_version": "diffuse-evaluation-v3",
                 "name": args.name,
                 "model": candidate_model,
                 "cases": [case.model_dump(mode="json") for case in done],

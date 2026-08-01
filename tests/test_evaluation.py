@@ -17,7 +17,7 @@ from service.models.review import Category
 def test_evaluation_scores_quality_latency_cost_and_addressed_findings() -> None:
     suite = EvaluationSuite.model_validate(
         {
-            "schema_version": "diffuse-evaluation-v2",
+            "schema_version": "diffuse-evaluation-v3",
             "name": "unit baseline",
             "model": "openai/test",
             "pricing": {
@@ -30,28 +30,36 @@ def test_evaluation_scores_quality_latency_cost_and_addressed_findings() -> None
                     "expected": [
                         {
                             "finding_id": "bug-1",
+                            "title": "Authorization check is bypassed",
                             "file_path": "service/api.py",
                             "line": 20,
+                            "side": "RIGHT",
                             "category": "correctness",
                             "severity": "high",
                         },
                         {
                             "finding_id": "bug-2",
+                            "title": "Unsafe query permits SQL injection",
                             "file_path": "service/api.py",
                             "line": 80,
+                            "side": "RIGHT",
                             "category": "security",
                         },
                     ],
                     "observed": [
                         {
+                            "title": "Authorization bypass reaches user data",
                             "file_path": "service/api.py",
                             "line": 22,
+                            "side": "RIGHT",
                             "category": "correctness",
                             "severity": "high",
                         },
                         {
+                            "title": "README formatting is inconsistent",
                             "file_path": "README.md",
                             "line": 4,
+                            "side": "RIGHT",
                             "category": "maintainability",
                             "severity": "low",
                         },
@@ -87,7 +95,7 @@ def test_evaluation_scores_quality_latency_cost_and_addressed_findings() -> None
 def test_observed_finding_cannot_match_multiple_labels() -> None:
     suite = EvaluationSuite.model_validate(
         {
-            "schema_version": "diffuse-evaluation-v2",
+            "schema_version": "diffuse-evaluation-v3",
             "name": "duplicate guard",
             "model": "test",
             "cases": [
@@ -96,21 +104,27 @@ def test_observed_finding_cannot_match_multiple_labels() -> None:
                     "expected": [
                         {
                             "finding_id": "one",
+                            "title": "Shared defect",
                             "file_path": "a.py",
                             "line": 10,
+                            "side": "RIGHT",
                             "category": "correctness",
                         },
                         {
                             "finding_id": "two",
+                            "title": "Shared defect",
                             "file_path": "a.py",
                             "line": 12,
+                            "side": "RIGHT",
                             "category": "correctness",
                         },
                     ],
                     "observed": [
                         {
+                            "title": "Shared defect",
                             "file_path": "a.py",
                             "line": 11,
+                            "side": "RIGHT",
                             "category": "correctness",
                             "severity": "medium",
                         }
@@ -132,9 +146,17 @@ def _overlapping_suite(
     *,
     addressed: list[str] | None = None,
 ) -> EvaluationSuite:
+    expected = [
+        {"title": "Shared defect", "side": "RIGHT", **finding}
+        for finding in expected
+    ]
+    observed = [
+        {"title": "Shared defect", "side": "RIGHT", **finding}
+        for finding in observed
+    ]
     return EvaluationSuite.model_validate(
         {
-            "schema_version": "diffuse-evaluation-v2",
+            "schema_version": "diffuse-evaluation-v3",
             "name": "overlapping labels",
             "model": "test",
             "cases": [
@@ -291,7 +313,7 @@ def test_candidate_and_verifier_tokens_are_priced_at_their_own_rates() -> None:
 
     suite = EvaluationSuite.model_validate(
         {
-            "schema_version": "diffuse-evaluation-v2",
+            "schema_version": "diffuse-evaluation-v3",
             "name": "cross-family cost",
             "model": "openai/candidate",
             "pricing": {
@@ -328,7 +350,7 @@ def test_candidate_and_verifier_tokens_are_priced_at_their_own_rates() -> None:
 def test_shared_verifier_model_reuses_the_candidate_rates() -> None:
     suite = EvaluationSuite.model_validate(
         {
-            "schema_version": "diffuse-evaluation-v2",
+            "schema_version": "diffuse-evaluation-v3",
             "name": "single model",
             "model": "openai/candidate",
             "pricing": {
@@ -367,7 +389,7 @@ def test_shared_verifier_model_reuses_the_candidate_rates() -> None:
 )
 def test_unpriceable_verifier_labels_are_rejected(override: dict) -> None:
     payload = {
-        "schema_version": "diffuse-evaluation-v2",
+        "schema_version": "diffuse-evaluation-v3",
         "name": "incomplete pricing",
         "model": "openai/candidate",
         "cases": [{"case_id": "one"}],
@@ -436,6 +458,63 @@ def test_an_unrelated_finding_in_the_labeled_file_does_not_match() -> None:
     assert score.true_positives == 0
     assert score.false_negatives == 1
     assert score.false_positives == 2
+
+
+def test_an_unrelated_finding_at_the_exact_labeled_location_does_not_match() -> None:
+    """Location alone cannot credit a different defect as a true positive."""
+
+    score = score_evaluation(
+        _overlapping_suite(
+            [
+                {
+                    **_LABEL_13,
+                    "title": "Unsafe query permits SQL injection",
+                }
+            ],
+            [
+                {
+                    **_OBSERVED_13,
+                    "title": "Variable name violates local style conventions",
+                }
+            ],
+        )
+    )
+
+    assert score.true_positives == 0
+    assert score.false_negatives == 1
+    assert score.false_positives == 1
+
+
+def test_title_overlap_is_case_and_punctuation_insensitive() -> None:
+    score = score_evaluation(
+        _overlapping_suite(
+            [{**_LABEL_13, "title": "SQL-injection through sort_column"}],
+            [{**_OBSERVED_13, "title": "Sort column enables sql INJECTION"}],
+        )
+    )
+
+    assert score.true_positives == 1
+
+
+def test_the_same_title_and_line_on_the_other_diff_side_does_not_match() -> None:
+    score = score_evaluation(
+        _overlapping_suite(
+            [{**_LABEL_13, "title": "Missing owner guard", "side": "LEFT"}],
+            [{**_OBSERVED_13, "title": "Owner guard is missing", "side": "RIGHT"}],
+        )
+    )
+
+    assert score.true_positives == 0
+    assert score.false_negatives == 1
+    assert score.false_positives == 1
+
+
+def test_a_label_title_with_only_generic_tokens_is_refused() -> None:
+    with pytest.raises(ValidationError, match="non-generic token"):
+        _overlapping_suite(
+            [{**_LABEL_13, "title": "This is a finding"}],
+            [],
+        )
 
 
 def test_the_right_finding_in_the_wrong_category_is_one_true_positive() -> None:
@@ -539,18 +618,22 @@ def test_category_confusion_aggregates_across_cases_by_frequency() -> None:
         return {
             "case_id": case_id,
             "expected": [
-                {
-                    "finding_id": f"{case_id}-1",
-                    "file_path": "a.py",
-                    "line": 10,
-                    "category": "security",
+                    {
+                        "finding_id": f"{case_id}-1",
+                        "title": "SQL injection through sort input",
+                        "file_path": "a.py",
+                        "line": 10,
+                        "side": "RIGHT",
+                        "category": "security",
                 }
             ],
             "observed": [
-                {
-                    "file_path": "a.py",
-                    "line": 10,
-                    "category": observed_category,
+                    {
+                        "title": "Sort input permits SQL injection",
+                        "file_path": "a.py",
+                        "line": 10,
+                        "side": "RIGHT",
+                        "category": observed_category,
                     "severity": "high",
                 }
             ],
@@ -558,7 +641,7 @@ def test_category_confusion_aggregates_across_cases_by_frequency() -> None:
 
     suite = EvaluationSuite.model_validate(
         {
-            "schema_version": "diffuse-evaluation-v2",
+            "schema_version": "diffuse-evaluation-v3",
             "name": "confusion",
             "model": "test",
             "cases": [
@@ -1012,17 +1095,16 @@ def test_a_label_cannot_claim_more_of_a_file_than_the_ceiling(tolerance: int) ->
 
 
 def test_a_suite_written_against_the_previous_schema_is_refused() -> None:
-    """The narrowed tolerance ceiling makes some v1 suites invalid, so v1 ends.
+    """A v2 suite recorded neither title nor side, so it cannot use this gate.
 
-    A `line_tolerance` of 50 was accepted under `diffuse-evaluation-v1` and is
-    refused now. Silently reading such a file under the old version name would
-    report a schema error about a field the author was entitled to use.
+    Silently treating location-only observations as v3 input would preserve the
+    exact false credits this schema change exists to remove.
     """
 
     with pytest.raises(ValidationError):
         EvaluationSuite.model_validate(
             {
-                "schema_version": "diffuse-evaluation-v1",
+                "schema_version": "diffuse-evaluation-v2",
                 "name": "old",
                 "model": "test",
                 "cases": [{"case_id": "one"}],
@@ -1053,18 +1135,20 @@ def test_valid_thresholds_still_gate_a_measured_score(tmp_path, capsys) -> None:
     suite.write_text(
         json.dumps(
             {
-                "schema_version": "diffuse-evaluation-v2",
+                "schema_version": "diffuse-evaluation-v3",
                 "name": "gate",
                 "model": "openai/test",
                 "cases": [
                     {
                         "case_id": "miss",
                         "expected": [
-                            {
-                                "finding_id": "bug-1",
-                                "file_path": "a.py",
-                                "line": 5,
-                                "category": "correctness",
+                                {
+                                    "finding_id": "bug-1",
+                                    "title": "Pagination drops the last item",
+                                    "file_path": "a.py",
+                                    "line": 5,
+                                    "side": "RIGHT",
+                                    "category": "correctness",
                             }
                         ],
                     }
