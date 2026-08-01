@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from service.models.review import Category, Severity
 
@@ -15,29 +17,94 @@ class EvaluationModel(BaseModel):
 
 #: Widest line span a single label may claim, as a half-width in lines.
 #:
-#: A label names a *place*, and location is now the whole match gate (see
-#: `_matches`), so this ceiling is the only thing bounding how much of a file
-#: one label can absorb. Ten lines each way is a 21-line window -- about one
-#: function body, and an order of magnitude wider than any committed fixture,
-#: every one of which uses 1. The previous ceiling of 50 spanned 101 lines: past
-#: that a label has
-#: stopped identifying a place and started claiming a region, and any finding
-#: anywhere in it would be credited as having found the labeled defect.
+#: A label names a place as well as a defect. Textual overlap now prevents an
+#: entirely unrelated finding in that place from being credited, but a wide
+#: span still makes it easier for a vaguely related observation to collide with
+#: the label. Ten lines each way is a 21-line window -- about one function body,
+#: and an order of magnitude wider than any committed fixture, every one of
+#: which uses 1.
 MAX_LINE_TOLERANCE = 10
+
+TITLE_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+# Tokens that can occur in almost any finding title and therefore provide no
+# evidence that two titles describe the same defect. Keep this deliberately
+# small: title matching is a guard against coincidental location matches, not a
+# semantic search engine, and aggressive stop-wording would create false misses.
+TITLE_STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "bug",
+        "can",
+        "could",
+        "defect",
+        "does",
+        "finding",
+        "for",
+        "from",
+        "in",
+        "is",
+        "issue",
+        "it",
+        "may",
+        "not",
+        "of",
+        "on",
+        "or",
+        "problem",
+        "that",
+        "the",
+        "this",
+        "to",
+        "when",
+        "with",
+    }
+)
+
+
+def _title_tokens(title: str) -> frozenset[str]:
+    """Return normalized title terms useful for deterministic overlap."""
+
+    return frozenset(
+        token
+        for token in TITLE_TOKEN_PATTERN.findall(title.casefold())
+        if token not in TITLE_STOP_WORDS
+    )
+
+
+def _titles_overlap(expected: str, observed: str) -> bool:
+    return bool(_title_tokens(expected) & _title_tokens(observed))
 
 
 class ExpectedFinding(EvaluationModel):
     finding_id: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=200)
     file_path: str = Field(min_length=1, max_length=1024)
     line: int = Field(gt=0)
+    side: Literal["LEFT", "RIGHT"]
     category: Category
     severity: Severity | None = None
     line_tolerance: int = Field(default=3, ge=0, le=MAX_LINE_TOLERANCE)
 
+    @field_validator("title")
+    @classmethod
+    def title_has_a_matchable_token(cls, title: str) -> str:
+        if not _title_tokens(title):
+            raise ValueError("expected finding title must contain a non-generic token")
+        return title
+
 
 class ObservedFinding(EvaluationModel):
+    title: str = Field(min_length=1, max_length=200)
     file_path: str = Field(min_length=1, max_length=1024)
     line: int = Field(gt=0)
+    side: Literal["LEFT", "RIGHT"]
     category: Category
     severity: Severity
     fingerprint: str | None = Field(default=None, max_length=200)
@@ -166,11 +233,10 @@ def _render_summary(rendering: ReviewDepthRendering | None) -> str:
 
 
 class EvaluationSuite(EvaluationModel):
-    #: Bumped from v1 because `line_tolerance`'s accepted range narrowed from
-    #: 0..50 to 0..10 (see `MAX_LINE_TOLERANCE`) and because a suite now carries
-    #: `run_configuration`. A v1 suite with a wide tolerance is not merely
-    #: unfashionable, it is refused, so the version had to move with it.
-    schema_version: str = Field(pattern=r"^diffuse-evaluation-v2$")
+    #: Bumped from v2 because expected and observed findings now require title
+    #: text and diff side. A v2 suite cannot be scored honestly under the new
+    #: match gate because neither signal was recorded.
+    schema_version: str = Field(pattern=r"^diffuse-evaluation-v3$")
     name: str = Field(min_length=1, max_length=200)
     model: str = Field(min_length=1, max_length=512)
     pricing: ModelPricing = Field(default_factory=ModelPricing)
@@ -287,7 +353,7 @@ class CaseScore(EvaluationModel):
 
 
 class EvaluationScore(EvaluationModel):
-    schema_version: str = "diffuse-evaluation-score-v4"
+    schema_version: str = "diffuse-evaluation-score-v5"
     suite_name: str
     model: str
     verifier_model: str | None
@@ -327,8 +393,12 @@ class EvaluationScore(EvaluationModel):
 def _matches(expected: ExpectedFinding, observed: ObservedFinding) -> bool:
     """Is this observation about the defect this label describes?
 
-    The gate is **location**: the same file, and a line within the label's own
-    tolerance. Category is deliberately *not* part of it. A label's category is
+    The gate is the same file and diff side, a line within the label's own
+    tolerance, and at least one normalized non-generic title token in common.
+    Requiring text prevents a style nit beside a real injection from earning
+    credit for the injection merely because both landed in the same small diff.
+
+    Category is deliberately *not* part of the gate. A label's category is
     mandatory, so a labeller cannot opt out of it, and requiring equality meant
     a model that found a real SQL injection and filed it under `correctness`
     scored strictly worse than a model that missed the bug entirely -- the same
@@ -356,7 +426,9 @@ def _matches(expected: ExpectedFinding, observed: ObservedFinding) -> bool:
 
     return (
         expected.file_path == observed.file_path
+        and expected.side == observed.side
         and abs(expected.line - observed.line) <= expected.line_tolerance
+        and _titles_overlap(expected.title, observed.title)
         and (expected.severity is None or expected.severity is observed.severity)
     )
 
@@ -498,9 +570,10 @@ def _severity_mismatches(
     """Name the labels the severity gate turned into a double charge.
 
     Reads the matching; never changes it. A label with a stated severity that
-    went unmatched, sitting on top of an observation that agrees on location and
-    disagrees only on severity, is one finding charged as a false negative and a
-    false positive at once. That cost is real and is policy -- stating a
+    went unmatched, sitting on top of an observation that agrees on file, side,
+    line span, and title overlap but disagrees only on severity, is one finding
+    charged as a false negative and a false positive at once. That cost is real
+    and is policy -- stating a
     severity is an explicit claim that a review grading the defect differently
     has not really found it -- but it was previously indistinguishable in the
     score from a defect nobody noticed.
@@ -529,7 +602,9 @@ def _severity_mismatches(
                 index
                 for index in available
                 if case.observed[index].file_path == expected.file_path
+                and case.observed[index].side == expected.side
                 and abs(expected.line - case.observed[index].line) <= expected.line_tolerance
+                and _titles_overlap(expected.title, case.observed[index].title)
                 and case.observed[index].severity is not expected.severity
             ),
             key=lambda index: (
