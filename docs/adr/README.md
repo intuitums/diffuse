@@ -69,6 +69,7 @@ These four carry the decisions the rest of the system is built on:
 | 0041 | [GitHub as the only supported source-control provider](0041-github-only-source-control.md) | Accepted |
 | 0042 | [Source-available self-hosted distribution under BSL 1.1](0042-source-available-self-hosted-distribution.md) | Accepted |
 | 0043 | [Graph and lexical retrieval without embeddings](0043-graph-and-lexical-retrieval-without-embeddings.md) | Accepted |
+| 0044 | [Mint GitHub App installation tokens](0044-mint-github-app-installation-tokens.md) | Accepted |
 
 ## Superseded records
 

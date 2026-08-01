@@ -30,7 +30,10 @@ _CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Provider access tokens. The glpat- rule is kept deliberately: redaction is
     # defence in depth, and an operator migrating off GitLab may still have a
     # stale GITLAB_TOKEN in the environment when a failure is rendered.
-    re.compile(r"(?i)\bgh[pousr]_[A-Za-z0-9]{16,}"),
+    # GitHub's 2026 stateless installation tokens are ~520-character
+    # `ghs_`-prefixed JWTs with dots, hyphens, and additional underscores.
+    # The wider character class also keeps covering the classic opaque forms.
+    re.compile(r"(?i)\bgh[pousr]_[A-Za-z0-9.\-_]{16,}"),
     re.compile(r"(?i)\bglpat-[A-Za-z0-9_\-]{16,}"),
     # Anything self-identifying as a secret, including a scheme-prefixed value.
     re.compile(
