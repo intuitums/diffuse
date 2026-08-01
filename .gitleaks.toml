@@ -1,0 +1,70 @@
+# Secret scanning configuration for the `scan-secrets` job in verify.yml.
+#
+# The repository is public and every deployment credential is operator-supplied,
+# so the cost of one committed key is an incident for whoever is running Diffuse,
+# not just for us. This runs over the working tree and the full history.
+#
+# Allowlists here are deliberately keyed on the *value* of each known-fake
+# credential rather than on the file that contains it. Suppressing a path would
+# mean a real key pasted into `tests/` or `README.md` scans clean; suppressing
+# the literal placeholder means only that exact placeholder is forgiven.
+
+[extend]
+useDefault = true
+
+# Gitleaks 8.30's default ruleset detects OpenAI, OpenRouter, and Gemini keys but
+# has no Anthropic rule — verified by probing each shape against the stock rules.
+# `ANTHROPIC_API_KEY` is the credential a typical REVIEW_MODEL resolves, so the
+# one provider key most likely to be pasted into this repository is the one shape
+# the scanner would otherwise wave through.
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key"
+regex = '''\bsk-ant-(?:api|admin)[0-9]{2}-[A-Za-z0-9_\-]{80,120}\b'''
+keywords = ["sk-ant-"]
+
+[[allowlists]]
+description = """
+Placeholder credentials with an obviously synthetic body. `0123456789abcdef` is
+the dummy Postgres password and API token that verify.yml boots the stack with.
+"""
+regexTarget = "match"
+regexes = [
+  '''(?i)0123456789abcdef''',
+]
+
+[[allowlists]]
+description = """
+`tests/test_review_failure_notice.py` asserts that credential redaction works,
+which requires a string shaped like a real token to be present in the assertion.
+The sequential alphabet body is what makes it safe.
+"""
+regexTarget = "match"
+regexes = [
+  '''glpat-abcdefghijklmnopqrst''',
+]
+
+[[allowlists]]
+description = """
+`tests/test_repository_policy.py` writes stub PEM/PKCS#8 files to confirm that
+sensitive filenames are excluded from indexing and redacted out of prompts. The
+bodies are short repeated literals (`abc`, `qqq`), not keys. Keyed on the header
+plus that body rather than on the path, so a real key pasted into the same file
+still fails.
+"""
+regexTarget = "match"
+regexes = [
+  '''-----BEGIN PRIVATE KEY-----\\n(?:abc|qqq)\\n''',
+]
+
+[[allowlists]]
+description = """
+The REST examples in `docs/rest-api.md` carry a random `Idempotency-Key` UUID,
+which the generic API-key rule reads as a secret. UUIDs are not credentials, and
+the surrounding Authorization headers are `${SHELL_VARIABLE}` references rather
+than values.
+"""
+regexTarget = "line"
+regexes = [
+  '''Idempotency-Key: [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}''',
+]
