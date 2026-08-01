@@ -34,6 +34,8 @@ from service.hosted import worker
         ("MAX_CONTEXT_CHUNKS", "0"),
         ("WORKFLOW_LEASE_SECONDS", "30"),
         ("SCM_API_TIMEOUT_SECONDS", "0"),
+        ("REVIEW_UPDATE_DEBOUNCE_SECONDS", "-1"),
+        ("REVIEW_UPDATE_DEBOUNCE_SECONDS", "a minute"),
     ],
 )
 def test_every_hot_path_variable_fails_startup_by_name(monkeypatch, name, value):

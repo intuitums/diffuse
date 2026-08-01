@@ -272,20 +272,25 @@ docker compose run --rm worker repository list
 The initial index must finish before the first review can run — a repository
 with no index cannot be reviewed.
 
-### Review triggers are conservative by default
+### No status check is published by default
 
-Two defaults surprise most first deployments, because they make a working
-installation look broken:
+**`triggers.status_check` is `false`**, so no GitHub check appears and nothing
+shows up in branch protection. It is a per-repository setting in
+version-controlled `.diffuse/config.json`; turn it on before concluding that
+reviews are not working, and see `CONFIGURATION.md` in this bundle for the full
+reference.
 
-- **`triggers.review_updates` is `false`.** A pull request is reviewed when it
-  opens, and *not* when further commits are pushed to it. Push a fix and
-  nothing happens.
-- **`triggers.status_check` is `false`.** No GitHub check is published, so
-  nothing appears in branch protection.
+### Every push to an open pull request costs a model call
 
-Both are per-repository settings in version-controlled `.diffuse/config.json`.
-Turn them on before concluding that reviews are not working; see
-`CONFIGURATION.md` in this bundle for the full reference.
+`triggers.review_updates` is `true`, so pushing further commits to an open pull
+request re-reviews it — which is what makes finding lineage and
+addressed-detection work, and what makes each push cost money.
+`REVIEW_UPDATE_DEBOUNCE_SECONDS` (default `60`) bounds that: a pushed revision
+waits before the worker may claim it, so a burst of pushes collapses into a
+single review of the final head. The wait is measured from the first push of the
+burst, so a steady drip of commits cannot defer the review indefinitely, and it
+never delays a review that was already due. Set it to `0` to review every push
+immediately, or raise it on a busy installation.
 
 ### When nothing appears to happen
 
