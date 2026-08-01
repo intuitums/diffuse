@@ -1633,8 +1633,11 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
             )
         )
 
+    # Status checks follow the review-run head, including intentional skips.
+    # Gating creation on eligibility left branch protection hanging forever when
+    # synchronize / draft / label filters produced a skipped report (DEV-306).
     check_run = None
-    if decision.eligible and policy.triggers.status_check:
+    if policy.triggers.status_check:
         check_run = await _ensure_native_check(event, review_run.id)
         if not await anyio.to_thread.run_sync(
             partial(_heartbeat_and_check_current, job.id, worker_id)
