@@ -135,10 +135,11 @@ in whatever it recorded. Check all of these:
    refused outright — such a baseline passes against every later run,
    including one where the engine returns nothing — and needs
    `--allow-zero-recall` to record deliberately.
-2. **Read the findings**, in `/tmp/suite.json`, not just the scores. For each
-   fixture, is the observed finding the labeled bug, or a different issue that
-   happens to sit within the line tolerance? A coincidental match inflates
-   recall and is invisible in the score.
+2. **Read the findings**, in `/tmp/suite.json`, not just the scores. The matcher
+   requires the same file, side, nearby line, and a non-generic title token in
+   common, but that is a deterministic lexical guard rather than semantic
+   equivalence. A shared domain word can still connect different defects, and a
+   coincidental match still inflates recall.
 3. **Check `clean-settings-refactor`.** It has no labeled defect. Every finding
    it produces is a false positive. If it produces several, the confidence
    threshold is too low, and that is exactly the constant this harness exists to

@@ -1,13 +1,15 @@
 {
-  "schema_version": "diffuse-eval-fixture-v1",
+  "schema_version": "diffuse-eval-fixture-v2",
   "case_id": "n-plus-one-rollup",
   "description": "A single grouped aggregate is replaced by one query per account inside a loop, and the aggregation moves from the database into Python. Latency and row volume now scale with the number of accounts in the rollup.",
   "diff_path": "diff.patch",
   "expected": [
     {
       "finding_id": "per-account-query-in-loop",
+      "title": "Per-account query in rollup loop causes N+1",
       "file_path": "reports/rollup.py",
       "line": 16,
+      "side": "RIGHT",
       "category": "performance",
       "line_tolerance": 1
     }

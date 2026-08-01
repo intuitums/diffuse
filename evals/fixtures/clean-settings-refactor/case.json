@@ -1,5 +1,5 @@
 {
-  "schema_version": "diffuse-eval-fixture-v1",
+  "schema_version": "diffuse-eval-fixture-v2",
   "case_id": "clean-settings-refactor",
   "description": "Negative control. Two duplicated env-var readers are factored into one helper with identical behaviour: same defaults, same validation, same exception. There is no defect here, so every finding this case produces is a false positive. Without a case like this, precision is unmeasurable and the harness can be gamed by lowering the confidence threshold.",
   "diff_path": "diff.patch",

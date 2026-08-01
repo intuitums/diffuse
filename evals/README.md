@@ -2,10 +2,13 @@
 
 `diffuse evaluate` scores labeled findings against a model run.
 
-**The matching unit is a location**: the same file, and a line within the
-label's own `line_tolerance`. An optional severity label makes severity part of
-the match. **Category is not part of the match** — it is reported separately,
-as `category_mismatches` and a `category_confusion` table.
+The matching unit is a defect identity: the same file and diff `side`, a line
+within the label's own `line_tolerance`, and at least one normalized,
+non-generic title token in common. Matching is case-insensitive and punctuation
+is a separator, so `SQL-injection` overlaps `sql injection`; generic words such
+as `finding`, `issue`, and `the` provide no credit. An optional severity label
+makes severity part of the match. **Category is not part of the match** — it is
+reported separately, as `category_mismatches` and a `category_confusion` table.
 
 That split is deliberate. `category` is mandatory on a label, so requiring
 equality gave a labeller no way to opt out of it, and a model that found a real
@@ -38,13 +41,11 @@ It is order-independent — the same inputs give the same table whatever order t
 observations arrive in — but read it as a signal, not as an exact count.
 
 `line_tolerance` defaults to 3, is capped at 10, and **every committed fixture
-uses 1**. Since location is the whole match gate, that span is the only
-discriminator there is: any finding inside it is credited as having found the
-labeled defect, whatever it was actually about. Every label here sits exactly on
-a changed line, so none of them needs more slack than one line, and the tightest
-honest span is the right one. Measured across the corpus, the labels' spans
-cover 21 of 44 commentable lines; at the previous tolerances they covered 38 of
-45, and three fixtures were at 100%.
+uses 1**. Title overlap prevents a wholly unrelated finding inside that span
+from being credited, but a wide span still increases the surface for a vaguely
+related title to collide. Every label here sits exactly on a changed line, so
+none of them needs more slack than one line, and the tightest honest span is the
+right one.
 
 Matching is one-to-one in both directions. One observation can never satisfy two
 labels, and one label can never absorb two observations — a second finding
@@ -57,13 +58,12 @@ IDs, latency, and token usage. The resulting JSON reports precision, recall,
 F1, false positives, false negatives, addressed findings, category mismatches,
 severity mismatches, median latency, and estimated model cost.
 
-The suite schema is `diffuse-evaluation-v2` and the score schema is
-`diffuse-evaluation-score-v4`. The input version moved with `line_tolerance`'s
-accepted range, which narrowed from 0..50 to 0..10: a v1 suite using a wide
-tolerance is now refused rather than merely unfashionable, so it could not keep
-the old version name. A suite the harness produced also carries a
-`run_configuration` block; one written by hand from a reviewed pull request has
-no run to describe and omits it.
+The suite schema is `diffuse-evaluation-v3` and the score schema is
+`diffuse-evaluation-score-v5`. The input version moved because expected and
+observed findings now require `title` and `side`; a v2 suite never recorded
+either signal and cannot be scored honestly under this gate. A suite the
+harness produced also carries a `run_configuration` block; one written by hand
+from a reviewed pull request has no run to describe and omits it.
 
 Candidate and verification tokens are counted and priced separately, because a
 cross-family pair does not share a rate card. `prompt_tokens` and
@@ -152,11 +152,11 @@ fixtures/<case-id>/
 
 | Field | Meaning |
 | --- | --- |
-| `schema_version` | `diffuse-eval-fixture-v1` |
+| `schema_version` | `diffuse-eval-fixture-v2` |
 | `case_id` | must equal the directory name |
 | `description` | what the defect is, and why it is a defect |
 | `diff_path` | default `diff.patch`; must stay inside the fixture |
-| `expected` | `ExpectedFinding` records, unchanged from the scorer's schema |
+| `expected` | `ExpectedFinding` records, including a semantic `title` and exact diff `side` |
 | `addressed_finding_ids` | labels a developer subsequently fixed |
 | `contexts` | retrieved-context entries, each pointing at a file in the fixture |
 
@@ -216,7 +216,8 @@ an error rather than a silent skip.
 ## What a baseline records
 
 Scores, not prose — plus every condition those scores are only a standard
-under. Schema `diffuse-eval-baseline-v2`.
+under. Schema `diffuse-eval-baseline-v3`; v2 baselines used the location-only
+matcher and must be recaptured rather than silently reinterpreted.
 
 | Field | |
 | --- | --- |
@@ -288,17 +289,12 @@ Stated plainly so nobody mistakes a green run for more than it is.
   Per-path confidence thresholds, severity floors, `summary_only`, and the
   preventative-security rules in `repository_policy/` are *not* exercised. A
   fixture-level policy is the obvious next extension.
-- **A coincidental location match still reads as a true positive.** Category no
-  longer gates the match, and there is no finding text in `ObservedFinding` to
-  compare, so an unrelated finding that lands within a label's span is credited.
-  Every label is at tolerance 1, which is the tightest span reachable without
-  making a label unmatchable, and that brings span coverage down from 84% of all
-  commentable lines to 48%. It does not remove the risk. On
-  `off-by-one-page-slice` the diff changes only two lines, so any commentable
-  finding at all is inside the span; on `path-traversal-attachment` three of
-  four. **Read the findings, not just the score.** Carrying the finding title
-  into `ObservedFinding` and requiring textual overlap is the principled fix and
-  is not in this schema yet.
+- **Title overlap is lexical, not semantic.** Requiring one normalized,
+  non-generic token prevents a wholly unrelated nearby finding from matching,
+  but a shared domain word can still connect different defects and a pure
+  paraphrase with no shared token will miss. **Read the findings, not just the
+  score.** The deterministic guard is intentionally auditable; it is not a
+  substitute for human review of a capture.
 - **`category_mismatches` is a preference, not a minimum.** The matcher prefers
   a category-agreeing observation but does not solve the min-cost assignment,
   so the table can name a confusion a better assignment would have avoided. It
@@ -315,4 +311,3 @@ Stated plainly so nobody mistakes a green run for more than it is.
   exist so the harness has something honest to measure in the meantime.
 - **`latency_ms` is wall clock**, including provider queueing and any LiteLLM
   retry. It is a rough operational number, not a benchmark.
-
