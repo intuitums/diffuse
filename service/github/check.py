@@ -311,13 +311,17 @@ def _completion_output(
         f"Reviewed files: **{report.reviewed_file_count}/{report.diff_file_count}**"
     )
     annotations = _annotations(report, active_findings, blocking_severities)
-    output: dict[str, object] = {
-        "title": (
+    if conclusion == "skipped":
+        title = "Diffuse review skipped"
+    elif blocking_count:
+        title = (
             f"Diffuse found {blocking_count} blocking "
             f"{'finding' if blocking_count == 1 else 'findings'}"
-            if blocking_count
-            else "Diffuse review passed"
-        ),
+        )
+    else:
+        title = "Diffuse review passed"
+    output: dict[str, object] = {
+        "title": title,
         "summary": summary[:MAX_CHECK_SUMMARY_CHARS],
     }
     if annotations:
