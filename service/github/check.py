@@ -10,6 +10,7 @@ from urllib.parse import quote
 import httpx
 
 from service.github.api import GITHUB_API_VERSION
+from service.github.app import github_token
 from service.models.review import (
     Category,
     ReviewFinding,
@@ -42,10 +43,10 @@ def _safe_text(value: str) -> str:
 
 
 def _headers() -> dict[str, str]:
-    token = os.environ.get("GITHUB_TOKEN", "")
+    token = github_token()
     if not token:
         raise RuntimeError(
-            "GITHUB_TOKEN with GitHub Checks write permission is required"
+            "GitHub authentication with Checks write permission is required"
         )
     return {
         "Accept": "application/vnd.github+json",

@@ -57,10 +57,11 @@ The following are explicitly **in scope**:
   disposable worktree or mirror — including escaping the repository root,
   bypassing `DIFFUSE_MAX_REPOSITORY_BYTES`, or reaching the host from a
   container.
-- **Credential exposure.** Any path that leaks `GITHUB_TOKEN`,
-  the OAuth client secret, `DIFFUSE_API_TOKEN`, or a repository-scoped service
-  token into a clone URL sent to an unintended origin, into model input, into
-  published review output, into logs, or into an image layer.
+- **Credential exposure.** Any path that leaks the GitHub App private key,
+  an installation token, the OAuth client secret, `DIFFUSE_API_TOKEN`, or a
+  repository-scoped service token into a clone URL sent to an unintended
+  origin, into model input, into published review output, into logs, or into an
+  image layer.
 - **Authorization bypass.** Reading or writing another repository's index,
   findings, analytics, or custom context across a repository-scoped token
   boundary; escalating a read scope to a generation or write scope; acting on a

@@ -105,15 +105,14 @@ Requirements:
 
 - Python 3.12+
 - Docker with Compose
-- a GitHub token that can clone private target repositories
-- a GitHub App installation or user access token with pull-request read/write
-  permission, plus Checks write permission when status checks are enabled
+- a GitHub App installed on the target repositories, with its client/App ID,
+  installation ID, and private key available to Diffuse
 - a review-model provider supported by LiteLLM
 
 ```bash
 cp .env.example .env
 # Fill in POSTGRES_PASSWORD, DIFFUSE_API_TOKEN, the model credentials,
-# and the GitHub token and webhook secret.
+# and the GitHub App credentials and webhook secret.
 
 docker compose up -d --build
 
@@ -139,11 +138,13 @@ requests when the secret is missing or the signature is invalid.
 
 Onboarding requires the exact SCM origin to match the configured primary origin
 (`GITHUB_WEB_URL` / `GITHUB_API_URL`) or an exact entry in
-`GITHUB_ALLOWED_INSTANCES`. Those hosts receive the process-level GitHub token
+`GITHUB_ALLOWED_INSTANCES`. Those hosts receive the resolved GitHub credential
 during clone and fetch, so keep the list narrow: the allowlist is what stops an
 API response from redirecting Git's askpass credentials to an arbitrary host.
-That token and the webhook secret are still shared across configured GitHub
-instances, pending encrypted per-installation credentials.
+Installation tokens are minted from the configured App private key, cached in
+memory, and refreshed before their one-hour expiry. This profile still
+configures one GitHub App installation per deployment; selecting installation
+identity per tenant is future work.
 
 Compose gates the API and worker on a one-shot migration service, so
 `GET /ready` returns `200` only once the packaged migration history and
