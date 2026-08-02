@@ -104,9 +104,7 @@ The following are explicitly **in scope**:
 Diffuse is pre-1.0. Fixes land on `main` and ship as signed, digest-pinned
 release artifacts; there are no maintained release branches, so security fixes
 are not backported. Upgrade to the latest release to receive them. See
-[`deploy/README.md`](deploy/README.md) for signature verification and
-[ADR 0042](docs/adr/0042-source-available-self-hosted-distribution.md) for the
-distribution model.
+[`deploy/README.md`](deploy/README.md) for signature verification.
 
 Because operators control their own hosts, a fix is only effective once the
 operator upgrades.

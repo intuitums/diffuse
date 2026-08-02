@@ -14,7 +14,6 @@ first pull request. These pages are the reference behind it.
 | [cli.md](cli.md) | The `diffuse` command: every subcommand, the local-review flags and output modes, and the stable exit-code table. |
 | [mcp.md](mcp.md) | The MCP server at `/mcp`: authentication, scopes, the twenty tools, fix handoffs, and analytics. |
 | [rest-api.md](rest-api.md) | The versioned REST API under `/api/v1`: scopes, conventions, and idempotency. The schema itself is served at `/openapi.json`. |
-| [adr/](adr/) | Architecture decision records — why a subsystem is shaped the way it is. Read the relevant record before changing it. |
 
 Elsewhere in the repository:
 
