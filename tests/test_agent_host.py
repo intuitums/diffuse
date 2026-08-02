@@ -18,6 +18,7 @@ import pytest
 
 from service.cli import agent as agent_cli
 from service.cli import review as review_cli
+from service.cli.agent import POLICY_COMMAND
 from service.review import agent_host
 from service.review.agent_host import (
     AGENT_CLIS,
@@ -34,6 +35,7 @@ from service.review.agent_host import (
     require_version_floor,
     resolve_cli,
     sandbox_settings,
+    sandbox_settings_are_current,
     version_floor_message,
     write_sandbox_settings,
 )
@@ -422,8 +424,58 @@ def test_status_reports_a_ready_runtime(monkeypatch, owned_home, installed_cli):
     assert entry["meets_version_floor"] is True
     assert entry["authenticated"] is True
     assert entry["sandbox_settings_written"] is True
+    assert entry["sandbox_settings_current"] is True
     assert entry["ready"] is True
     assert "problem" not in entry
+
+
+def test_a_policy_that_no_longer_matches_is_not_ready(monkeypatch, owned_home, installed_cli):
+    """A signed-in developer with a stale policy file is not ready.
+
+    `write_sandbox_settings` runs at login, once, and the file is then read on
+    every review for as long as that login lasts. A capability added to the
+    table, a tightened credential deny, or a different REAL_HOME all leave a
+    weaker boundary on disk than Diffuse intends -- and existence alone cannot
+    tell the difference.
+    """
+
+    path = write_sandbox_settings(CLAUDE_CODE)
+    weakened = json.loads(path.read_text())
+    weakened["sandbox"]["network"]["allowedDomains"] = ["*"]
+    path.write_text(json.dumps(weakened, indent=2, sort_keys=True) + "\n")
+
+    def fake_run(command, **kwargs):
+        if command[1:] == ["--version"]:
+            return _completed("2.1.220 (Claude Code)")
+        return _completed(json.dumps({"loggedIn": True, "authMethod": "claude.ai"}))
+
+    monkeypatch.setattr(agent_host.subprocess, "run", fake_run)
+    entry = agent_host.agent_status()["runtimes"][0]
+
+    assert entry["authenticated"] is True
+    assert entry["sandbox_settings_written"] is True
+    assert entry["sandbox_settings_current"] is False
+    assert entry["ready"] is False
+    # Pinned to the real subcommand, so renaming it in `service/cli/agent.py`
+    # without updating the remedy fails here rather than sending an operator to
+    # a command that does not exist.
+    assert POLICY_COMMAND in entry["problem"]
+    # The remedy must not be "sign in again": they are signed in, and signing in
+    # again would not rewrite a file whose contents drifted.
+    assert "login" not in entry["problem"]
+
+
+def test_a_rewritten_policy_becomes_current_again(owned_home, installed_cli):
+    path = write_sandbox_settings(CLAUDE_CODE)
+    path.write_text("{}\n")
+    assert sandbox_settings_are_current(CLAUDE_CODE) is False
+
+    write_sandbox_settings(CLAUDE_CODE)
+    assert sandbox_settings_are_current(CLAUDE_CODE) is True
+
+
+def test_a_missing_policy_is_not_current(owned_home, installed_cli):
+    assert sandbox_settings_are_current(CLAUDE_CODE) is False
 
 
 def test_status_reports_an_unauthenticated_runtime(monkeypatch, owned_home, installed_cli):

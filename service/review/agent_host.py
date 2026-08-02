@@ -210,6 +210,13 @@ CREDENTIAL_ENVIRONMENT = (
     "OPENAI_API_KEY",
     "DATABASE_URL",
     "DIFFUSE_GIT_TOKEN",
+    # The control plane's own secrets. `diffuse review` runs on a developer's
+    # machine and normally holds none of these, but the same host plumbing is
+    # what a server-side runtime would reuse, and that process holds all three.
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_WEBHOOK_SECRET",
+    "DIFFUSE_API_TOKEN",
+    "POSTGRES_PASSWORD",
 )
 
 
@@ -317,6 +324,16 @@ def sandbox_settings(worktree: Path | str | None = None) -> dict[str, object]:
     }
 
 
+def rendered_sandbox_settings() -> str:
+    """The exact bytes `write_sandbox_settings` persists.
+
+    One renderer for both writing and checking, so "is the file current" cannot
+    answer differently from "what would we write".
+    """
+
+    return json.dumps(sandbox_settings(), indent=2, sort_keys=True) + "\n"
+
+
 def write_sandbox_settings(cli: AgentCli) -> Path:
     """Persist the worktree-independent policy as the CLI's user settings.
 
@@ -328,9 +345,33 @@ def write_sandbox_settings(cli: AgentCli) -> Path:
 
     directory = ensure_agent_config_directory(cli)
     path = directory / "settings.json"
-    path.write_text(json.dumps(sandbox_settings(), indent=2, sort_keys=True) + "\n")
+    path.write_text(rendered_sandbox_settings())
     path.chmod(0o600)
     return path
+
+
+def sandbox_settings_are_current(cli: AgentCli) -> bool:
+    """Whether the persisted policy is the one Diffuse would write today.
+
+    Existence is not the question. This file is written by `diffuse agent
+    login`, which a developer runs once, and it is then read on every review
+    for as long as the login lasts. Anything that changes the rendered policy
+    afterwards -- a capability added to the table, a tightened credential deny,
+    a different `REAL_HOME` because the tool moved machines -- leaves a file on
+    disk that is weaker than what Diffuse intends, with nothing saying so.
+
+    That is the same silent-weakening this module's version floor exists to
+    prevent, one layer up: the floor proves the CLI *can* honour the policy,
+    and this proves the policy it will read is the current one.
+    """
+
+    path = agent_config_directory(cli) / "settings.json"
+    if not path.is_file():
+        return False
+    try:
+        return path.read_text() == rendered_sandbox_settings()
+    except OSError:
+        return False
 
 
 @contextmanager
@@ -465,17 +506,24 @@ def authentication_status(cli: AgentCli) -> dict[str, object]:
     on the one platform this runtime is most used from.
     """
 
+    def unauthenticated(detail: str | None) -> dict[str, object]:
+        return {"logged_in": False, "auth_method": None, "account": None, "detail": detail}
+
     completed = _run_cli(cli, cli.auth_status_arguments)
     if completed.returncode != 0:
-        return {"logged_in": False, "detail": (completed.stderr or "").strip() or None}
+        return unauthenticated((completed.stderr or "").strip() or None)
     try:
         payload = json.loads(completed.stdout)
     except json.JSONDecodeError:
-        return {"logged_in": False, "detail": "unreadable auth status output"}
+        return unauthenticated("unreadable auth status output")
+    # One shape on every path. The keys are read by `cli_status` and printed by
+    # `diffuse agent status`, and a key that appears only on the failure branch
+    # is a KeyError waiting for the first caller who does not use `.get`.
     return {
         "logged_in": bool(payload.get("loggedIn")),
         "auth_method": payload.get("authMethod"),
         "account": payload.get("email"),
+        "detail": None,
     }
 
 
@@ -539,19 +587,33 @@ def cli_status(cli: AgentCli) -> dict[str, object]:
         return {**status, "ready": False, "problem": version_floor_message(cli, version)}
 
     settings_path = agent_config_directory(cli) / "settings.json"
-    status["sandbox_settings_written"] = settings_path.is_file()
+    settings_written = settings_path.is_file()
+    settings_current = sandbox_settings_are_current(cli)
+    status["sandbox_settings_written"] = settings_written
+    status["sandbox_settings_current"] = settings_current
 
     authentication = authentication_status(cli)
     status["authenticated"] = authentication["logged_in"]
     status["auth_method"] = authentication.get("auth_method")
     status["account"] = authentication.get("account")
 
-    ready = bool(authentication["logged_in"]) and settings_path.is_file()
+    ready = bool(authentication["logged_in"]) and settings_current
     status["ready"] = ready
     if not ready:
-        status["problem"] = (
-            f"run `diffuse agent login {cli.runtime}` to sign in and write the sandbox policy"
-        )
+        # A stale policy is its own problem with its own remedy. Telling a
+        # signed-in developer to sign in again would be wrong and would not fix
+        # it: `diffuse agent write-policy` is what rewrites the file.
+        if settings_written and not settings_current:
+            status["problem"] = (
+                "the sandbox policy on disk is not the one Diffuse writes today, so a "
+                "review would run under a boundary that does not match this version; "
+                f"run `diffuse agent write-policy {cli.runtime}`"
+            )
+        else:
+            status["problem"] = (
+                f"run `diffuse agent login {cli.runtime}` to sign in and write the "
+                "sandbox policy"
+            )
     return status
 
 

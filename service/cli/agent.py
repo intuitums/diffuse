@@ -15,6 +15,11 @@ from service.review.agent_host import (
 
 RUNTIME_CHOICES = tuple(cli.runtime for cli in AGENT_CLIS)
 
+#: The subcommand that rewrites the sandbox policy. Named here because
+#: `agent_host.cli_status` prints it as the remedy for a stale policy, and a
+#: remedy naming a command that does not exist is worse than no remedy.
+POLICY_COMMAND = "write-policy"
+
 
 def _login(args: argparse.Namespace) -> None:
     cli = resolve_cli(args.runtime)
@@ -64,7 +69,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     status_parser.set_defaults(handler=_status)
 
     policy_parser = subparsers.add_parser(
-        "write-policy",
+        POLICY_COMMAND,
         help="Rewrite the sandbox policy in the Diffuse-owned configuration directory",
         description=(
             "`login` writes the policy too. This exists so an operator can restore it\n"
