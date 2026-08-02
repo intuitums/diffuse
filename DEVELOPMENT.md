@@ -230,8 +230,7 @@ To change the schema, add a new file under `sql/migrations/`:
    closed at startup — `GET /ready` will not return `200`.
 5. Apply and test it with the integration recipe above.
 
-See `sql/migrations/README.md` and
-[ADR 0036](docs/adr/0036-transactional-versioned-database-migrations.md).
+See `sql/migrations/README.md`.
 
 ## Dependencies
 
@@ -250,14 +249,11 @@ pip-compile requirements.txt \
 
 CI audits the lock file with `pip-audit -r requirements.lock --disable-pip`.
 
-## Design docs and ADRs
+## Design docs
 
-Diffuse records its architectural decisions rather than re-litigating them in
-review. Before proposing a change to indexing, retrieval, the review engine,
-publication, authorization, or the database, read the relevant record:
+Before proposing a change to indexing, retrieval, the review engine,
+publication, authorization, or the database, read the relevant doc:
 
-- [`docs/adr/`](docs/adr/) — architecture decision records, the primary source
-  of truth for *why* a subsystem is shaped the way it is
 - [`docs/architecture.md`](docs/architecture.md) — target architecture. Its
   data-model and deployment-profile sections are explicitly labelled targets and
   describe tables and services that do not exist yet; `sql/schema.sql` plus the
@@ -266,6 +262,3 @@ publication, authorization, or the database, read the relevant record:
   what is still planned
 - [`docs/roadmap.md`](docs/roadmap.md) — delivery sequence
 - [`docs/deployment.md`](docs/deployment.md) — single-server deployment
-
-A change that contradicts an accepted ADR needs a new ADR in the same numbered,
-append-only style, not an edit to the old one.

@@ -20,8 +20,6 @@ command and must first satisfy every baseline table/column check.
 The supported Compose profile gates API and worker startup on a successful
 migration job.
 
-Accepted architecture decisions are recorded under [`docs/adr`](adr/).
-
 ## Logical components
 
 ```text
@@ -63,8 +61,7 @@ Self-hosted
   Operator PostgreSQL + repository storage
 ```
 
-There is no Diffuse-hosted control plane and no managed service; see
-[ADR 0042](adr/0042-source-available-self-hosted-distribution.md).
+There is no Diffuse-hosted control plane and no managed service.
 PostgreSQL remains authoritative for repository, source-derived, review,
 workflow, feedback, and learning state. Self-hosted telemetry and diagnostic
 upload are opt-in.
@@ -73,8 +70,6 @@ Releases are delivered as signed, digest-pinned artifacts. Runtime images omit
 the build-only material and compile the Python application rather than shipping
 plain source files — a packaging and image-size decision, not a secrecy one:
 the source is published under BSL 1.1.
-[ADR 0042](adr/0042-source-available-self-hosted-distribution.md) records the
-distribution decision.
 
 ### Control plane
 

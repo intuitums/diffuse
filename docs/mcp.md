@@ -11,12 +11,6 @@ records, review runs, published finding lineages, active immutable snapshots,
 operator context, and inspectable feedback-derived rules — and every read and
 write is constrained to the repositories assigned to the authenticated token.
 
-The design decisions behind it are recorded in
-[ADR 0021](adr/0021-authenticated-read-only-mcp-foundation.md),
-[ADR 0023](adr/0023-durable-mcp-pr-lifecycle-and-custom-context.md),
-[ADR 0024](adr/0024-descriptor-addressed-mcp-contract.md), and
-[ADR 0025](adr/0025-revision-safe-agent-fix-handoffs.md).
-
 ## Authentication
 
 `DIFFUSE_API_TOKEN` is a high-entropy bootstrap/recovery credential with
@@ -94,8 +88,7 @@ The current server advertises twenty tools:
   update/delete; and
 - revision-safe `get_fix_handoff` and `get_fix_all_handoff` bundles.
 
-The `merge_request` names predate GitHub-only support
-([ADR 0041](adr/0041-github-only-source-control.md)) and describe GitHub pull
+The `merge_request` names predate GitHub-only support and describe GitHub pull
 requests. `list_pull_requests` is the only one with a pull-request-named form;
 `get_merge_request` and `list_merge_request_comments` have none. Renaming them
 would break existing clients, so they stay as they are until a deliberate
@@ -185,9 +178,6 @@ Diffuse refuses to substitute webhook receipt time when an SCM omits a
 lifecycle timestamp and reports the resulting completeness explicitly.
 Historical policy-eligible coverage and monetary cost remain unavailable until
 their exact inputs are versioned.
-
-See [ADR 0028](adr/0028-repository-authorized-review-analytics.md) and
-[ADR 0029](adr/0029-authoritative-pull-request-lifecycle-analytics.md).
 
 ## Not yet implemented
 
