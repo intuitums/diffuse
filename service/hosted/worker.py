@@ -132,7 +132,10 @@ from service.review.provenance import (
     classify_pull_request_provenance,
     select_review_model_plan,
 )
-from service.review.runtimes import hosted_review_runtime_name
+from service.review.runtimes import (
+    hosted_review_runtime_name,
+    resolve_review_runtime,
+)
 from service.scm import (
     FeedbackSyncEvent,
     PullRequestEvent,
@@ -752,6 +755,13 @@ def _generate_and_persist_review(
         report = generate_review(
             diff_text,
             contexts,
+            # Resolved through the hosted rule rather than left to
+            # `generate_review`, which reads the unrestricted one. Startup
+            # validation already refused a local-only runtime, but that check
+            # ran once against the environment as it was then; resolving here
+            # means the refusal is a property of the call rather than of boot
+            # order.
+            runtime=resolve_review_runtime(hosted_review_runtime_name()),
             progress_callback=report_progress,
             policy=policy,
             candidate_model=(
