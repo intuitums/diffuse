@@ -43,6 +43,11 @@ from service.models.review import (
     Severity,
     VerificationBatch,
 )
+from service.review.runtimes import (
+    LITELLM_RUNTIME,
+    ReviewRuntime,
+    resolve_review_runtime,
+)
 from service.scm import normalize_base_url
 
 LOGGER = logging.getLogger(__name__)
@@ -1098,7 +1103,7 @@ def _review_presentation(
     }
 
 
-def generate_review(
+def _generate_review_litellm(
     diff_text: str,
     contexts: list[RetrievedContext],
     *,
@@ -1370,4 +1375,64 @@ def generate_review(
         cache_read_tokens=cache_usage.read_tokens,
         cache_write_tokens=cache_usage.written_tokens,
         **presentation,
+    )
+
+
+class LiteLLMRuntime:
+    """The one-shot runtime: `REVIEW_PASSES` x diff chunks, then a verifier.
+
+    Everything above this class is its body. It is the only runtime today, and
+    the one the hosted worker uses.
+    """
+
+    @property
+    def name(self) -> str:
+        return LITELLM_RUNTIME
+
+    def generate(
+        self,
+        diff_text: str,
+        contexts: list[RetrievedContext],
+        *,
+        progress_callback: Callable[[], None] | None = None,
+        policy: ResolvedReviewPolicy | None = None,
+        candidate_model: str | None = None,
+        verifier_model: str | None = None,
+    ) -> ReviewReport:
+        return _generate_review_litellm(
+            diff_text,
+            contexts,
+            progress_callback=progress_callback,
+            policy=policy,
+            candidate_model=candidate_model,
+            verifier_model=verifier_model,
+        )
+
+
+def generate_review(
+    diff_text: str,
+    contexts: list[RetrievedContext],
+    *,
+    progress_callback: Callable[[], None] | None = None,
+    policy: ResolvedReviewPolicy | None = None,
+    candidate_model: str | None = None,
+    verifier_model: str | None = None,
+    runtime: ReviewRuntime | None = None,
+) -> ReviewReport:
+    """Review `diff_text` with the configured runtime.
+
+    Every caller -- the worker, `diffuse review`, and the eval harness -- comes
+    through here, so `REVIEW_RUNTIME` is the single switch and none of them
+    needs to know which runtime ran. `runtime` is for tests and for a caller
+    that has already resolved one; it is not read from configuration twice.
+    """
+
+    selected = runtime if runtime is not None else resolve_review_runtime()
+    return selected.generate(
+        diff_text,
+        contexts,
+        progress_callback=progress_callback,
+        policy=policy,
+        candidate_model=candidate_model,
+        verifier_model=verifier_model,
     )
