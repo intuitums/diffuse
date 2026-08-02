@@ -347,6 +347,5 @@ the fourth anniversary of its first public distribution, whichever comes
 first. Later versions may carry different Change Dates.
 
 Permitted self-hosted use requires no separate commercial agreement, license
-key, or entitlement file. See
-[ADR 0042](docs/adr/0042-source-available-self-hosted-distribution.md) for the
-reasoning, and `legal@intuitum.xyz` for alternative licensing.
+key, or entitlement file. Contact `legal@intuitum.xyz` for alternative
+licensing.
