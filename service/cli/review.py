@@ -34,6 +34,9 @@ from repository_policy.resolve import (
 )
 from retriever.retrieve import parse_changed_files, retrieve_context_from_plan
 from service.cli import (
+    agent as agent_cli,
+)
+from service.cli import (
     cluster as cluster_cli,
 )
 from service.cli import (
@@ -1070,6 +1073,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
     )
     model_cli.configure_parser(model)
 
+    agent = subparsers.add_parser(
+        "agent",
+        help="Sign in to and inspect the agent CLIs Diffuse can review with",
+    )
+    agent_cli.configure_parser(agent)
+
     # Every subparser must appear here, or an unknown flag typed on that
     # subcommand is reported against the top-level parser and prints the wrong
     # usage block -- the defect this mapping exists to fix.
@@ -1082,6 +1091,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
         "database": database,
         "evaluate": evaluate,
         "model": model,
+        "agent": agent,
     }
     return parser, commands
 
