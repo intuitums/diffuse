@@ -132,6 +132,10 @@ from service.review.provenance import (
     classify_pull_request_provenance,
     select_review_model_plan,
 )
+from service.review.runtimes import (
+    hosted_review_runtime_name,
+    resolve_review_runtime,
+)
 from service.scm import (
     FeedbackSyncEvent,
     PullRequestEvent,
@@ -751,6 +755,13 @@ def _generate_and_persist_review(
         report = generate_review(
             diff_text,
             contexts,
+            # Resolved through the hosted rule rather than left to
+            # `generate_review`, which reads the unrestricted one. Startup
+            # validation already refused a local-only runtime, but that check
+            # ran once against the environment as it was then; resolving here
+            # means the refusal is a property of the call rather than of boot
+            # order.
+            runtime=resolve_review_runtime(hosted_review_runtime_name()),
             progress_callback=report_progress,
             policy=policy,
             candidate_model=(
@@ -2397,6 +2408,10 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("REVIEW_UPDATE_DEBOUNCE_SECONDS", review_update_debounce_seconds),
     ("MAX_CONTEXT_CHUNKS", max_context_chunks),
     ("MAX_CONTEXT_CHARS", max_context_chars),
+    # Refused here rather than per job: a runtime this process cannot drive
+    # would dead-letter every pull request in the fleet, and fixing the
+    # variable afterwards recovers none of them.
+    ("REVIEW_RUNTIME", hosted_review_runtime_name),
     ("REVIEW_MODEL", review_model),
     ("REVIEW_VERIFIER_MODEL", review_verifier_model),
     ("REVIEW_EFFORT", review_effort),
