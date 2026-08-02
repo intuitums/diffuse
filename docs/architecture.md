@@ -294,6 +294,27 @@ target; the parenthetical notes record what ships today.
 Model output is parsed into a versioned schema. Raw model text is never posted
 directly as an SCM action.
 
+Steps 4 through 7 are a *review runtime*, selected by `REVIEW_RUNTIME`. The seam
+is a whole `ReviewReport`, not a single model call: a runtime decides for itself
+how many calls a review is. `litellm` — the default, and the only value the API
+and worker accept — is the one-shot implementation above. The agent CLI runtimes
+drive a locally installed, locally authenticated Claude Code or Codex instead and
+are a `diffuse review` capability only; a server has no developer CLI to drive,
+and the hosted path reviews pull requests from anyone who can open one, which is
+a different threat model. `ReviewReport` is unchanged across runtimes, so the
+same evaluation harness scores them on the same fixtures.
+
+An agent CLI runs behind three independent boundaries, because none of them
+covers the others: its environment is built from an allowlist, so a credential
+Diffuse never names cannot reach it; the CLI's own OS sandbox denies Bash egress
+and reads outside the worktree; and Diffuse refuses to run below a version floor,
+because those sandbox settings are version-gated and an older build drops the
+ones it does not recognize without saying so. The sandbox's documented scope is
+Bash subprocesses — MCP servers run outside it with full host privileges — so
+`--strict-mcp-config` is a load-bearing control rather than defense in depth, and
+Diffuse's own MCP server serves queries over an index and never executes
+repository-supplied content.
+
 Before any review-model call, the worker fetches a bounded list of commit
 metadata from the SCM and classifies authors, committers, verified bot
 identities, and attribution trailers with deterministic rules. The classifier

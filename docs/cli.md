@@ -5,7 +5,8 @@ subcommands onboard and manage indexed repositories (`repository`) and
 cross-repository context clusters (`cluster`), inspect and moderate
 feedback-derived rules (`learning`), create and revoke scoped service tokens
 (`token`), inspect and migrate the PostgreSQL schema (`database`), inspect or
-verify the configured review model (`model`), score a labeled review-quality
+verify the configured review model (`model`), sign in to and inspect the agent
+CLIs a review can be driven by (`agent`), score a labeled review-quality
 evaluation set (`evaluate`), and review the current local branch (`review`).
 
 The production image's `diffuse` entrypoint is a superset of the packaged CLI:
@@ -32,12 +33,42 @@ diffuse review --agent
 diffuse review --resume
 diffuse model
 diffuse model --live
+diffuse agent status
 diffuse evaluate evals/baseline.example.json
 ```
 
 `diffuse token add` mints the repository-scoped service tokens the
 [MCP server](mcp.md#minting-a-service-token) and
 [REST API](rest-api.md#authorization) authenticate with.
+
+## Agent CLI runtimes
+
+`REVIEW_RUNTIME` selects what produces a review. `litellm` — the default, and
+the only value the API and worker accept — runs the one-shot passes described in
+[configuration](../.env.example). The agent CLI runtimes drive a locally
+installed, locally authenticated Claude Code or Codex instead, and are a
+`diffuse review` capability only: a server has no developer CLI to drive, and it
+reviews pull requests from anyone who can open one.
+
+`diffuse agent` manages that side:
+
+```bash
+diffuse agent status                    # installed, current, and signed in?
+diffuse agent login claude-code         # sign in, and write the sandbox policy
+diffuse agent write-policy claude-code  # restore the policy without signing in
+```
+
+This is a **second** sign-in. Diffuse keeps its agent configuration under
+`~/.diffuse/agent` (`DIFFUSE_AGENT_HOME`) and never reads or writes `~/.claude`,
+so the CLI you use in your own terminal is untouched — and the credential
+Diffuse creates is one Diffuse's own process owns.
+
+`diffuse agent status` reports the version floor as well as the sign-in. The
+sandbox settings a review depends on are version-gated and are *silently ignored*
+by older builds, so Diffuse refuses to run below the floor and names the settings
+that would have been dropped rather than reviewing behind a weaker boundary than
+the policy on disk describes. On native Windows, where Claude Code does not
+sandbox at all, the runtime is refused outright.
 
 ## Reviewing a local branch
 
