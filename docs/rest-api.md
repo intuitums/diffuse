@@ -10,11 +10,6 @@ instance, so they are always correct for the version you are running. This page
 does not restate the schema; it covers what the surface is for, how to
 authorize a client, and the conventions the schema cannot express.
 
-The design decisions behind it are recorded in
-[ADR 0037](adr/0037-repository-authorized-rest-api.md),
-[ADR 0038](adr/0038-idempotent-rest-review-trigger.md), and
-[ADR 0039](adr/0039-idempotent-repository-onboarding-and-indexing-api.md).
-
 ## Authorization
 
 Provision a routine client with API-specific scopes:

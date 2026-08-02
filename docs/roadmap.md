@@ -67,9 +67,9 @@ Work the Phase 0 and Phase 1 gates before work that depends on them.
   `FixtureContext` list and never calls the retriever. That is deliberate — a
   baseline that depended on the state of an index snapshot would drift for
   reasons unrelated to review quality — but the consequence is that a retrieval
-  regression is invisible to it, and the embedding removal in ADR 0043 shipped
-  with that stated explicitly. It does **not** measure policy: the harness
-  calls `generate_review` without a `policy` argument, so the engine runs with
+  regression is invisible to it, and the embedding removal shipped with that
+  stated explicitly. It does **not** measure policy: the harness calls
+  `generate_review` without a `policy` argument, so the engine runs with
   `policy=None` and exercises no repository rule, no path scope, no
   path-scoped confidence or severity floor, and no approved learned rule.
   Retrieval recall is Phase 1's gate and needs different machinery. Policy has
@@ -106,10 +106,8 @@ needs the baseline.
 - Implement atomic initial and incremental indexing.
 - The hybrid retrieval foundation now combines graph with weighted
   path/symbol/content full-text search through deterministic rank fusion with
-  snapshot provenance. The vector leg was removed in
-  [ADR 0043](adr/0043-graph-and-lexical-retrieval-without-embeddings.md).
-  Continue with richer lexical parsing, multi-hop traversal, summaries, and
-  measured recall gates.
+  snapshot provenance. The vector leg has been removed. Continue with richer
+  lexical parsing, multi-hop traversal, summaries, and measured recall gates.
 - The cross-repository foundation now resolves cascading explicit repositories
   and operator-managed same-host clusters into immutable, bounded snapshot
   plans, preserves repository-qualified retrieval provenance, and stores the
@@ -133,10 +131,9 @@ piece of work than the Phase 0 review gate, which needs only a credential.
 
 This is the dependency the phase ordering was supposed to respect and did not.
 Phases 2, 3 and 4 all consume retrieved context and were built on top of an
-unmeasured retrieval layer; the removal of the vector leg in
-[ADR 0043](adr/0043-graph-and-lexical-retrieval-without-embeddings.md) was
-accepted on reasoning alone for exactly the same reason. Nothing that consumes
-retrieved context can be tuned honestly until this gate passes.
+unmeasured retrieval layer; the removal of the vector leg was accepted on
+reasoning alone for exactly the same reason. Nothing that consumes retrieved
+context can be tuned honestly until this gate passes.
 
 ## Phase 2 — Native review engine and SCM experience
 
@@ -374,16 +371,15 @@ expose control-plane credentials.
   policy-eligibility and versioned cost inputs, usage limits, and governance
   policy.
 - Ship supported Compose, Helm/Kubernetes, and air-gapped distributions.
-- Make the repository and both GHCR packages public after ADR 0042 lands, then
-  extend the multi-architecture image pipeline and digest-pinned Compose bundle
-  with Helm/Kubernetes and air-gapped profiles. The release pipeline now fails
+- Make the repository and both GHCR packages public, then extend the
+  multi-architecture image pipeline and digest-pinned Compose bundle with
+  Helm/Kubernetes and air-gapped profiles. The release pipeline now fails
   before creating a GitHub Release unless the image and bundle are anonymously
   pullable. The current final image packages one non-root executable without
   plain Python source or build-only material.
 - Extend the existing keyless image signing, provenance, and SBOM attestations
-  with offline update bundles. Per
-  [ADR 0042](adr/0042-source-available-self-hosted-distribution.md) there is no
-  entitlement or license-enforcement mechanism to build.
+  with offline update bundles. There is no entitlement or license-enforcement
+  mechanism to build.
 - Add backups, restore drills, migration rollback, opt-in telemetry controls,
   structured observability, and safe data export.
 
@@ -392,19 +388,16 @@ recoverability, upgrade paths, signed distribution, and security controls
 without a required Diffuse-hosted control plane.
 
 Phase 6 is the last phase. Diffuse is self-hosted only, and there is no managed
-cloud service on the roadmap — see
-[ADR 0042](adr/0042-source-available-self-hosted-distribution.md).
+cloud service on the roadmap.
 
 ## Open questions
 
 These are product decisions, not engineering tasks. Each blocks work that is
-already on the roadmap, and each stays here until an owner decides and an ADR
-records it.
+already on the roadmap, and each stays here until an owner decides.
 
 **Who works the learned-rule approval queue?**
-[ADR 0013](adr/0013-evidence-bound-human-approved-learned-rules.md) makes every
-suggested rule inert until an authorized human approves it, and that is a
-deliberate safety property worth keeping: a model cannot activate its own
+Every suggested rule is inert until an authorized human approves it, and that is
+a deliberate safety property worth keeping: a model cannot activate its own
 inferred policy, no finding can be silently trained away, security/correctness/
 critical protection is a hard floor, and every activation carries an actor and
 an immutable lifecycle event. The gap is not the approval requirement. It is
@@ -421,12 +414,12 @@ Three options:
 
 - Keep approval manual and add a notification surface: a pending count in the
   published PR footer, a scheduled digest, or a check-run annotation when a
-  repository has suggestions waiting. Cheapest, preserves ADR 0013 unchanged,
-  and still fails if the operator ignores it.
+  repository has suggestions waiting. Cheapest, preserves the human-approval
+  requirement unchanged, and still fails if the operator ignores it.
 - Auto-activate above a confidence floor, with security, correctness, and
   critical-protected categories still requiring explicit approval. Rules start
-  affecting reviews without a human in the loop, which contradicts ADR 0013's
-  central decision and needs it superseded, not amended.
+  affecting reviews without a human in the loop, which contradicts the
+  human-approval requirement outright rather than qualifying it.
 - Auto-activate in shadow mode: the rule applies, every finding it affected is
   labeled in the output as produced under an unconfirmed rule, and a human
   confirms or reverts retroactively from that evidence. Keeps the human, moves
@@ -435,9 +428,9 @@ Three options:
   attribution in published output and a retroactive revert that restores
   suppressed findings.
 
-The first leaves ADR 0013 intact and is a Phase 3 delivery item; the second and
-third change its central decision and need an amending or superseding ADR
-before any code. Doing nothing is also a choice, and the honest way to record
+The first leaves the human-approval requirement intact and is a Phase 3 delivery
+item; the second and third change it and need an explicit decision before any
+code. Doing nothing is also a choice, and the honest way to record
 it is to say in `docs/capabilities.md` that learned rules do not activate in
 practice, rather than leave them listed as a working foundation.
 
