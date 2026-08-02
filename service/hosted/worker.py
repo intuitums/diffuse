@@ -132,6 +132,7 @@ from service.review.provenance import (
     classify_pull_request_provenance,
     select_review_model_plan,
 )
+from service.review.runtimes import hosted_review_runtime_name
 from service.scm import (
     FeedbackSyncEvent,
     PullRequestEvent,
@@ -2397,6 +2398,10 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("REVIEW_UPDATE_DEBOUNCE_SECONDS", review_update_debounce_seconds),
     ("MAX_CONTEXT_CHUNKS", max_context_chunks),
     ("MAX_CONTEXT_CHARS", max_context_chars),
+    # Refused here rather than per job: a runtime this process cannot drive
+    # would dead-letter every pull request in the fleet, and fixing the
+    # variable afterwards recovers none of them.
+    ("REVIEW_RUNTIME", hosted_review_runtime_name),
     ("REVIEW_MODEL", review_model),
     ("REVIEW_VERIFIER_MODEL", review_verifier_model),
     ("REVIEW_EFFORT", review_effort),
