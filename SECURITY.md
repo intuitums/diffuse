@@ -91,8 +91,9 @@ The following are explicitly **in scope**:
 
 Local `diffuse review` is built to drive a developer-installed agent CLI behind
 Diffuse-owned configuration (`DIFFUSE_AGENT_HOME`, never `~/.claude` /
-`~/.codex`). Host plumbing for Claude Code exists today; no agent runtime is
-selectable yet. When it is, the intended boundaries are:
+`~/.codex`). Host plumbing for Claude and Codex exists today
+(`diffuse agent login claude|codex`); no agent runtime is selectable yet. When
+it is, the intended boundaries are:
 
 1. **Child environment allowlist** — credentials Diffuse does not name never
    reach the CLI process (`GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, `AWS_*`,

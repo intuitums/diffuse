@@ -23,6 +23,7 @@ from service.review import agent_host
 from service.review.agent_host import (
     AGENT_CLIS,
     CLAUDE_CODE,
+    CODEX,
     CREDENTIAL_ENVIRONMENT,
     AgentHostError,
     agent_config_directory,
@@ -31,6 +32,7 @@ from service.review.agent_host import (
     agent_scratch_directory,
     ensure_agent_config_directory,
     parse_version,
+    rendered_codex_config,
     require_supported_platform,
     require_version_floor,
     resolve_cli,
@@ -39,7 +41,7 @@ from service.review.agent_host import (
     version_floor_message,
     write_sandbox_settings,
 )
-from service.review.runtimes import CLAUDE_CODE_RUNTIME, RUNTIME_NAMES
+from service.review.runtimes import CLAUDE_CODE_RUNTIME, CODEX_RUNTIME, RUNTIME_NAMES
 
 
 @pytest.fixture
@@ -136,6 +138,12 @@ def test_agent_environment_points_the_cli_at_the_diffuse_directory(owned_home):
     assert environment["CLAUDE_CONFIG_DIR"] == str(owned_home / "claude")
 
 
+def test_codex_environment_points_at_codex_home(owned_home):
+    with agent_scratch_directory() as scratch:
+        environment = agent_environment(CODEX, scratch=scratch)
+    assert environment["CODEX_HOME"] == str(owned_home / "codex")
+
+
 # --- The sandbox policy ---------------------------------------------------
 
 
@@ -220,6 +228,30 @@ def test_settings_are_written_only_inside_the_diffuse_directory(owned_home, tmp_
     assert path.is_file()
     assert not list(vendor_directory.iterdir())
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_codex_policy_is_toml_with_file_auth_and_read_only_sandbox(owned_home):
+    """Codex persists config.toml, not Claude's settings.json shape."""
+
+    path = write_sandbox_settings(CODEX)
+    text = path.read_text()
+
+    assert path == owned_home / "codex" / "config.toml"
+    assert text == rendered_codex_config()
+    assert 'cli_auth_credentials_store = "file"' in text
+    assert 'sandbox_mode = "read-only"' in text
+    assert 'approval_policy = "never"' in text
+    assert "[shell_environment_policy]" in text
+    assert '"OPENAI_*"' in text
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_codex_stale_policy_is_detected(owned_home):
+    path = write_sandbox_settings(CODEX)
+    path.write_text('sandbox_mode = "danger-full-access"\n')
+    assert sandbox_settings_are_current(CODEX) is False
+    write_sandbox_settings(CODEX)
+    assert sandbox_settings_are_current(CODEX) is True
 
 
 # --- The configuration directory ------------------------------------------
@@ -360,7 +392,7 @@ def test_native_windows_is_refused(monkeypatch):
     """Refusing beats running with no OS boundary at all."""
 
     monkeypatch.setattr(agent_host.sys, "platform", "win32")
-    with pytest.raises(AgentHostError, match="does not sandbox on native Windows"):
+    with pytest.raises(AgentHostError, match="native Windows"):
         require_supported_platform()
 
 
@@ -392,9 +424,23 @@ def test_claude_code_entry_uses_the_runtime_name():
     assert resolve_cli(CLAUDE_CODE_RUNTIME) is CLAUDE_CODE
 
 
+def test_codex_entry_uses_the_runtime_name():
+    assert CODEX.runtime == CODEX_RUNTIME
+    assert resolve_cli(CODEX_RUNTIME) is CODEX
+    assert CODEX.version_floor == (0, 0, 0)
+    assert CODEX.settings_filename == "config.toml"
+
+
 def test_resolve_cli_refuses_an_unhosted_name():
     with pytest.raises(AgentHostError, match="is not an agent CLI Diffuse hosts"):
-        resolve_cli("codex")
+        resolve_cli("gemini")
+
+
+def _runtime_entry(status: dict, runtime: str) -> dict:
+    for entry in status["runtimes"]:
+        if entry["runtime"] == runtime:
+            return entry
+    raise AssertionError(f"{runtime} missing from status")
 
 
 def test_status_reports_a_missing_cli_without_failing(monkeypatch, owned_home):
@@ -403,10 +449,12 @@ def test_status_reports_a_missing_cli_without_failing(monkeypatch, owned_home):
 
     assert status["schema_version"] == "diffuse-agent-status-v1"
     assert status["agent_home"] == str(owned_home)
-    entry = status["runtimes"][0]
+    entry = _runtime_entry(status, "claude")
     assert entry["installed"] is False
     assert entry["ready"] is False
     assert "not installed" in entry["problem"]
+    codex = _runtime_entry(status, "codex")
+    assert codex["installed"] is False
 
 
 def test_status_reports_a_ready_runtime(monkeypatch, owned_home, installed_cli):
@@ -418,7 +466,7 @@ def test_status_reports_a_ready_runtime(monkeypatch, owned_home, installed_cli):
         return _completed(json.dumps({"loggedIn": True, "authMethod": "claude.ai"}))
 
     monkeypatch.setattr(agent_host.subprocess, "run", fake_run)
-    entry = agent_host.agent_status()["runtimes"][0]
+    entry = _runtime_entry(agent_host.agent_status(), "claude")
 
     assert entry["version"] == "2.1.220"
     assert entry["meets_version_floor"] is True
@@ -450,7 +498,7 @@ def test_a_policy_that_no_longer_matches_is_not_ready(monkeypatch, owned_home, i
         return _completed(json.dumps({"loggedIn": True, "authMethod": "claude.ai"}))
 
     monkeypatch.setattr(agent_host.subprocess, "run", fake_run)
-    entry = agent_host.agent_status()["runtimes"][0]
+    entry = _runtime_entry(agent_host.agent_status(), "claude")
 
     assert entry["authenticated"] is True
     assert entry["sandbox_settings_written"] is True
@@ -487,7 +535,7 @@ def test_status_reports_an_unauthenticated_runtime(monkeypatch, owned_home, inst
         return _completed(json.dumps({"loggedIn": False, "authMethod": "none"}))
 
     monkeypatch.setattr(agent_host.subprocess, "run", fake_run)
-    entry = agent_host.agent_status()["runtimes"][0]
+    entry = _runtime_entry(agent_host.agent_status(), "claude")
 
     assert entry["authenticated"] is False
     assert entry["ready"] is False
@@ -517,6 +565,46 @@ def test_auth_status_reads_the_diffuse_directory(monkeypatch, owned_home, instal
 def test_unreadable_auth_output_is_not_read_as_signed_in(monkeypatch, owned_home, installed_cli):
     monkeypatch.setattr(agent_host.subprocess, "run", lambda *a, **k: _completed("not json"))
     assert agent_host.authentication_status(CLAUDE_CODE)["logged_in"] is False
+
+
+def test_codex_auth_status_uses_exit_code(monkeypatch, owned_home, tmp_path):
+    """Codex `login status` reports via exit code, not Claude's JSON shape."""
+
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_text("")
+    monkeypatch.setattr(
+        agent_host.shutil, "which", lambda name: str(executable) if name == "codex" else None
+    )
+
+    seen: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        seen["env"] = kwargs["env"]
+        return _completed(stdout="Logged in\n", returncode=0)
+
+    monkeypatch.setattr(agent_host.subprocess, "run", fake_run)
+    status = agent_host.authentication_status(CODEX)
+
+    assert status["logged_in"] is True
+    assert seen["command"][1:] == ["login", "status"]
+    assert seen["env"]["CODEX_HOME"] == str(owned_home / "codex")
+
+
+def test_codex_auth_status_exit_nonzero_is_signed_out(monkeypatch, owned_home, tmp_path):
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_text("")
+    monkeypatch.setattr(
+        agent_host.shutil, "which", lambda name: str(executable) if name == "codex" else None
+    )
+    monkeypatch.setattr(
+        agent_host.subprocess,
+        "run",
+        lambda *a, **k: _completed(returncode=1, stderr="not logged in"),
+    )
+    assert agent_host.authentication_status(CODEX)["logged_in"] is False
 
 
 # --- Login ----------------------------------------------------------------
@@ -559,6 +647,36 @@ def test_login_writes_the_sandbox_policy(monkeypatch, owned_home, installed_cli)
     assert (owned_home / "claude" / "settings.json").is_file()
 
 
+def test_codex_login_writes_config_toml_before_running_vendor_login(
+    monkeypatch, owned_home, tmp_path
+):
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_text("")
+    monkeypatch.setattr(
+        agent_host.shutil, "which", lambda name: str(executable) if name == "codex" else None
+    )
+    seen: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        seen["env"] = kwargs["env"]
+        # Policy must already be on disk when the vendor login runs so
+        # cli_auth_credentials_store=file applies to the new credential.
+        seen["policy_exists"] = (owned_home / "codex" / "config.toml").is_file()
+        return _completed()
+
+    monkeypatch.setattr(agent_host.subprocess, "run", fake_run)
+    assert agent_host.login(CODEX) == 0
+
+    assert seen["command"][1:] == ["login"]
+    assert seen["env"]["CODEX_HOME"] == str(owned_home / "codex")
+    assert seen["policy_exists"] is True
+    assert (
+        'cli_auth_credentials_store = "file"' in (owned_home / "codex" / "config.toml").read_text()
+    )
+
+
 def test_failed_login_is_reported(monkeypatch, owned_home, installed_cli):
     monkeypatch.setattr(agent_host.subprocess, "run", lambda *a, **k: _completed(returncode=1))
     with pytest.raises(RuntimeError, match="exited 1"):
@@ -580,15 +698,16 @@ def test_cli_routes_agent_commands():
     assert login.cli == "claude"
     assert login.handler is agent_cli._login
 
+    codex_login = parser.parse_args(["agent", "login", "codex"])
+    assert codex_login.cli == "codex"
+
 
 def test_cli_refuses_an_unhosted_runtime_at_parse_time(capsys):
-    """`codex` is a name the plan promises and the host does not yet have.
-
-    Rejecting it in argparse means the developer sees the choices, rather than
-    signing in successfully to a runtime `REVIEW_RUNTIME` will not accept.
-    """
+    """A name with no host plumbing is rejected in argparse, not mid-login."""
 
     parser = review_cli._parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["agent", "login", "codex"])
-    assert "claude" in capsys.readouterr().err
+        parser.parse_args(["agent", "login", "gemini"])
+    err = capsys.readouterr().err
+    assert "claude" in err
+    assert "codex" in err

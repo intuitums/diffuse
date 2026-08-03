@@ -307,8 +307,8 @@ how many calls a review is. **Current state:** only `litellm` is selectable —
 the one-shot API implementation above. The API and worker accept only that
 value. **Destination:** `claude` and `codex` for `diffuse review` only,
 driving a locally installed, locally authenticated agent CLI. Host plumbing for
-Claude has landed (`diffuse agent login claude` runs Claude's own auth menu into
-a Diffuse-owned config dir); no agent adapter is
+Claude and Codex has landed (`diffuse agent login claude|codex` drives each
+vendor's own auth into a Diffuse-owned config dir); no agent adapter is
 selectable yet. A server has no developer CLI to drive, and the self-hosted
 worker reviews pull requests from anyone who can open one, which is a different
 threat model. `ReviewReport` is unchanged across runtimes, so the same
