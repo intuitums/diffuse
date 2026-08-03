@@ -36,11 +36,21 @@ Planned values: `claude-code`, `codex`. Neither is in `RUNTIME_NAMES` yet, so
 - Child environment allowlist, sandbox policy, version floor (2.1.219+)
 - Native Windows refused (no OS sandbox)
 
-What has **not** landed: an adapter that spawns the CLI for a review, writes
-`review_tool_calls`, or lets `diffuse review` run without `REVIEW_MODEL`.
+What has **not** landed: an adapter that spawns the CLI for a review, or lets
+`diffuse review` run without `REVIEW_MODEL`.
 
-Near-term delivery order, owner gates, and measured sandbox findings live in the
-working plan at `.context/agent-cli-runtime-plan.md` (gitignored). Summary:
+**Preflight for Phase 3 (agent adapter):**
+
+| Item | Status |
+| --- | --- |
+| `ReviewRequest` seam | Done — runtimes take a request object |
+| Internal `search_code` tool provider + recorders | Done — agent path can log calls |
+| D1 baseline capture | **Owner** — needs a real `REVIEW_MODEL` credential (~$0.75) |
+| R1 licensing | **Owner** — redistributing a tool that drives subscriber CLIs |
+| U3 `diffuse agent login` UX | **Owner machine** — interactive browser `/login`; Claude Code must be installed |
+
+Near-term delivery order lives in the working plan at
+`.context/agent-cli-runtime-plan.md` (gitignored). Summary:
 
 1. ~~`ReviewRuntime` seam~~ done
 2. ~~Claude Code host plumbing~~ done

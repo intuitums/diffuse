@@ -41,6 +41,7 @@ from service.models.review import (
     Severity,
     VerificationBatch,
 )
+from service.review.request import ReviewRequest
 from service.review.runtimes import (
     LITELLM_RUNTIME,
     ReviewRuntime,
@@ -1343,30 +1344,23 @@ class LiteLLMRuntime:
     """The one-shot runtime: `REVIEW_PASSES` x diff chunks, then a verifier.
 
     Everything above this class is its body. It is the only runtime today, and
-    the one the hosted worker uses.
+    the one the hosted worker uses. It reads preloaded `contexts` from the
+    request and does not call `request.tools` — those exist for agent-CLI
+    runtimes.
     """
 
     @property
     def name(self) -> str:
         return LITELLM_RUNTIME
 
-    def generate(
-        self,
-        diff_text: str,
-        contexts: list[RetrievedContext],
-        *,
-        progress_callback: Callable[[], None] | None = None,
-        policy: ResolvedReviewPolicy | None = None,
-        candidate_model: str | None = None,
-        verifier_model: str | None = None,
-    ) -> ReviewReport:
+    def generate(self, request: ReviewRequest) -> ReviewReport:
         return _generate_review_litellm(
-            diff_text,
-            contexts,
-            progress_callback=progress_callback,
-            policy=policy,
-            candidate_model=candidate_model,
-            verifier_model=verifier_model,
+            request.diff_text,
+            list(request.contexts),
+            progress_callback=request.progress_callback,
+            policy=request.policy,
+            candidate_model=request.candidate_model,
+            verifier_model=request.verifier_model,
         )
 
 
@@ -1379,6 +1373,7 @@ def generate_review(
     candidate_model: str | None = None,
     verifier_model: str | None = None,
     runtime: ReviewRuntime | None = None,
+    request: ReviewRequest | None = None,
 ) -> ReviewReport:
     """Review `diff_text` with the configured runtime.
 
@@ -1386,14 +1381,20 @@ def generate_review(
     through here, so `REVIEW_RUNTIME` is the single switch and none of them
     needs to know which runtime ran. `runtime` is for tests and for a caller
     that has already resolved one; it is not read from configuration twice.
+
+    Prefer building a `ReviewRequest` when the caller has worktree / tools /
+    context-plan fields. The flat arguments remain for existing callers and are
+    assembled into a request when `request` is omitted.
     """
 
     selected = runtime if runtime is not None else resolve_review_runtime()
-    return selected.generate(
-        diff_text,
-        contexts,
-        progress_callback=progress_callback,
-        policy=policy,
-        candidate_model=candidate_model,
-        verifier_model=verifier_model,
-    )
+    if request is None:
+        request = ReviewRequest(
+            diff_text=diff_text,
+            contexts=contexts,
+            progress_callback=progress_callback,
+            policy=policy,
+            candidate_model=candidate_model,
+            verifier_model=verifier_model,
+        )
+    return selected.generate(request)
