@@ -1,9 +1,15 @@
 """Selectable review runtimes.
 
-A review runtime turns a diff plus retrieved context into a `ReviewReport`.
-`litellm` is the only one implemented today: it orchestrates the candidate
-passes, deduplication, diagram, and verifier itself, and every model call is a
-one-shot structured completion.
+A review runtime turns a `ReviewRequest` into a `ReviewReport`. Diffuse owns
+the contract; the runtime supplies the investigation. See
+`docs/agent-runtimes.md`.
+
+`litellm` is the only selectable implementation today: the one-shot API path
+that orchestrates candidate passes, deduplication, diagram, and verifier via
+structured completions (implemented with the LiteLLM library). Planned
+local-only values `claude` and `codex` are named here so host plumbing and
+tests can refer to them, but they are not in `RUNTIME_NAMES` until an adapter
+exists.
 
 The seam is deliberately the whole report rather than a single model call.
 `_call_structured` is the wrong altitude for it -- an agentic runtime that
@@ -24,14 +30,13 @@ import os
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from repository_policy.resolve import ResolvedReviewPolicy
-    from retriever.retrieve import RetrievedContext
     from service.models.review import ReviewReport
+    from service.review.request import ReviewRequest
 
 LITELLM_RUNTIME = "litellm"
-CLAUDE_CODE_RUNTIME = "claude-code"
+#: Local agent-CLI runtime name. Matches `diffuse agent login claude` — the
+#: short product name, not the `claude-code` binary nickname.
+CLAUDE_CODE_RUNTIME = "claude"
 CODEX_RUNTIME = "codex"
 
 #: Every name `REVIEW_RUNTIME` accepts. A name is listed here once the adapter
@@ -50,30 +55,21 @@ RUNTIME_VARIABLE = "REVIEW_RUNTIME"
 
 
 class ReviewRuntime(Protocol):
-    """Produces a complete `ReviewReport` from a diff and its context."""
+    """Produces a complete `ReviewReport` from a `ReviewRequest`."""
 
     @property
     def name(self) -> str:
         """The `REVIEW_RUNTIME` value that selects this runtime."""
 
-    def generate(
-        self,
-        diff_text: str,
-        contexts: list[RetrievedContext],
-        *,
-        progress_callback: Callable[[], None] | None = None,
-        policy: ResolvedReviewPolicy | None = None,
-        candidate_model: str | None = None,
-        verifier_model: str | None = None,
-    ) -> ReviewReport:
-        """Review `diff_text`.
+    def generate(self, request: ReviewRequest) -> ReviewReport:
+        """Review `request.diff_text` (and whatever else the runtime needs).
 
-        `candidate_model` and `verifier_model` stay in the interface rather
-        than being folded into the runtime because provenance routing chooses
-        them per review (`service/review/provenance.py`): an agent-authored
-        diff is deliberately reviewed by an opposing model family, and a
-        runtime that could not express a candidate/verifier pair would lose
-        that. A runtime is free to map the pair onto whatever it drives.
+        `candidate_model` and `verifier_model` stay on the request rather than
+        being folded into the runtime because provenance routing chooses them
+        per review (`service/review/provenance.py`): an agent-authored diff is
+        deliberately reviewed by an opposing model family, and a runtime that
+        could not express a candidate/verifier pair would lose that. A runtime
+        is free to map the pair onto whatever it drives.
         """
 
 

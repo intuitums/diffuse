@@ -7,9 +7,12 @@ boundaries are explicit from the beginning so large installations can scale
 webhooks, indexing, review, sandbox, and API workloads independently without
 forcing small installations to operate a distributed system.
 
-The review engine is native to Diffuse so review state, evidence, future
-conversation and learning, policy, and observability can share one coherent
-data model. Review generation and SCM publication are separate durable stages.
+The review **contract** is native to Diffuse — `ReviewReport`, policy, lineage,
+evidence, conversation and learning, and observability share one coherent data
+model. How a report is *produced* is a pluggable review runtime: today a
+one-shot model-API path; for local `diffuse review`, optionally a developer
+agent CLI once adapters land. Review generation and SCM publication are
+separate durable stages. See [agent-runtimes.md](agent-runtimes.md).
 
 PostgreSQL schema changes are also durable workflow boundaries. Version 1 is a
 frozen packaged baseline; subsequent migrations are consecutive append-only
@@ -34,19 +37,20 @@ GitHub / CLI / MCP / Web app
                      |
         +------------+-------------+----------------+
         |            |             |                |
-  repository      indexer      review engine   runtime validator
-   manager     + summarizer        |             + sandbox
-        |            |             |
+  repository      indexer      review runtime  source-execution
+   manager     + summarizer   (API or agent     validator + sandbox
+        |            |             CLI)                |
         +------ code intelligence -+
                      |
            PostgreSQL / cache / object store
                      |
-                   model gateway
+                   model gateway / agent host
 ```
 
-> **Target, not current state.** The web app, the runtime validator and its
-> sandbox, and the cache and object store are not implemented. Everything else
-> in the diagram exists in some form; the sections below say how much.
+> **Target, not current state.** The web app, the source-execution validator and
+> its sandbox, agent-CLI review adapters, and the cache and object store are not
+> implemented. The one-shot API review runtime and Claude Code host plumbing
+> exist; the sections below say how much.
 
 ## Deployment and ownership boundary
 
@@ -270,22 +274,25 @@ usage, model, snapshot, and publication attempts are durable. A hidden
 per-question marker recovers the provider reply-create crash window before the
 same GitHub thread is called again.
 
-### Native review engine
+### Review contract and runtimes
 
-The review workflow is stateful and multi-turn. Steps 2 and 4 describe the
-target; the parenthetical notes record what ships today.
+The review workflow is stateful. Steps 2 and 4 describe the target for the
+one-shot API runtime; the parenthetical notes record what ships today. Agent-CLI
+runtimes replace steps 3–5 with tool-driven investigation rather than a
+pre-fused blob and pass fan-out — see [agent-runtimes.md](agent-runtimes.md).
 
 1. Normalize PR metadata and diff into changed symbols and line ranges.
 2. Resolve applicable organization/team/repository/directory policy.
    (Organization and team layers are planned; only the version-controlled
    `.diffuse/` repository and directory layers exist today.)
 3. Build an impact set through graph traversal and hybrid retrieval.
-4. Run specialized passes for logic, security, performance, architecture,
-   tests/contracts, and configured rules. (The shipped pass set is exactly
-   `correctness`, `security`, `performance`, and `tests`; any other name is
-   rejected at startup. Dedicated architecture and contract passes are
-   planned.)
-5. Verify candidate findings against source context and deduplicate them.
+   (One-shot API runtime: pre-fused context blob. Agent-CLI destination: the
+   same retriever exposed as tools.)
+4. Produce candidate findings. (Shipped API runtime: specialized passes —
+   exactly `correctness`, `security`, `performance`, and `tests`. Agent-CLI
+   destination: one investigation across concerns.)
+5. Verify and deduplicate. (API runtime: independent verifier pass. Agent-CLI
+   destination: separate session/subagent or cross-CLI provenance pair.)
 6. Assign category, severity, confidence, evidence, and suggested fix.
 7. Build the summary, risk score, issue table, optional diagrams, and status.
 8. Publish/update SCM comments idempotently.
@@ -296,24 +303,28 @@ directly as an SCM action.
 
 Steps 4 through 7 are a *review runtime*, selected by `REVIEW_RUNTIME`. The seam
 is a whole `ReviewReport`, not a single model call: a runtime decides for itself
-how many calls a review is. `litellm` — the default, and the only value the API
-and worker accept — is the one-shot implementation above. The agent CLI runtimes
-drive a locally installed, locally authenticated Claude Code or Codex instead and
-are a `diffuse review` capability only; a server has no developer CLI to drive,
-and the hosted path reviews pull requests from anyone who can open one, which is
-a different threat model. `ReviewReport` is unchanged across runtimes, so the
-same evaluation harness scores them on the same fixtures.
+how many calls a review is. **Current state:** only `litellm` is selectable —
+the one-shot API implementation above. The API and worker accept only that
+value. **Destination:** `claude` and `codex` for `diffuse review` only,
+driving a locally installed, locally authenticated agent CLI. Host plumbing for
+Claude has landed (`diffuse agent login claude` runs Claude's own auth menu into
+a Diffuse-owned config dir); no agent adapter is
+selectable yet. A server has no developer CLI to drive, and the self-hosted
+worker reviews pull requests from anyone who can open one, which is a different
+threat model. `ReviewReport` is unchanged across runtimes, so the same
+evaluation harness can score them on the same fixtures.
 
-An agent CLI runs behind three independent boundaries, because none of them
-covers the others: its environment is built from an allowlist, so a credential
-Diffuse never names cannot reach it; the CLI's own OS sandbox denies Bash egress
-and reads outside the worktree; and Diffuse refuses to run below a version floor,
-because those sandbox settings are version-gated and an older build drops the
-ones it does not recognize without saying so. The sandbox's documented scope is
-Bash subprocesses — MCP servers run outside it with full host privileges — so
-`--strict-mcp-config` is a load-bearing control rather than defense in depth, and
-Diffuse's own MCP server serves queries over an index and never executes
-repository-supplied content.
+When an agent CLI runs a review, it sits behind three independent boundaries,
+because none of them covers the others: its environment is built from an
+allowlist, so a credential Diffuse never names cannot reach it; the CLI's own
+OS sandbox denies Bash egress and reads outside the worktree; and Diffuse
+refuses to run below a version floor, because those sandbox settings are
+version-gated and an older build drops the ones it does not recognize without
+saying so. The sandbox's documented scope is Bash subprocesses — MCP servers
+run outside it with full host privileges — so `--strict-mcp-config` is a
+load-bearing control rather than defense in depth, and Diffuse's own MCP server
+serves queries over an index and never executes repository-supplied content.
+Native Windows is refused for agent-CLI runtimes (no OS sandbox).
 
 Before any review-model call, the worker fetches a bounded list of commit
 metadata from the SCM and classifies authors, committers, verified bot
@@ -494,14 +505,16 @@ approval.
   cannot be suppressed by preference learning. The current foundation does not
   perform automatic noise suppression.
 
-### Runtime validator
+### Source-execution validator
 
-> **Target, not current state.** No sandbox exists in any form. Diffuse never
-> executes pull-request code today: the review path reads source, queries the
-> index, and calls model and SCM APIs. `docs/capabilities.md` records runtime
-> validation as `planned`.
+> **Target, not current state.** No PR-code execution sandbox exists. Diffuse
+> never executes pull-request code today: the review path reads source, queries
+> the index, and calls model and SCM APIs (or, for local agent-CLI review, drives
+> a sandboxed developer CLI that still must not execute untrusted repo content
+> as Diffuse policy). This is distinct from `REVIEW_RUNTIME` agent-CLI review.
+> `docs/capabilities.md` records source-execution validation as `planned`.
 
-The runtime validator will:
+The source-execution validator will:
 
 - create an isolated, short-lived sandbox from the reviewed commit;
 - use repository-provided setup metadata and a constrained agent to generate
@@ -518,14 +531,16 @@ the API or review container is prohibited.
 ### Developer surfaces
 
 - The unified CLI manages repository onboarding/lifecycle, cross-repository
-  clusters, learned-rule moderation, and local review. Local review uses the
-  working-tree merge base, self-hosted active snapshot, cross-repository
-  context, cascading policy, approved learned rules, and native verifier. It
-  emits human, inline-diff, versioned JSON, or terminal-safe agent text. A
-  Git-common-dir state record permits failed/interrupted requests to restart
+  clusters, learned-rule moderation, agent-CLI host sign-in, and local review.
+  Local review uses the working-tree merge base, self-hosted active snapshot,
+  cross-repository context, cascading policy, and approved learned rules. Today
+  it still runs the API one-shot runtime; agent-CLI adapters are not selectable
+  yet. It emits human, inline-diff, versioned JSON, or terminal-safe agent text.
+  A Git-common-dir state record permits failed/interrupted requests to restart
   only when every immutable input identity still matches.
-- Complete the CLI with remote API authentication, hosted execution,
-  partial-stage continuation, and shell completion.
+- Complete the CLI with remote API authentication, optional remote job
+  submission to the operator's self-hosted worker, partial-stage continuation,
+  and shell completion.
 - The MCP foundation is mounted at `/mcp` using stateless JSON Streamable HTTP,
   constant-time validation of an installation-wide recovery credential or a
   non-recoverable durable service token, explicit host allowlisting, and the

@@ -33,6 +33,7 @@ from repository_policy.resolve import (
     resolve_review_policy,
 )
 from retriever.retrieve import parse_changed_files, retrieve_context_from_plan
+from retriever.context_models import CrossRepositoryContextPlan
 from service.cli import (
     agent as agent_cli,
 )
@@ -57,6 +58,7 @@ from service.cli import (
 from service.cli import (
     token as token_cli,
 )
+from service.code_query import code_query_target_for_plan
 from service.cross_repository import resolve_cross_repository_context_plan
 from service.diff_parser import ParsedDiff, parse_unified_diff
 from service.model_providers import resolve_provider
@@ -69,6 +71,9 @@ from service.review.engine import (
     review_model,
     review_verifier_model,
 )
+from service.review.request import ReviewRequest
+from service.review.runtimes import LITELLM_RUNTIME, review_runtime_name
+from service.review.tools import MemoryToolRecorder, build_review_tool_provider
 from service.scm import validate_branch_name
 from service.storage.custom_context import load_active_custom_contexts
 from service.storage.learning import load_active_learned_rules
@@ -208,11 +213,16 @@ class CliReviewState(BaseModel):
     include_untracked: bool
     index_snapshot_id: int = Field(gt=0)
     policy_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    #: Which REVIEW_RUNTIME produced (or will produce) this run. Defaults for
+    #: state files written before the field existed; resume still compares it
+    #: once both sides have a value.
+    review_runtime: str = Field(default=LITELLM_RUNTIME, min_length=1, max_length=64)
     review_model: str = Field(min_length=1, max_length=512)
     # Both stages are part of the run's identity. Recording only the candidate
     # let `--resume` retry with a verifier the operator changed between
     # attempts, so the stored state no longer described which models produced
-    # the result.
+    # the result. Agent-CLI runtimes will authenticate via `diffuse agent login`
+    # instead; these fields stay as the run identity for the API one-shot path.
     review_verifier_model: str = Field(min_length=1, max_length=512)
     prompt_version: str = Field(min_length=1, max_length=255)
     attempt_count: int = Field(ge=1)
@@ -639,6 +649,19 @@ def run_local_review(
         discover_repository_policy(root),
         changed_paths,
     )
+    # Runtime first: an agent-CLI adapter must not inherit API-model credential
+    # requirements or pre-fused retrieval just because local review historically
+    # shared that path with the worker. Only `litellm` is selectable today.
+    selected_runtime = review_runtime_name()
+    if previous_state is not None and previous_state.review_runtime != selected_runtime:
+        raise ValueError(
+            "REVIEW_RUNTIME changed after the unfinished run; start a new review"
+        )
+    if selected_runtime != LITELLM_RUNTIME:
+        raise ValueError(
+            f"REVIEW_RUNTIME={selected_runtime} is not implemented for local "
+            "review yet; use litellm, or wait for the agent-CLI adapter"
+        )
     selected_review_model = review_model()
     selected_verifier_model = review_verifier_model()
     report_review_depth()
@@ -667,6 +690,7 @@ def run_local_review(
     if previous_state is not None and (
         previous_state.index_snapshot_id != snapshot_id
         or previous_state.policy_fingerprint != policy.fingerprint
+        or previous_state.review_runtime != selected_runtime
         or previous_state.review_model != selected_review_model
         or previous_state.review_verifier_model != selected_verifier_model
         or previous_state.prompt_version != PROMPT_VERSION
@@ -683,6 +707,7 @@ def run_local_review(
         include_untracked=include_untracked,
         index_snapshot_id=snapshot_id,
         policy_fingerprint=policy.fingerprint,
+        review_runtime=selected_runtime,
         review_model=selected_review_model,
         review_verifier_model=selected_verifier_model,
         prompt_version=PROMPT_VERSION,
@@ -696,17 +721,40 @@ def run_local_review(
     try:
         stage("retrieving repository context")
         context = retrieve_context_from_plan(local_diff.diff_text, context_plan)
+        tools = None
+        if (
+            repository.scm_provider == "github"
+            and isinstance(context_plan, CrossRepositoryContextPlan)
+        ):
+            # Built for the agent-CLI path; the one-shot runtime ignores it and
+            # keeps using the pre-fused blob above. Constructing it here means a
+            # selectable agent runtime finds tools already on the request.
+            tools = build_review_tool_provider(
+                code_query_target_for_plan(
+                    repository_id=repository.id,
+                    repository_name=repository.full_name,
+                    remote_url=repository.scm_base_url,
+                    default_branch=repository.default_branch,
+                    context_plan=context_plan,
+                    include_related=bool(context_plan.related_snapshots),
+                ),
+                recorder=MemoryToolRecorder(),
+            )
         stage("running review model")
         report = generate_review(
             local_diff.diff_text,
             list(context.contexts),
-            progress_callback=model_progress,
-            policy=policy,
-            # Pass the models recorded in the run state rather than letting
-            # generation re-read the environment, so a resumed attempt uses the
-            # pair the drift check just validated.
-            candidate_model=selected_review_model,
-            verifier_model=selected_verifier_model,
+            request=ReviewRequest(
+                diff_text=local_diff.diff_text,
+                contexts=list(context.contexts),
+                progress_callback=model_progress,
+                policy=policy,
+                candidate_model=selected_review_model,
+                verifier_model=selected_verifier_model,
+                worktree=root,
+                context_plan=context_plan,
+                tools=tools,
+            ),
         )
     except Exception:
         _write_state(
@@ -950,9 +998,10 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
         help="Review the current local branch against its base",
         description=(
             "Review committed, staged, and unstaged changes in this checkout against the\n"
-            "merge base with its base branch, using the same index, policy, learned rules,\n"
-            "retrieval, and verifier as the hosted service. The checkout must correspond to\n"
-            "an enabled, indexed Diffuse repository."
+            "merge base with its base branch, using the same index, policy, and learned\n"
+            "rules as the self-hosted server. Today this runs the API one-shot review\n"
+            "runtime (REVIEW_RUNTIME=litellm); agent-CLI runtimes are not selectable yet.\n"
+            "The checkout must correspond to an enabled, indexed Diffuse repository."
         ),
         epilog=REVIEW_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1075,7 +1124,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
 
     agent = subparsers.add_parser(
         "agent",
-        help="Sign in to and inspect the agent CLIs Diffuse can review with",
+        help="Sign in to and inspect agent CLIs Diffuse can host for local review",
     )
     agent_cli.configure_parser(agent)
 

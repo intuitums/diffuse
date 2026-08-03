@@ -135,7 +135,7 @@ unmeasured retrieval layer; the removal of the vector leg was accepted on
 reasoning alone for exactly the same reason. Nothing that consumes retrieved
 context can be tuned honestly until this gate passes.
 
-## Phase 2 — Native review engine and SCM experience
+## Phase 2 — Review engine and SCM experience
 
 - Native structured generation, verifier filtering, durable review history,
   summaries, deterministic 0–5 confidence plus 0–10 risk, severity/category,
@@ -254,8 +254,10 @@ the missing gate, and it does not exist in any phase.
   same/cross-repository context and approved learned rules, supports inline
   diff, JSON, agent text, opt-in untracked files, script exit gates, and
   unchanged-input resume after interruption/failure. Add remote API
-  authentication, hosted execution, partial-stage continuation, and shell
-  completion.
+  authentication, optional job submission to the operator's self-hosted worker,
+  partial-stage continuation, and shell completion. Local agent-CLI review
+  runtimes are tracked in [agent-runtimes.md](agent-runtimes.md) and
+  [engineering-plan.md](engineering-plan.md), not as a deletion of the server.
 - The MCP foundation now serves repository-scoped inspection and write tools for
   repositories, PR lifecycle state, review reports, current finding lineages,
   finding/context search, and feedback-derived context over stateless JSON
@@ -317,12 +319,17 @@ without a single test turning red. Learned-rule moderation is available here
 via `diffuse learning`, but see the open question below: available is not the
 same as used.
 
-## Phase 5 — Runtime validation
+## Phase 5 — Source-execution validation
 
 **Pending an explicit keep, defer, or delete decision. No work in this phase
 starts until that decision is recorded.** The content below is unchanged and
 stays in place; this is a flag, not a deletion, and the decision has not been
 made.
+
+This phase is **not** `REVIEW_RUNTIME` / agent-CLI review (renting Claude Code
+or Codex for local `diffuse review`). It is generating tests and **executing
+untrusted pull-request code** in a disposable sandbox. See
+[agent-runtimes.md](agent-runtimes.md) for the former.
 
 The argument for deleting it. This phase generates code with a model and
 executes it, and the code under test arrives from an untrusted pull request
@@ -334,7 +341,7 @@ systems software. It is also the most expensive item on this roadmap, in
 engineering to build and in per-review compute to run. And it is proposed by a
 project whose review-quality gate is not live: there is no measurement showing
 that static review is good enough to be worth extending, no measurement of what
-runtime evidence would add on top of it, and no basis for preferring it to a
+execution evidence would add on top of it, and no basis for preferring it to a
 cheaper change to the review engine. Building the most dangerous and most
 expensive feature before the cheapest measurement is the same ordering mistake
 the top of this document describes.
@@ -358,8 +365,8 @@ misses.
 - Add runtime-validation policy, filters, review integration, and security
   evaluations.
 
-Exit: runtime findings are isolated, reproducible, source-linked, and cannot
-expose control-plane credentials.
+Exit: source-execution findings are isolated, reproducible, source-linked, and
+cannot expose control-plane credentials.
 
 ## Phase 6 — Web control plane and enterprise operation
 
@@ -434,7 +441,9 @@ code. Doing nothing is also a choice, and the honest way to record
 it is to say in `docs/capabilities.md` that learned rules do not activate in
 practice, rather than leave them listed as a working foundation.
 
-**Keep, defer, or delete Phase 5?** Stated in full under Phase 5 above.
+**Keep, defer, or delete Phase 5 (source-execution validation)?** Stated in
+full under Phase 5 above. Separate from shipping agent-CLI `REVIEW_RUNTIME`
+adapters.
 
 ## Continuous workstreams
 

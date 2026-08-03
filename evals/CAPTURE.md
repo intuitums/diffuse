@@ -18,11 +18,12 @@ This document is the exact procedure to run once a credential exists.
 | `REVIEW_DEPTH` *(optional)* | Costs real money. `diffuse model` shows what the depth actually becomes on your model before you spend anything. |
 
 The baseline records all of these, plus `PROMPT_VERSION`,
-`MIN_REVIEW_CONFIDENCE`, `REVIEW_PASSES`, and — per stage — the reasoning
-parameter each model was **actually sent**. `check` refuses a comparison across
-any of them, exactly as it refuses one across models. You do not have to
-remember to write them down; you do have to make sure the shell you capture in
-holds the values you meant.
+`MIN_REVIEW_CONFIDENCE`, `REVIEW_PASSES`, `REVIEW_RUNTIME`, and — per stage —
+the reasoning parameter each model was **actually sent**. `check` refuses a
+comparison across any of them, exactly as it refuses one across models. You do
+not have to remember to write them down; you do have to make sure the shell you
+capture in holds the values you meant. A baseline is only valid for the runtime
+it was captured against (see `docs/agent-runtimes.md`).
 
 `run` resolves the requested depth against both configured models before the
 first call and refuses one the candidate cannot express, so a capture cannot
