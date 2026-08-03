@@ -136,6 +136,56 @@ def resolve_code_query_target(
     )
 
 
+def code_query_target_for_plan(
+    *,
+    repository_id: int,
+    repository_name: str,
+    remote_url: str,
+    default_branch: str,
+    context_plan: CrossRepositoryContextPlan,
+    include_related: bool = False,
+    remote: Literal["github"] = "github",
+) -> CodeQueryTarget:
+    """Build a query target from an already-resolved review context plan.
+
+    Local review and the worker already hold the plan; agent-CLI tools need the
+    same shape `search_codebase` expects without going through MCP repository
+    resolution again.
+    """
+
+    if repository_id <= 0:
+        raise ValueError("repository_id must be positive")
+    if not repository_name.strip():
+        raise ValueError("repository_name is required")
+    if not remote_url.strip():
+        raise ValueError("remote_url is required")
+    if not default_branch.strip():
+        raise ValueError("default_branch is required")
+    if context_plan.primary_repository_id != repository_id:
+        raise ValueError("context_plan primary repository does not match repository_id")
+    related = context_plan.related_snapshots if include_related else ()
+    plan = (
+        context_plan
+        if include_related or not context_plan.related_snapshots
+        else CrossRepositoryContextPlan(
+            primary_repository_id=context_plan.primary_repository_id,
+            primary_repository_full_name=context_plan.primary_repository_full_name,
+            primary_snapshot_id=context_plan.primary_snapshot_id,
+            primary_commit_sha=context_plan.primary_commit_sha,
+            related_snapshots=related,
+        )
+    )
+    return CodeQueryTarget(
+        repository_id=repository_id,
+        repository_name=repository_name,
+        remote=remote,
+        remote_url=remote_url,
+        default_branch=default_branch,
+        include_related=include_related,
+        context_plan=plan,
+    )
+
+
 def _snapshot_identities(
     target: CodeQueryTarget,
 ) -> dict[str, tuple[int, str]]:

@@ -7,6 +7,11 @@ right now, in dependency order, and the decisions that block them.
 Status is recorded per item so a reader picking this up cold knows what is left.
 Delete an item once it has landed and stayed landed for a release.
 
+**Product shape:** Diffuse keeps the review contract and publication on a
+self-hosted server; local `diffuse review` may rent a developer agent CLI.
+See [agent-runtimes.md](agent-runtimes.md). The server path is not scheduled
+for deletion.
+
 ## Decisions that block work
 
 Each of these is an owner decision, not an engineering task. Nothing below them
@@ -14,12 +19,13 @@ can proceed until they are recorded.
 
 | # | Decision | Blocks | Status |
 | --- | --- | --- | --- |
-| D1 | Fund one baseline capture run, and choose the model and depth it is captured at | The review-quality gate, and therefore honest measurement of everything else | **Open** |
-| D2 | Phase 5 (runtime validation): keep, defer, or delete | The roadmap's largest scope item | **Open** |
+| D1 | Fund one baseline capture run, and choose the model and depth it is captured at | The review-quality gate, honest measurement of everything else, and merging an agent-CLI review runtime | **Open** |
+| D2 | Roadmap source-execution validation (execute PR code in a sandbox): keep, defer, or delete | That roadmap phase — distinct from `REVIEW_RUNTIME` / agent CLIs | **Open** |
 | D3 | Learned rules: who works the approval queue, or is there an auto-activation path | The "grows with you" thesis | **Open** — see [roadmap.md](roadmap.md) open questions |
 | D4 | How much reproducibility to trade for agentic retrieval | Giving the reviewer its own tools | **Open** |
 | D5 | Re-cut the frozen version-1 migration baseline, so the Postgres image can drop pgvector | Nothing urgent; decide before the next release | **Open** |
 | D6 | The retrieval-eval corpus: expand the synthetic fixtures into real trees, or label real merged pull requests | The retrieval gate | **Open** |
+| R1 | Licensing: driving a developer's subscription CLI from a tool shipped to other operators | Shipping `claude` / `codex` as selectable `REVIEW_RUNTIME` values | **Open** |
 
 D1 is the cheapest and unblocks the most. Everything needed for it is committed
 and working; see [`../evals/CAPTURE.md`](../evals/CAPTURE.md).
@@ -29,10 +35,10 @@ and working; see [`../evals/CAPTURE.md`](../evals/CAPTURE.md).
 Nothing after this is verifiable without it.
 
 - **Capture and commit the review baseline; wire `scripts/eval.sh` into CI.**
-  *Blocked on D1.* Measures the review engine only — not retrieval, not policy.
-  Prove it can fail against a seeded regression before trusting it
-  (`../evals/CAPTURE.md` §6); a gate that has never failed is not yet known to
-  be a gate.
+  *Blocked on D1.* Measures the one-shot API review runtime — not retrieval, not
+  policy, not an agent CLI. Prove it can fail against a seeded regression before
+  trusting it (`../evals/CAPTURE.md` §6); a gate that has never failed is not
+  yet known to be a gate.
 - **Make token cost observable.** *Done.* Cache-read and cache-write counts
   accumulate through the review engine. Note that LiteLLM's `prompt_tokens`
   already includes the cached portions, unlike Anthropic's native
@@ -50,25 +56,41 @@ Nothing after this is verifiable without it.
   pull request cannot grant itself eligibility. The built-in critical-surface
   patterns are a floor an operator allowlist cannot override.
 
-## Wave 2 — give the reviewer its own tools
+## Wave 2 — review runtimes and tools
 
-`search_code` and `ask_codebase` are exposed over MCP to external agents but
-unused by Diffuse's own review engine, which receives a pre-fused blob capped at
-18 chunks and 24,000 characters and gets one shot at it.
+Diffuse owns the contract (`ReviewReport`, policy, publication). Runtimes are
+pluggable; see [agent-runtimes.md](agent-runtimes.md).
 
-- **Tool-call log.** *Done.* `review_tool_calls` (migration 0011) records every
-  call so an agentic investigation stays replayable. Built before the tools
-  deliberately — retrofitting it is far harder. Attempts are discriminated by
-  `attempt_started_at`, because `begin_review_run` resets a run in place on
-  retry through two separate branches.
-- **Extend the harness to exercise retrieval.** *Blocked on D6.* The current
-  fixtures are single flattened files with no repository tree, so there is
-  nothing to retrieve *from*. The labeling schema already exists: each fixture's
-  `contexts` block names the file, symbol, and retrieval reason, and a retrieval
-  eval would use it as expected output rather than as input.
-- **Reviewer consumes the tools.** *Blocked on the above and D4.* Measure recall
-  *and* false-positive rate. Precision is the defensible position; do not trade
-  it for recall without seeing both numbers.
+- **`ReviewRuntime` seam at `generate_review`.** *Done.* `LiteLLMRuntime` is
+  the only selectable implementation (`REVIEW_RUNTIME=litellm`).
+- **Agent CLI host plumbing.** *Done for Claude Code.* Config dir, sandbox
+  policy, version floor, `diffuse agent login|status|write-policy`. Codex host
+  deferred until its adapter.
+- **Claude Code adapter.** *Not started.* Blocked on D1 and R1. Exit: fixture
+  review completes, `review_tool_calls` has rows, `claude` enters
+  `RUNTIME_NAMES` (not `HOSTED_RUNTIME_NAMES`).
+- **`ReviewRequest` + internal tool provider.** *Done (preflight).* Runtimes
+  take a `ReviewRequest` (diff, policy, optional worktree / context plan /
+  tools). `ReviewToolProvider.search_code` wraps the same `search_codebase`
+  MCP uses and records every call (memory or Postgres). Local `diffuse review`
+  builds tools onto the request; the one-shot runtime still ignores them.
+- **Tool-call log.** *Done (schema).* `review_tool_calls` (migration 0011)
+  records every call so an agentic investigation stays replayable. The
+  Postgres recorder is ready; the adapter is what must write rows on a real
+  review run.
+- **Retrievers as tools.** `search_code` and `ask_codebase` are exposed over MCP
+  to external agents but unused by Diffuse's own one-shot runtime, which receives
+  a pre-fused blob capped at 18 chunks and 24,000 characters. The agent-CLI
+  runtime should consume them as tools. *Blocked on the adapter, D4, and (for
+  measurement) D6.*
+- **Extend the harness to exercise retrieval.** *Blocked on D6.*
+- **Retire one-shot pass scaffolding** (`REVIEW_PASSES` fan-out, diff chunking,
+  pre-fused blob, verifier pass) from being the default story — and from the
+  agent path — only after measured parity on fixtures. Not before.
+- **Codex adapter.** Restores cross-family verification across CLIs. Empirics
+  still open (plan U4).
+- **Record runtime (+ CLI version) on eval runs and review runs.** Partial:
+  harness still assumes one-shot token splits via `_call_structured`.
 
 ## Wave 3 — split the state by lifetime
 
@@ -86,34 +108,34 @@ is what motivates the split.
   durable, and not editable by the pull-request author. Postgres stays, reached
   by `diffuse learn` on a schedule and by whoever works the approval queue —
   not by every review.
-- **GitHub-owned** — pull requests, lifecycle events, publications, threads,
-  check runs, webhook deliveries. Stop storing these.
+- **Server-owned SCM projection** — pull requests, lifecycle events,
+  publications, threads, check runs, webhook deliveries. These stay durable for
+  the self-hosted server path (idempotent publication, lineage, analytics).
+  Revisit *what* is stored and how much mirrors GitHub; do not erase the
+  publication contract because local review exists.
 
-Why it matters beyond tidiness: under a CLI-in-Actions model every review must
+Why derived/decided still matter: under a CLI-in-Actions model every review must
 reach the database, and GitHub's published `actions` egress range is 7,297 CIDRs
 covering about 27.9 million addresses — not allowlistable, against 6 CIDRs for
 `hooks`. "Source never leaves your boundary" and "internet-exposed Postgres
 holding the whole index" cannot both be true. Fork pull requests also receive no
-secrets, so the CLI model cannot review outside contributions at all without
-`pull_request_target`.
+secrets, so a pure Actions-CLI model cannot review outside contributions without
+`pull_request_target` — another reason the self-hosted worker stays.
 
-**Unsolved inside this wave:** `repository_mirror` is quarantined in
-`service/hosted/` as service-tier code, but a local-branch CLI still needs
-something to mirror repositories. That gap has no answer yet.
+**Unsolved inside this wave:** `repository_mirror` lives in `service/hosted/`
+with the server surface, but a local-branch CLI still needs something to mirror
+repositories. That gap has no answer yet.
 
-## Deleting the service tier
+## Self-hosted server surface
 
-`service/hosted/` holds the eleven modules — about 9,300 lines — that the CLI
-pivot makes obsolete. They are grouped so the deletion is close to
-`git rm -r service/hosted`, but it is **not** a cleanup that can be done now:
-every one has live importers today. `workflow.py` alone is imported by
-`review/engine.py`, `repository_actions.py`, `mcp_actions.py`, and
-`cli/repository.py`, and `diffuse learning learn` only enqueues a job for the
-worker rather than doing the inference itself.
+`service/hosted/` holds the webhook ingress, durable queue, worker, REST/MCP
+HTTP app, and related server modules. They are the fleet/fork-PR path and are
+**not** obsolete. Local `diffuse review` and agent-CLI runtimes sit beside them.
+Edges into this package are listed in `service/hosted/__init__.py`.
 
-`service/hosted/__init__.py` enumerates the five surviving edges. The deletion
-happens when the CLI absorbs indexing, review triggering, and learning — not
-before. `cli/token.py` should go out with it.
+What the CLI still must absorb over time (without deleting the server): running
+learning inference without only enqueueing a job, and a clear home for
+repository mirroring shared by CLI and worker.
 
 ## Known gaps this plan does not cover
 

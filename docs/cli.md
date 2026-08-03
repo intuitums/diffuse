@@ -5,9 +5,9 @@ subcommands onboard and manage indexed repositories (`repository`) and
 cross-repository context clusters (`cluster`), inspect and moderate
 feedback-derived rules (`learning`), create and revoke scoped service tokens
 (`token`), inspect and migrate the PostgreSQL schema (`database`), inspect or
-verify the configured review model (`model`), sign in to and inspect the agent
-CLIs a review can be driven by (`agent`), score a labeled review-quality
-evaluation set (`evaluate`), and review the current local branch (`review`).
+verify the configured review model (`model`), sign in to and inspect agent CLIs
+Diffuse can host (`agent`), score a labeled review-quality evaluation set
+(`evaluate`), and review the current local branch (`review`).
 
 The production image's `diffuse` entrypoint is a superset of the packaged CLI:
 alongside the subcommands below it takes `serve`, `worker`, and `healthcheck`,
@@ -18,9 +18,8 @@ maps `diffuse` to the CLI only, so `diffuse serve` outside the image exits with
 ## Installing
 
 Install the CLI into a local Python environment with `uv pip install -e .` (or
-an equivalent Python installer) to manage the self-hosted service and review a
-local branch using the same index, policy, learned rules, retrieval, and native
-verifier:
+an equivalent Python installer) to manage the self-hosted server and review a
+local branch using the same index, policy, and learned rules:
 
 ```bash
 diffuse repository list
@@ -41,27 +40,31 @@ diffuse evaluate evals/baseline.example.json
 [MCP server](mcp.md#minting-a-service-token) and
 [REST API](rest-api.md#authorization) authenticate with.
 
-## Agent CLI runtimes
+## Review runtimes
 
-`REVIEW_RUNTIME` selects what produces a review. `litellm` — the default, and
-the only value the API and worker accept — runs the one-shot passes described in
-[configuration](../.env.example). The agent CLI runtimes drive a locally
-installed, locally authenticated Claude Code or Codex instead, and are a
-`diffuse review` capability only: a server has no developer CLI to drive, and it
-reviews pull requests from anyone who can open one.
+`REVIEW_RUNTIME` selects what produces a review. See
+[agent-runtimes.md](agent-runtimes.md) for the full split.
 
-`diffuse agent` manages that side:
+- **`litellm` (default, only selectable value today)** — one-shot structured
+  passes against `REVIEW_MODEL`. Used by the self-hosted API/worker and by
+  `diffuse review` until an agent adapter lands. Pass/chunk/verifier variables
+  in [`.env.example`](../.env.example) apply to this runtime only.
+- **`claude` / `codex` (destination)** — drive a locally installed,
+  locally authenticated agent CLI. A `diffuse review` capability only; the API
+  and worker refuse them at startup. **Not selectable yet.**
+
+`diffuse agent` manages host plumbing for those CLIs (today: Claude):
 
 ```bash
 diffuse agent status                    # installed, current, and signed in?
-diffuse agent login claude-code         # sign in, and write the sandbox policy
-diffuse agent write-policy claude-code  # restore the policy without signing in
+diffuse agent login claude              # Claude's own auth menu into ~/.diffuse/agent/claude
+diffuse agent write-policy claude       # restore the sandbox policy without signing in
 ```
 
-This is a **second** sign-in. Diffuse keeps its agent configuration under
-`~/.diffuse/agent` (`DIFFUSE_AGENT_HOME`) and never reads or writes `~/.claude`,
-so the CLI you use in your own terminal is untouched — and the credential
-Diffuse creates is one Diffuse's own process owns.
+`diffuse agent login claude` runs `claude auth login` with `CLAUDE_CONFIG_DIR`
+pointed at Diffuse's directory. Pick whatever Claude offers — Claude.ai
+subscription, Anthropic API key, or a third-party / gateway option. Diffuse
+does not collect API keys or reimplement that flow.
 
 `diffuse agent status` reports the version floor as well as the sign-in. The
 sandbox settings a review depends on are version-gated and are *silently ignored*

@@ -11,8 +11,8 @@ old module name still predicts its location:
   (`github.py` -> `github.api`, `github_review` -> `github.review`).
 - `review/` -- the remaining `review_*` run machinery (`review_engine` ->
   `review.engine`).
-- `hosted/` -- the hosted-service surface the CLI pivot deletes. Names are
-  unchanged in there; see its docstring.
+- `hosted/` -- the self-hosted server surface (webhooks, queue, worker, HTTP).
+  Names are unchanged in there; see its docstring.
 
 Where a name was in two families the layer suffix won over the topic prefix,
 which is why `review_cli`, `review_store` and `review_models` are in `cli/`,

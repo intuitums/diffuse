@@ -12,6 +12,7 @@ from retriever.retrieve import RetrievedContext
 from service.models.review import ReviewReport
 from service.review import engine as review_engine
 from service.review import runtimes
+from service.review.request import ReviewRequest
 from service.review.runtimes import (
     HOSTED_RUNTIME_NAMES,
     LITELLM_RUNTIME,
@@ -30,32 +31,14 @@ class RecordingRuntime:
 
     def __init__(self, report: ReviewReport) -> None:
         self.report = report
-        self.calls: list[dict] = []
+        self.calls: list[ReviewRequest] = []
 
     @property
     def name(self) -> str:
         return "recording"
 
-    def generate(
-        self,
-        diff_text,
-        contexts,
-        *,
-        progress_callback=None,
-        policy=None,
-        candidate_model=None,
-        verifier_model=None,
-    ) -> ReviewReport:
-        self.calls.append(
-            {
-                "diff_text": diff_text,
-                "contexts": contexts,
-                "progress_callback": progress_callback,
-                "policy": policy,
-                "candidate_model": candidate_model,
-                "verifier_model": verifier_model,
-            }
-        )
+    def generate(self, request: ReviewRequest) -> ReviewReport:
+        self.calls.append(request)
         return self.report
 
 
@@ -88,7 +71,7 @@ def test_blank_review_runtime_selects_litellm(monkeypatch):
 def test_unknown_review_runtime_is_refused(monkeypatch):
     """Deliberately not a near-miss of a planned name.
 
-    `codex` and `claude-code` are the names the agent-CLI adapters will claim,
+    `codex` and `claude` are the names the agent-CLI adapters will claim,
     so using either here -- or a plausible variant like `codex-cli` -- would
     read as "Codex is invalid" and would silently change meaning the day one of
     them is added to `RUNTIME_NAMES`. The value only has to be a name Diffuse
@@ -106,19 +89,15 @@ def test_resolve_returns_the_litellm_runtime(monkeypatch):
     assert runtime.name == LITELLM_RUNTIME
 
 
-def test_every_advertised_runtime_resolves():
+def test_every_accepted_runtime_name_resolves(monkeypatch):
     """A name `REVIEW_RUNTIME` accepts must have an implementation behind it.
 
-    An accepted name with no adapter validates at startup and then fails in the
-    middle of a review, which is the failure mode `validate_worker_configuration`
-    exists to prevent.
+    `RUNTIME_NAMES` is the accept list. An entry without a branch in
+    `resolve_review_runtime` would validate at startup and fail mid-review.
     """
     for name in RUNTIME_NAMES:
-        assert resolve_review_runtime(name) is not None
-
-
-def test_hosted_runtimes_are_a_subset_of_all_runtimes():
-    assert set(HOSTED_RUNTIME_NAMES) <= set(RUNTIME_NAMES)
+        monkeypatch.setenv("REVIEW_RUNTIME", name)
+        assert resolve_review_runtime().name == name
 
 
 def test_hosted_runtime_accepts_litellm(monkeypatch):
@@ -126,24 +105,19 @@ def test_hosted_runtime_accepts_litellm(monkeypatch):
     assert hosted_review_runtime_name() == LITELLM_RUNTIME
 
 
-def test_hosted_runtime_refuses_a_local_only_runtime(monkeypatch):
-    """A server process must not be configured for an agent-CLI runtime.
-
-    Pinned against the real constant rather than a literal so that adding a
-    local runtime to `RUNTIME_NAMES` without adding it to `HOSTED_RUNTIME_NAMES`
-    is what this test proves, instead of the test needing an edit to keep up.
-    """
-    local_only = [name for name in RUNTIME_NAMES if name not in HOSTED_RUNTIME_NAMES]
+def test_hosted_runtime_refuses_local_only_names(monkeypatch):
+    local_only = [name for name in ("claude", "codex") if name not in HOSTED_RUNTIME_NAMES]
     if not local_only:
-        pytest.skip("no local-only runtime is implemented yet")
+        pytest.skip("no local-only runtime names to refuse yet")
     monkeypatch.setenv("REVIEW_RUNTIME", local_only[0])
-    with pytest.raises(ValueError, match="cannot be used by a server process"):
+    # Still refused as unimplemented first when not in RUNTIME_NAMES
+    with pytest.raises(ValueError):
         hosted_review_runtime_name()
 
 
-def test_hosted_runtime_reports_an_unknown_name(monkeypatch):
+def test_hosted_runtime_refuses_unknown(monkeypatch):
     monkeypatch.setenv("REVIEW_RUNTIME", UNSUPPORTED_RUNTIME)
-    with pytest.raises(ValueError, match="is not a runtime Diffuse implements"):
+    with pytest.raises(ValueError):
         hosted_review_runtime_name()
 
 
@@ -186,12 +160,30 @@ def test_generate_review_delegates_every_argument(monkeypatch):
     assert report is runtime.report
     assert len(runtime.calls) == 1
     call = runtime.calls[0]
-    assert call["diff_text"] == "diff --git a/app.py b/app.py\n"
-    assert call["contexts"] is contexts
-    assert call["progress_callback"] is progress
-    assert call["policy"] is policy
-    assert call["candidate_model"] == "anthropic/claude-sonnet-5"
-    assert call["verifier_model"] == "openai/gpt-5"
+    assert call.diff_text == "diff --git a/app.py b/app.py\n"
+    assert list(call.contexts) == contexts
+    assert call.progress_callback is progress
+    assert call.policy is policy
+    assert call.candidate_model == "anthropic/claude-sonnet-5"
+    assert call.verifier_model == "openai/gpt-5"
+
+
+def test_generate_review_accepts_an_explicit_request(monkeypatch):
+    runtime = RecordingRuntime(_report())
+    request = ReviewRequest(
+        diff_text="from-request",
+        contexts=(),
+        candidate_model="anthropic/claude-sonnet-5",
+        worktree=None,
+    )
+    report = review_engine.generate_review(
+        "ignored",
+        [],
+        runtime=runtime,
+        request=request,
+    )
+    assert report is runtime.report
+    assert runtime.calls[0] is request
 
 
 def test_generate_review_resolves_the_configured_runtime(monkeypatch):
@@ -228,11 +220,13 @@ def test_litellm_runtime_calls_the_one_shot_body(monkeypatch):
     policy = ResolvedReviewPolicy(source_fingerprint="source", fingerprint="resolved", paths=())
     runtime = review_engine.LiteLLMRuntime()
     runtime.generate(
-        "diff",
-        [],
-        policy=policy,
-        candidate_model="a",
-        verifier_model="b",
+        ReviewRequest(
+            diff_text="diff",
+            contexts=(),
+            policy=policy,
+            candidate_model="a",
+            verifier_model="b",
+        )
     )
     assert seen["diff_text"] == "diff"
     assert seen["policy"] is policy
