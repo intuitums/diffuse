@@ -52,7 +52,6 @@ class _Captured(Exception):
 @pytest.fixture(autouse=True)
 def _clean_depth_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("REVIEW_DEPTH", raising=False)
-    monkeypatch.delenv("REVIEW_EFFORT", raising=False)
     monkeypatch.delenv("REVIEW_VERIFIER_MODEL", raising=False)
     monkeypatch.delenv("REVIEW_MAX_OUTPUT_TOKENS", raising=False)
     monkeypatch.delenv("REVIEW_API_BASE", raising=False)
@@ -156,31 +155,6 @@ def test_a_typo_in_the_intent_is_refused_by_name(monkeypatch: pytest.MonkeyPatch
         review_depth()
 
 
-def test_the_previous_spelling_still_configures_the_same_scale(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`REVIEW_EFFORT=high` and `REVIEW_DEPTH=careful` are the same rung."""
-
-    monkeypatch.setenv("REVIEW_EFFORT", "high")
-    assert review_depth() == "careful"
-
-
-def test_setting_both_spellings_is_refused_rather_than_ranked(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Silently preferring one would hide the other from the operator."""
-
-    monkeypatch.setenv("REVIEW_DEPTH", "brisk")
-    monkeypatch.setenv("REVIEW_EFFORT", "max")
-
-    with pytest.raises(ValueError) as failure:
-        review_depth()
-
-    message = str(failure.value)
-    assert "REVIEW_DEPTH" in message
-    assert "REVIEW_EFFORT" in message
-
-
 # --- The startup report ------------------------------------------------------
 
 
@@ -223,16 +197,15 @@ def test_a_candidate_that_cannot_reason_stops_the_worker(
     assert "unset REVIEW_DEPTH" in message
 
 
-def test_the_refusal_names_the_variable_the_operator_actually_set(
+def test_the_refusal_names_the_variable_and_the_depth_requested(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An operator on the older spelling must not be told to unset a variable
-    they never set."""
+    """A refusal must quote what the operator set, not a rendered rung."""
 
     monkeypatch.setenv("REVIEW_MODEL", SAMPLING_ONLY_MODEL)
-    monkeypatch.setenv("REVIEW_EFFORT", "max")
+    monkeypatch.setenv("REVIEW_DEPTH", "exhaustive")
 
-    with pytest.raises(ValueError, match="REVIEW_EFFORT=exhaustive"):
+    with pytest.raises(ValueError, match="REVIEW_DEPTH=exhaustive"):
         worker.validate_worker_model_controls()
 
 

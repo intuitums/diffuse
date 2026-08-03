@@ -1269,7 +1269,7 @@ def test_unrecognized_providers_defer_to_the_gateway_environment(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
 
-    assert review_engine._model_api_key("bedrock/anthropic.claude-sonnet-4-5") is None
+    assert review_engine._model_api_key("mistral/mistral-large") is None
     assert review_engine._model_api_key("ollama/llama3") is None
 
 
@@ -1313,9 +1313,12 @@ def test_structured_call_omits_the_key_for_environment_authenticated_providers(
             "usage": {},
         }
 
-    monkeypatch.setenv("REVIEW_MODEL", "bedrock/anthropic.claude-sonnet-4-5")
+    # Vertex resolves Google application-default credentials rather than an API
+    # key, so its routing hints must never be forwarded as one. This covered
+    # Bedrock as well until Bedrock was removed for having no working call path.
+    monkeypatch.setenv("REVIEW_MODEL", "vertex_ai/gemini-2.5-pro")
     monkeypatch.setenv("REVIEW_STRUCTURED_OUTPUT_MODE", "prompt")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("VERTEXAI_PROJECT", "a-project")
     monkeypatch.setattr(review_engine.litellm, "completion", fake_completion)
 
     review_engine._call_structured(

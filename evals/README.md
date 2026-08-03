@@ -226,7 +226,7 @@ matcher and must be recaptured rather than silently reinterpreted.
 | `run_configuration.prompt_version` | `service.review.engine.PROMPT_VERSION` |
 | `run_configuration.min_review_confidence` | `MIN_REVIEW_CONFIDENCE` |
 | `run_configuration.review_passes` | `REVIEW_PASSES` |
-| `run_configuration.requested_review_depth` | `REVIEW_DEPTH` / `REVIEW_EFFORT`, as an intent |
+| `run_configuration.requested_review_depth` | `REVIEW_DEPTH`, as an intent |
 | `run_configuration.depth_renderings` | per stage: what the model was **actually sent** |
 | `precision`, `recall`, `f1` | |
 | `category_mismatches` | recorded and reported as a delta, never gated |

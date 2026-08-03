@@ -154,10 +154,8 @@ one its `REVIEW_MODEL` resolves. Running Diffuse with no OpenAI account is
 therefore just a matter of not naming an OpenAI model.
 
 For the cloud providers, ambient credential chains work and are preferable to a
-stored key: `bedrock/…` resolves the AWS chain (so an instance role or IRSA
-works) and `vertex_ai/…` resolves Google application default credentials. Both
-apply to `REVIEW_MODEL`; note that `boto3` is not a Diffuse runtime dependency,
-so Bedrock needs it installed first. `REVIEW_API_BASE` points review generation
+stored key: `vertex_ai/…` resolves Google application default credentials and
+applies to `REVIEW_MODEL`. `REVIEW_API_BASE` points review generation
 at a self-hosted OpenAI-compatible endpoint, which needs no managed provider
 credential either.
 
