@@ -48,15 +48,20 @@ The following are explicitly **in scope**:
 
 - **Prompt injection.** Repository content, diffs, pull-request titles and
   descriptions, commit messages, review threads, or in-repository configuration
-  that steers the review model into leaking data it was given, taking an
-  unintended action (publishing, approving, re-triggering), suppressing
-  findings for other changes, or escaping the constraints of the review passes.
+  that steers the review model or an agent-CLI session into leaking data it was
+  given, taking an unintended action (publishing, approving, re-triggering),
+  suppressing findings for other changes, or escaping the constraints of the
+  review runtime.
 - **Sandbox and isolation escape.** Anything in repository content, a crafted
   filename, a symlink, a Git attribute, submodule, hook, or LFS pointer that
   causes code execution, filesystem access, or network access outside the
   disposable worktree or mirror — including escaping the repository root,
   bypassing `DIFFUSE_MAX_REPOSITORY_BYTES`, or reaching the host from a
-  container.
+  container. For agent-CLI local review (when selectable): escaping the
+  Diffuse-owned child environment, weakening or bypassing the CLI OS sandbox
+  policy Diffuse writes, loading a repository- or user-supplied MCP server
+  despite `--strict-mcp-config`, or running below the version floor so
+  sandbox settings are silently ignored.
 - **Credential exposure.** Any path that leaks the GitHub App private key,
   an installation token, the OAuth client secret, `DIFFUSE_API_TOKEN`, or a
   repository-scoped service token into a clone URL sent to an unintended
@@ -82,10 +87,34 @@ The following are explicitly **in scope**:
 - **Database migration integrity** failures that allow unverified SQL to be
   applied.
 
+### Agent-CLI local review (destination)
+
+Local `diffuse review` is built to drive a developer-installed agent CLI behind
+Diffuse-owned configuration (`DIFFUSE_AGENT_HOME`, never `~/.claude` /
+`~/.codex`). Host plumbing for Claude Code exists today; no agent runtime is
+selectable yet. When it is, the intended boundaries are:
+
+1. **Child environment allowlist** — credentials Diffuse does not name never
+   reach the CLI process (`GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, `AWS_*`,
+   and a scratch `PATH` so `gh` is not resolvable by name).
+2. **CLI OS sandbox** — empty network allowlist, `failIfUnavailable`,
+   credential file/env denies, worktree-scoped reads; written as persistent
+   settings under the Diffuse-owned config directory.
+3. **Version floor** — refuse builds that would silently drop those settings;
+   refuse native Windows where the CLI has no OS sandbox.
+
+MCP servers configured into that session run **outside** the CLI sandbox with
+full host privileges. Diffuse must construct `--mcp-config` itself, always pass
+`--strict-mcp-config`, and keep its own MCP server to index queries only — never
+executing repository-supplied content. Reports that break any of those
+invariants are in scope.
+
 ### Out of scope
 
 - Vulnerabilities in the language model provider itself, or model output that is
   merely low quality, wrong, or unhelpful without a security consequence.
+- Vulnerabilities solely in a third-party agent CLI binary with no Diffuse
+  misconfiguration or boundary bypass (report those upstream).
 - Findings that require an operator to have already set a documented-unsafe
   configuration, for example `DIFFUSE_ALLOW_PLAINTEXT_ORIGINS=1` off loopback,
   or granting a provider token more permission than the README asks for.

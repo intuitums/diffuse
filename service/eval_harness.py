@@ -441,10 +441,13 @@ def resolve_run_configuration(
     refusal = support.refusal()
     if refusal is not None:
         raise ValueError(refusal)
+    from service.review.runtimes import review_runtime_name
+
     return RunConfiguration(
         prompt_version=review_engine.PROMPT_VERSION,
         min_review_confidence=review_engine.minimum_review_confidence(),
         review_passes=list(review_engine.review_passes()),
+        review_runtime=review_runtime_name(),
         requested_review_depth=support.depth,
         depth_renderings=[
             ReviewDepthRendering(

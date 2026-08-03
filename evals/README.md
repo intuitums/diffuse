@@ -225,7 +225,8 @@ matcher and must be recaptured rather than silently reinterpreted.
 | `model`, `verifier_model` | the pair the scores were produced by |
 | `run_configuration.prompt_version` | `service.review.engine.PROMPT_VERSION` |
 | `run_configuration.min_review_confidence` | `MIN_REVIEW_CONFIDENCE` |
-| `run_configuration.review_passes` | `REVIEW_PASSES` |
+| `run_configuration.review_passes` | `REVIEW_PASSES` (API one-shot runtime) |
+| `run_configuration.review_runtime` | `REVIEW_RUNTIME` (defaults to `litellm` on older suites) |
 | `run_configuration.requested_review_depth` | `REVIEW_DEPTH`, as an intent |
 | `run_configuration.depth_renderings` | per stage: what the model was **actually sent** |
 | `precision`, `recall`, `f1` | |

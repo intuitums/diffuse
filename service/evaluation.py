@@ -179,6 +179,9 @@ class RunConfiguration(EvaluationModel):
     prompt_version: str = Field(min_length=1, max_length=200)
     min_review_confidence: float = Field(ge=0, le=1)
     review_passes: list[str] = Field(min_length=1, max_length=32)
+    #: Which REVIEW_RUNTIME produced the suite. Defaults so suites captured
+    #: before the field existed still load as the one-shot API runtime.
+    review_runtime: str = Field(default="litellm", min_length=1, max_length=64)
     #: The depth that was requested, or None when none was.
     requested_review_depth: str | None = Field(default=None, min_length=1, max_length=64)
     #: What each stage will actually be sent. Empty when no depth was requested.
@@ -198,6 +201,7 @@ class RunConfiguration(EvaluationModel):
                 other.min_review_confidence,
             ),
             ("REVIEW_PASSES", ",".join(self.review_passes), ",".join(other.review_passes)),
+            ("REVIEW_RUNTIME", self.review_runtime, other.review_runtime),
             (
                 "review depth",
                 self.requested_review_depth or "unset",
