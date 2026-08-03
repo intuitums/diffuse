@@ -63,9 +63,10 @@ pluggable; see [agent-runtimes.md](agent-runtimes.md).
 
 - **`ReviewRuntime` seam at `generate_review`.** *Done.* `LiteLLMRuntime` is
   the only selectable implementation (`REVIEW_RUNTIME=litellm`).
-- **Agent CLI host plumbing.** *Done for Claude Code.* Config dir, sandbox
-  policy, version floor, `diffuse agent login|status|write-policy`. Codex host
-  deferred until its adapter.
+- **Agent CLI host plumbing.** *Done for Claude and Codex.* Config dir, sandbox
+  policy, version floor (Claude measured; Codex pending U4), `diffuse agent
+  login|status|write-policy`. Adapters that make either a selectable
+  `REVIEW_RUNTIME` are still open.
 - **Claude Code adapter.** *Not started.* Blocked on D1 and R1. Exit: fixture
   review completes, `review_tool_calls` has rows, `claude` enters
   `RUNTIME_NAMES` (not `HOSTED_RUNTIME_NAMES`).
