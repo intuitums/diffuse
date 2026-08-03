@@ -14,9 +14,6 @@ CREDENTIAL_VARIABLES = (
     "GOOGLE_API_KEY",
     "OPENROUTER_API_KEY",
     "AZURE_API_KEY",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_PROFILE",
     "GOOGLE_APPLICATION_CREDENTIALS",
     "VERTEXAI_PROJECT",
     "VERTEXAI_LOCATION",
@@ -39,7 +36,6 @@ RESOLUTION_CASES = (
     ("vertex_ai/gemini-2.5-pro", "google", "google", True, False),
     ("azure/gpt-4o", "azure", "openai", True, False),
     ("azure_ai/gpt-5", "azure", "openai", True, False),
-    ("bedrock/anthropic.claude-v2", "aws-bedrock", "anthropic", True, False),
     ("ollama/qwen3-coder", "self-hosted", None, False, True),
     ("hosted_vllm/qwen3-coder", "self-hosted", None, False, True),
     ("lm_studio/qwen3-coder", "self-hosted", None, False, True),
@@ -127,18 +123,6 @@ def test_gemini_accepts_either_google_or_gemini_key(monkeypatch) -> None:
     assert status["credential_configured"] is True
     assert _model_api_key("gemini/gemini-2.5-pro") == "google-secret"
     assert "google-secret" not in repr(status)
-
-
-def test_bedrock_requires_a_profile_or_a_complete_key_pair(monkeypatch) -> None:
-    monkeypatch.setenv("REVIEW_MODEL", "bedrock/anthropic.claude-v2")
-    monkeypatch.setenv("REVIEW_VERIFIER_MODEL", "bedrock/anthropic.claude-v2")
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "only-half")
-
-    assert model_cli.model_status()["credential_configured"] is False
-
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "other-half")
-    assert model_cli.model_status()["credential_configured"] is True
-    assert _model_api_key("bedrock/anthropic.claude-v2") is None
 
 
 def test_vertex_adc_hints_are_not_forwarded_as_an_api_key(monkeypatch) -> None:

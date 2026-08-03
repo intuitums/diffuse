@@ -24,9 +24,8 @@ import litellm
 import pytest
 from litellm.utils import get_optional_params
 
-from service.model_capabilities import REVIEW_DEPTHS
+from service.model_capabilities import REVIEW_DEPTHS, effort_for_depth
 from service.review.engine import (
-    REVIEW_EFFORT_LEVELS,
     REVIEW_TEMPERATURE,
     verify_model_connection,
 )
@@ -163,22 +162,23 @@ def test_connection_probe_leaves_room_for_a_thinking_model(
     assert int(arguments["max_tokens"]) >= 1024
 
 
-def test_unset_effort_sends_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An unset REVIEW_EFFORT must leave the model on its own default."""
+def test_unset_depth_sends_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unset REVIEW_DEPTH must leave the model on its own default."""
 
-    monkeypatch.delenv("REVIEW_EFFORT", raising=False)
+    monkeypatch.delenv("REVIEW_DEPTH", raising=False)
     assert "reasoning_effort" not in _request_arguments(
         monkeypatch, "anthropic/claude-sonnet-5"
     )
 
 
-@pytest.mark.parametrize("effort", REVIEW_EFFORT_LEVELS)
-def test_every_documented_effort_reaches_an_anthropic_model(
-    monkeypatch: pytest.MonkeyPatch, effort: str
+@pytest.mark.parametrize("depth", REVIEW_DEPTHS)
+def test_every_documented_depth_reaches_an_anthropic_model(
+    monkeypatch: pytest.MonkeyPatch, depth: str
 ) -> None:
-    """REVIEW_EFFORT maps to `output_config.effort` through LiteLLM's mapping."""
+    """REVIEW_DEPTH maps to `output_config.effort` through LiteLLM's mapping."""
 
-    monkeypatch.setenv("REVIEW_EFFORT", effort)
+    effort = effort_for_depth(depth)
+    monkeypatch.setenv("REVIEW_DEPTH", depth)
     arguments = _request_arguments(monkeypatch, "anthropic/claude-sonnet-5")
     assert arguments["reasoning_effort"] == effort
 
@@ -197,18 +197,18 @@ def test_effort_is_dropped_rather_than_failing_a_model_that_refuses_it(
 ) -> None:
     """gpt-4.1-mini has no reasoning_effort; a review must still run."""
 
-    monkeypatch.setenv("REVIEW_EFFORT", "xhigh")
+    monkeypatch.setenv("REVIEW_DEPTH", "thorough")
     arguments = _request_arguments(monkeypatch, "openai/gpt-4.1-mini")
     assert "reasoning_effort" not in arguments
     # And the parameter it does honor is still there.
     assert arguments["temperature"] == REVIEW_TEMPERATURE
 
 
-def test_an_unknown_effort_is_refused_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_unknown_depth_is_refused_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
     """A typo must fail loudly at configuration time, not silently do nothing."""
 
-    monkeypatch.setenv("REVIEW_EFFORT", "maximum")
-    with pytest.raises(ValueError, match="REVIEW_EFFORT"):
+    monkeypatch.setenv("REVIEW_DEPTH", "maximum")
+    with pytest.raises(ValueError, match="REVIEW_DEPTH"):
         _request_arguments(monkeypatch, "anthropic/claude-sonnet-5")
 
 

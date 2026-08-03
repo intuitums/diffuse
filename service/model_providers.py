@@ -19,9 +19,8 @@ cycle.
 
 Provider and family are separate resolutions because they genuinely differ. A
 gateway route such as ``openrouter/anthropic/claude-sonnet-4.6`` needs the
-OpenRouter credential but belongs to the Anthropic family, and
-``bedrock/anthropic.claude-…`` needs AWS credentials while also belonging to the
-Anthropic family.
+OpenRouter credential but belongs to the Anthropic family, which is what
+provenance routing reads when it picks an opposing reviewer.
 """
 
 from __future__ import annotations
@@ -77,17 +76,6 @@ _PROVIDER_TABLE: tuple[tuple[tuple[str, ...], ProviderRecord], ...] = (
     (
         _ANTHROPIC_PREFIXES,
         ProviderRecord("anthropic", ("ANTHROPIC_API_KEY",), True, False),
-    ),
-    (
-        ("bedrock/",),
-        ProviderRecord(
-            "aws-bedrock",
-            ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE"),
-            True,
-            False,
-            credential_value_is_api_key=False,
-            ambient_credentials_supported=True,
-        ),
     ),
     (
         ("azure/", "azure_ai/"),
@@ -179,7 +167,7 @@ def model_family(model: str) -> str | None:
     if normalized.startswith("openrouter/"):
         normalized = normalized.removeprefix("openrouter/")
     if (
-        normalized.startswith((*_ANTHROPIC_PREFIXES, "bedrock/anthropic"))
+        normalized.startswith(_ANTHROPIC_PREFIXES)
         or "/anthropic/" in normalized
     ):
         return "anthropic"
