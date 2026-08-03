@@ -9,7 +9,7 @@ into that report. The seam is the whole report, not a single model call.
 | Path | Who runs it | Runtime today | Destination |
 | --- | --- | --- | --- |
 | Self-hosted server | API + worker on your infrastructure | `litellm` (one-shot structured passes via a model API) | Stays on an API completion runtime. Refuses agent-CLI runtimes at startup. |
-| Local CLI | `diffuse review` on a developer machine | `litellm` (same one-shot path) | May select `claude-code` or `codex` once adapters exist — driving a locally installed, locally authenticated agent CLI behind Diffuse-owned config. |
+| Local CLI | `diffuse review` on a developer machine | `litellm` (same one-shot path) | May select `claude` or `codex` once adapters exist — driving a locally installed, locally authenticated agent CLI behind Diffuse-owned config. |
 
 There is no Diffuse-hosted cloud control plane. “Hosted” in older comments means
 the **self-hosted server** process, not a SaaS tier.
@@ -28,10 +28,14 @@ env value waits until a second runtime is actually selectable.
 
 ## Agent CLI runtimes (destination)
 
-Planned values: `claude-code`, `codex`. Neither is in `RUNTIME_NAMES` yet, so
+Planned values: `claude`, `codex`. Neither is in `RUNTIME_NAMES` yet, so
 `REVIEW_RUNTIME` rejects them. What *has* landed:
 
-- `diffuse agent login|status|write-policy` for Claude Code
+- `diffuse agent login claude` — runs `claude auth login` into
+  `~/.diffuse/agent/claude`. Auth method is Claude's own menu (Claude.ai
+  subscription, Anthropic API key, or a third-party / gateway option). Diffuse
+  does not collect or store API keys itself.
+- `diffuse agent status` / `write-policy`
 - Diffuse-owned config under `~/.diffuse/agent` (`DIFFUSE_AGENT_HOME`)
 - Child environment allowlist, sandbox policy, version floor (2.1.219+)
 - Native Windows refused (no OS sandbox)
@@ -47,7 +51,7 @@ What has **not** landed: an adapter that spawns the CLI for a review, or lets
 | Internal `search_code` tool provider + recorders | Done — agent path can log calls |
 | D1 baseline capture | **Owner** — needs a real `REVIEW_MODEL` credential (~$0.75) |
 | R1 licensing | **Owner** — redistributing a tool that drives subscriber CLIs |
-| U3 `diffuse agent login` UX | **Owner machine** — interactive browser `/login`; Claude Code must be installed |
+| U3 `diffuse agent login claude` UX | **Owner machine** — interactive `claude auth login`; Claude Code must be installed |
 
 Near-term delivery order lives in the working plan at
 `.context/agent-cli-runtime-plan.md` (gitignored). Summary:

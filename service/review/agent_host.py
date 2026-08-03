@@ -156,6 +156,10 @@ CLAUDE_CODE = AgentCli(
     config_directory_variable="CLAUDE_CONFIG_DIR",
     directory_name="claude",
     capabilities=CLAUDE_CODE_CAPABILITIES,
+    # Claude's own interactive auth: subscription (Claude.ai), Anthropic API
+    # key, or a third-party / gateway option the CLI offers. Diffuse does not
+    # collect or store those credentials itself — it only points
+    # CLAUDE_CONFIG_DIR at ~/.diffuse/agent/claude and runs this command.
     login_arguments=("auth", "login"),
     logout_arguments=("auth", "logout"),
     auth_status_arguments=("auth", "status", "--json"),
@@ -540,10 +544,12 @@ def login(cli: AgentCli) -> int:
     """Drive the vendor's own sign-in into the Diffuse-owned directory.
 
     Deliberately *not* run under `agent_environment`: this is an interactive
-    browser flow the developer is watching, so it needs their real `HOME`,
-    `PATH`, and terminal. Only the configuration directory is overridden, which
-    is the whole point -- the credential lands in Diffuse's directory and the
-    developer's own `~/.claude` is never read or written.
+    flow the developer is watching (browser OAuth, API-key paste, or whatever
+    menu the vendor CLI presents), so it needs their real `HOME`, `PATH`, and
+    terminal. Only the configuration directory is overridden, which is the
+    whole point -- the credential lands in Diffuse's directory and the
+    developer's own `~/.claude` is never read or written. Diffuse never asks
+    for an API key of its own; auth methods are entirely the vendor's.
     """
 
     require_supported_platform()

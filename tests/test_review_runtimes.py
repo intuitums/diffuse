@@ -71,7 +71,7 @@ def test_blank_review_runtime_selects_litellm(monkeypatch):
 def test_unknown_review_runtime_is_refused(monkeypatch):
     """Deliberately not a near-miss of a planned name.
 
-    `codex` and `claude-code` are the names the agent-CLI adapters will claim,
+    `codex` and `claude` are the names the agent-CLI adapters will claim,
     so using either here -- or a plausible variant like `codex-cli` -- would
     read as "Codex is invalid" and would silently change meaning the day one of
     them is added to `RUNTIME_NAMES`. The value only has to be a name Diffuse
@@ -106,7 +106,7 @@ def test_hosted_runtime_accepts_litellm(monkeypatch):
 
 
 def test_hosted_runtime_refuses_local_only_names(monkeypatch):
-    local_only = [name for name in ("claude-code", "codex") if name not in HOSTED_RUNTIME_NAMES]
+    local_only = [name for name in ("claude", "codex") if name not in HOSTED_RUNTIME_NAMES]
     if not local_only:
         pytest.skip("no local-only runtime names to refuse yet")
     monkeypatch.setenv("REVIEW_RUNTIME", local_only[0])

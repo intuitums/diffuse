@@ -7,7 +7,7 @@ the contract; the runtime supplies the investigation. See
 `litellm` is the only selectable implementation today: the one-shot API path
 that orchestrates candidate passes, deduplication, diagram, and verifier via
 structured completions (implemented with the LiteLLM library). Planned
-local-only values `claude-code` and `codex` are named here so host plumbing and
+local-only values `claude` and `codex` are named here so host plumbing and
 tests can refer to them, but they are not in `RUNTIME_NAMES` until an adapter
 exists.
 
@@ -34,7 +34,9 @@ if TYPE_CHECKING:
     from service.review.request import ReviewRequest
 
 LITELLM_RUNTIME = "litellm"
-CLAUDE_CODE_RUNTIME = "claude-code"
+#: Local agent-CLI runtime name. Matches `diffuse agent login claude` — the
+#: short product name, not the `claude-code` binary nickname.
+CLAUDE_CODE_RUNTIME = "claude"
 CODEX_RUNTIME = "codex"
 
 #: Every name `REVIEW_RUNTIME` accepts. A name is listed here once the adapter

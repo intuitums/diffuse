@@ -25,7 +25,7 @@ can proceed until they are recorded.
 | D4 | How much reproducibility to trade for agentic retrieval | Giving the reviewer its own tools | **Open** |
 | D5 | Re-cut the frozen version-1 migration baseline, so the Postgres image can drop pgvector | Nothing urgent; decide before the next release | **Open** |
 | D6 | The retrieval-eval corpus: expand the synthetic fixtures into real trees, or label real merged pull requests | The retrieval gate | **Open** |
-| R1 | Licensing: driving a developer's subscription CLI from a tool shipped to other operators | Shipping `claude-code` / `codex` as selectable `REVIEW_RUNTIME` values | **Open** |
+| R1 | Licensing: driving a developer's subscription CLI from a tool shipped to other operators | Shipping `claude` / `codex` as selectable `REVIEW_RUNTIME` values | **Open** |
 
 D1 is the cheapest and unblocks the most. Everything needed for it is committed
 and working; see [`../evals/CAPTURE.md`](../evals/CAPTURE.md).
@@ -67,7 +67,7 @@ pluggable; see [agent-runtimes.md](agent-runtimes.md).
   policy, version floor, `diffuse agent login|status|write-policy`. Codex host
   deferred until its adapter.
 - **Claude Code adapter.** *Not started.* Blocked on D1 and R1. Exit: fixture
-  review completes, `review_tool_calls` has rows, `claude-code` enters
+  review completes, `review_tool_calls` has rows, `claude` enters
   `RUNTIME_NAMES` (not `HOSTED_RUNTIME_NAMES`).
 - **`ReviewRequest` + internal tool provider.** *Done (preflight).* Runtimes
   take a `ReviewRequest` (diff, policy, optional worktree / context plan /

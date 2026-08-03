@@ -491,7 +491,7 @@ def test_status_reports_an_unauthenticated_runtime(monkeypatch, owned_home, inst
 
     assert entry["authenticated"] is False
     assert entry["ready"] is False
-    assert "diffuse agent login claude-code" in entry["problem"]
+    assert "diffuse agent login claude" in entry["problem"]
 
 
 def test_auth_status_reads_the_diffuse_directory(monkeypatch, owned_home, installed_cli):
@@ -525,11 +525,12 @@ def test_unreadable_auth_output_is_not_read_as_signed_in(monkeypatch, owned_home
 def test_login_keeps_the_developers_environment_but_moves_the_config_dir(
     monkeypatch, owned_home, installed_cli
 ):
-    """Sign-in is an interactive browser flow, so it is deliberately not sandboxed.
+    """Sign-in is interactive, so it is deliberately not sandboxed.
 
     Only the configuration directory is overridden. Stripping `HOME`, `PATH`, and
-    the terminal the way a review does would break the browser handoff, and there
-    is no untrusted diff in the room: the developer typed the command.
+    the terminal the way a review does would break Claude's own auth menu
+    (browser OAuth, API key, third-party), and there is no untrusted diff in the
+    room: the developer typed the command.
     """
 
     monkeypatch.setenv("HOME", "/Users/developer")
@@ -561,7 +562,7 @@ def test_login_writes_the_sandbox_policy(monkeypatch, owned_home, installed_cli)
 def test_failed_login_is_reported(monkeypatch, owned_home, installed_cli):
     monkeypatch.setattr(agent_host.subprocess, "run", lambda *a, **k: _completed(returncode=1))
     with pytest.raises(RuntimeError, match="exited 1"):
-        agent_cli._login(_namespace(runtime=CLAUDE_CODE_RUNTIME))
+        agent_cli._login(_namespace(cli=CLAUDE_CODE_RUNTIME))
 
 
 # --- The command line -----------------------------------------------------
@@ -575,8 +576,8 @@ def test_cli_routes_agent_commands():
     assert status.agent_command == "status"
     assert status.handler is agent_cli._status
 
-    login = parser.parse_args(["agent", "login", "claude-code"])
-    assert login.runtime == "claude-code"
+    login = parser.parse_args(["agent", "login", "claude"])
+    assert login.cli == "claude"
     assert login.handler is agent_cli._login
 
 
@@ -590,4 +591,4 @@ def test_cli_refuses_an_unhosted_runtime_at_parse_time(capsys):
     parser = review_cli._parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["agent", "login", "codex"])
-    assert "claude-code" in capsys.readouterr().err
+    assert "claude" in capsys.readouterr().err

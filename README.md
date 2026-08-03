@@ -91,7 +91,7 @@ diffuse review
   ├─ diffs the working tree against a selectable merge base
   ├─ resolves the same policy, learned rules, and snapshots
   └─ runs REVIEW_RUNTIME (today: the same API one-shot path;
-       destination: optional claude-code / codex behind diffuse agent login)
+       destination: optional claude / codex behind diffuse agent login)
 ```
 
 The webhook acknowledges work only after its delivery and review job are

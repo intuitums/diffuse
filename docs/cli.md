@@ -49,22 +49,22 @@ diffuse evaluate evals/baseline.example.json
   passes against `REVIEW_MODEL`. Used by the self-hosted API/worker and by
   `diffuse review` until an agent adapter lands. Pass/chunk/verifier variables
   in [`.env.example`](../.env.example) apply to this runtime only.
-- **`claude-code` / `codex` (destination)** — drive a locally installed,
+- **`claude` / `codex` (destination)** — drive a locally installed,
   locally authenticated agent CLI. A `diffuse review` capability only; the API
   and worker refuse them at startup. **Not selectable yet.**
 
-`diffuse agent` manages host plumbing for those CLIs (today: Claude Code):
+`diffuse agent` manages host plumbing for those CLIs (today: Claude):
 
 ```bash
 diffuse agent status                    # installed, current, and signed in?
-diffuse agent login claude-code         # sign in, and write the sandbox policy
-diffuse agent write-policy claude-code  # restore the policy without signing in
+diffuse agent login claude              # Claude's own auth menu into ~/.diffuse/agent/claude
+diffuse agent write-policy claude       # restore the sandbox policy without signing in
 ```
 
-This is a **second** sign-in. Diffuse keeps its agent configuration under
-`~/.diffuse/agent` (`DIFFUSE_AGENT_HOME`) and never reads or writes `~/.claude`,
-so the CLI you use in your own terminal is untouched — and the credential
-Diffuse creates is one Diffuse's own process owns.
+`diffuse agent login claude` runs `claude auth login` with `CLAUDE_CONFIG_DIR`
+pointed at Diffuse's directory. Pick whatever Claude offers — Claude.ai
+subscription, Anthropic API key, or a third-party / gateway option. Diffuse
+does not collect API keys or reimplement that flow.
 
 `diffuse agent status` reports the version floor as well as the sign-in. The
 sandbox settings a review depends on are version-gated and are *silently ignored*

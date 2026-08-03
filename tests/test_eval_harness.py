@@ -811,7 +811,7 @@ def test_a_baseline_captured_at_a_different_confidence_floor_is_refused():
     (
         ("prompt_version", "native-review-v7-something-else", "PROMPT_VERSION"),
         ("review_passes", ["security", "correctness"], "REVIEW_PASSES"),
-        ("review_runtime", "claude-code", "REVIEW_RUNTIME"),
+        ("review_runtime", "claude", "REVIEW_RUNTIME"),
         ("requested_review_depth", "thorough", "review depth"),
     ),
 )
