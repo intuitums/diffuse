@@ -415,8 +415,9 @@ def test_failed_local_review_resumes_only_the_same_immutable_inputs(
     assert generated == 2
     # Generation must use the pinned pair, not whatever the environment says at
     # the moment the resumed attempt runs.
-    assert generate_calls[-1]["candidate_model"] == "openai/test"
-    assert generate_calls[-1]["verifier_model"] == "anthropic/test"
+    request = generate_calls[-1]["request"]
+    assert request.candidate_model == "openai/test"
+    assert request.verifier_model == "anthropic/test"
 
 
 def test_a_changed_verifier_model_refuses_to_resume(tmp_path, monkeypatch):
@@ -581,7 +582,8 @@ def test_review_passes_a_progress_callback_into_the_review_engine(tmp_path, monk
 
     def generate(*_args, **kwargs):
         captured.update(kwargs)
-        callback = kwargs["progress_callback"]
+        request = kwargs["request"]
+        callback = request.progress_callback
         assert callback is not None
         callback()
         callback()
@@ -612,7 +614,7 @@ def test_review_passes_a_progress_callback_into_the_review_engine(tmp_path, monk
     )
 
     assert result is not None
-    assert captured["progress_callback"] is not None
+    assert captured["request"].progress_callback is not None
     assert "running review model (step 2)" in stderr.getvalue()
 
 

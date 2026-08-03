@@ -21,26 +21,29 @@
 ---
 
 AI can write code faster than teams can confidently review it. Diffuse closes
-that gap with repository-aware pull-request review grounded in the exact code
-being changed and the wider system around it.
+that gap with repository-aware review grounded in the exact code being changed
+and the wider system around it.
 
-Diffuse combines graph and lexical retrieval with structured review passes,
-then publishes commit-pinned findings directly to GitHub. It learns from
-inspectable team feedback, carries context across repositories, and exposes the
-same intelligence through its CLI, REST API, and MCP server.
+Diffuse owns the review contract — policy, structured findings, lineage, and
+publication — and the codebase index behind it. A self-hosted server reviews
+pull requests on your infrastructure via a model API; local `diffuse review`
+uses that same contract today and is built to rent a developer-installed agent
+CLI (Claude Code or Codex) tomorrow. Graph and lexical retrieval, inspectable
+team feedback, cross-repository context, and the same intelligence over CLI,
+REST, and MCP stay under your control.
 
-You run all of it inside infrastructure you control. There is no hosted control
-plane and no Diffuse account to create.
+You run all of it inside infrastructure you control. There is no Diffuse-hosted
+cloud control plane and no Diffuse account to create.
 
 ## Why Diffuse
 
 | | |
 | --- | --- |
 | **Review with context** | Understands symbols, imports, calls, inheritance, and related repositories instead of reviewing an isolated diff. |
-| **Find the signal** | Runs focused correctness, security, performance, and test passes, then independently verifies candidates before publishing. |
-| **Stay in control** | Keeps source-derived data in your environment unless you explicitly configure an external model or integration. |
+| **Find the signal** | Produces structured, schema-validated findings with evidence and fixes; the server path runs focused passes plus an independent verifier before publishing. |
+| **Stay in control** | Keeps source-derived data in your environment unless you explicitly configure an external model, agent CLI, or integration. |
 | **Improve with use** | Turns authorized replies and reactions into inspectable rule suggestions that require human approval before activation. |
-| **Meet developers where they work** | Publishes native GitHub reviews and checks, with the same review context available through CLI, REST, and MCP. |
+| **Meet developers where they work** | Publishes native GitHub reviews and checks; the same index and policy are available through CLI, REST, and MCP. |
 
 > [!NOTE]
 > Diffuse is a working foundation under active development. See the
@@ -49,6 +52,11 @@ plane and no Diffuse account to create.
 > [delivery roadmap](docs/roadmap.md) for the path between them.
 
 ## How it works
+
+Two paths share one contract (`ReviewReport`, policy, index, publication rules).
+[`docs/agent-runtimes.md`](docs/agent-runtimes.md) is the short reference.
+
+**Self-hosted server** — pull requests from anyone who can open one:
 
 ```text
 Repository onboarding CLI or versioned REST API
@@ -68,11 +76,22 @@ GitHub push / PR / review-thread webhook and reaction ingestion
                  ├─ fetches and indexes an exact commit in a disposable worktree
                  ├─ resolves exact primary + related-repository snapshots
                  ├─ retrieves graph + lexical context with provenance
-                 ├─ runs specialized structured review passes plus verification
+                 ├─ runs the API review runtime (one-shot structured passes + verifier)
                  ├─ reconciles authorized 👍/👎 reactions on finding comments
                  ├─ infers evidence-cited rule suggestions for human moderation
                  ├─ applies only approved learned-rule versions
                  └─ publishes provider-native reviews and status idempotently
+```
+
+**Local CLI** — review the branch on your machine before or beside a PR:
+
+```text
+diffuse review
+  ├─ identifies an enabled, indexed checkout from origin
+  ├─ diffs the working tree against a selectable merge base
+  ├─ resolves the same policy, learned rules, and snapshots
+  └─ runs REVIEW_RUNTIME (today: the same API one-shot path;
+       destination: optional claude / codex behind diffuse agent login)
 ```
 
 The webhook acknowledges work only after its delivery and review job are
@@ -107,7 +126,9 @@ Requirements:
 - Docker with Compose
 - a GitHub App installed on the target repositories, with its client/App ID,
   installation ID, and private key available to Diffuse
-- a review-model provider supported by LiteLLM
+- a review-model API credential for the self-hosted worker (LiteLLM-compatible
+  `REVIEW_MODEL`; see [Choosing a review model](#choosing-a-review-model)).
+  Local agent-CLI review is planned and does not replace this for server/PR review.
 
 ```bash
 cp .env.example .env
@@ -209,13 +230,16 @@ is specified in [`docs/architecture.md`](docs/architecture.md).
 manages repositories and cross-repository clusters (`repository`, `cluster`),
 moderates feedback-derived rules (`learning`), mints scoped service tokens
 (`token`), migrates and verifies the schema (`database`), inspects the
-configured review model (`model`), scores an evaluation set (`evaluate`), and
-reviews the current local branch before it becomes a pull request (`review`)
-using the same index, policy, learned rules, retrieval, and native verifier as
-the hosted service:
+configured review model (`model`), signs in to agent CLIs Diffuse can host
+(`agent`), scores an evaluation set (`evaluate`), and reviews the current local
+branch (`review`) against the same index, policy, and learned rules as the
+self-hosted server. Today local review still uses the API one-shot runtime;
+agent-CLI selection is host plumbing only — see
+[`docs/agent-runtimes.md`](docs/agent-runtimes.md).
 
 ```bash
 diffuse review -b origin/main --diff
+diffuse agent status
 ```
 
 Install it with `uv pip install -e .`. The production image's `diffuse`

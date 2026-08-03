@@ -1,4 +1,9 @@
-"""Sign in and report on the agent CLIs Diffuse hosts."""
+"""Sign in and report on the agent CLIs Diffuse can host for local review.
+
+Host plumbing only: configuration directory, sandbox policy, version floor, and
+login/status. No agent CLI is a selectable `REVIEW_RUNTIME` until its adapter
+lands — see `docs/agent-runtimes.md`.
+"""
 
 from __future__ import annotations
 
@@ -22,7 +27,7 @@ POLICY_COMMAND = "write-policy"
 
 
 def _login(args: argparse.Namespace) -> None:
-    cli = resolve_cli(args.runtime)
+    cli = resolve_cli(args.cli)
     code = login(cli)
     if code != 0:
         raise RuntimeError(
@@ -37,7 +42,7 @@ def _status(args: argparse.Namespace) -> None:
 
 
 def _write_policy(args: argparse.Namespace) -> None:
-    cli = resolve_cli(args.runtime)
+    cli = resolve_cli(args.cli)
     print(str(write_sandbox_settings(cli)))
 
 
@@ -48,17 +53,27 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "login",
         help="Sign in to an agent CLI inside the Diffuse-owned configuration directory",
         description=(
-            "Drive the vendor's own sign-in with its configuration directory pointed at\n"
-            "Diffuse's. This is a second sign-in: Diffuse never reads or writes the CLI's\n"
-            "default directory, so the terminal CLI you already use is untouched, and the\n"
-            "credential Diffuse creates is one Diffuse's own process owns."
+            "Run the vendor CLI's own sign-in with its configuration directory pointed\n"
+            "at Diffuse's. For Claude that is `claude auth login`: pick Claude.ai\n"
+            "subscription, an Anthropic API key, or a third-party / gateway option the\n"
+            "CLI offers — Diffuse does not collect API keys or reimplement auth.\n"
+            "\n"
+            "This is a second sign-in. Diffuse never reads or writes ~/.claude, so the\n"
+            "terminal CLI you already use is untouched, and the credential Diffuse\n"
+            "creates is one Diffuse's own process owns."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  diffuse agent login claude\n"
+            "  diffuse agent status\n"
+        ),
     )
     login_parser.add_argument(
-        "runtime",
+        "cli",
         choices=RUNTIME_CHOICES,
-        help="Which agent CLI to sign in to",
+        metavar="CLI",
+        help="Which agent CLI to sign in to (currently: claude)",
     )
     login_parser.set_defaults(handler=_login)
 
@@ -78,8 +93,9 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     policy_parser.add_argument(
-        "runtime",
+        "cli",
         choices=RUNTIME_CHOICES,
+        metavar="CLI",
         help="Which agent CLI's configuration directory to write the policy into",
     )
     policy_parser.set_defaults(handler=_write_policy)
