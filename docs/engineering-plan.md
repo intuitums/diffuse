@@ -69,9 +69,15 @@ pluggable; see [agent-runtimes.md](agent-runtimes.md).
 - **Claude Code adapter.** *Not started.* Blocked on D1 and R1. Exit: fixture
   review completes, `review_tool_calls` has rows, `claude-code` enters
   `RUNTIME_NAMES` (not `HOSTED_RUNTIME_NAMES`).
+- **`ReviewRequest` + internal tool provider.** *Done (preflight).* Runtimes
+  take a `ReviewRequest` (diff, policy, optional worktree / context plan /
+  tools). `ReviewToolProvider.search_code` wraps the same `search_codebase`
+  MCP uses and records every call (memory or Postgres). Local `diffuse review`
+  builds tools onto the request; the one-shot runtime still ignores them.
 - **Tool-call log.** *Done (schema).* `review_tool_calls` (migration 0011)
-  records every call so an agentic investigation stays replayable. No production
-  caller writes rows yet — that is the adapter's job.
+  records every call so an agentic investigation stays replayable. The
+  Postgres recorder is ready; the adapter is what must write rows on a real
+  review run.
 - **Retrievers as tools.** `search_code` and `ask_codebase` are exposed over MCP
   to external agents but unused by Diffuse's own one-shot runtime, which receives
   a pre-fused blob capped at 18 chunks and 24,000 characters. The agent-CLI

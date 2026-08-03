@@ -33,6 +33,7 @@ from repository_policy.resolve import (
     resolve_review_policy,
 )
 from retriever.retrieve import parse_changed_files, retrieve_context_from_plan
+from retriever.context_models import CrossRepositoryContextPlan
 from service.cli import (
     agent as agent_cli,
 )
@@ -57,6 +58,7 @@ from service.cli import (
 from service.cli import (
     token as token_cli,
 )
+from service.code_query import code_query_target_for_plan
 from service.cross_repository import resolve_cross_repository_context_plan
 from service.diff_parser import ParsedDiff, parse_unified_diff
 from service.model_providers import resolve_provider
@@ -69,7 +71,9 @@ from service.review.engine import (
     review_model,
     review_verifier_model,
 )
+from service.review.request import ReviewRequest
 from service.review.runtimes import LITELLM_RUNTIME, review_runtime_name
+from service.review.tools import MemoryToolRecorder, build_review_tool_provider
 from service.scm import validate_branch_name
 from service.storage.custom_context import load_active_custom_contexts
 from service.storage.learning import load_active_learned_rules
@@ -717,17 +721,40 @@ def run_local_review(
     try:
         stage("retrieving repository context")
         context = retrieve_context_from_plan(local_diff.diff_text, context_plan)
+        tools = None
+        if (
+            repository.scm_provider == "github"
+            and isinstance(context_plan, CrossRepositoryContextPlan)
+        ):
+            # Built for the agent-CLI path; the one-shot runtime ignores it and
+            # keeps using the pre-fused blob above. Constructing it here means a
+            # selectable agent runtime finds tools already on the request.
+            tools = build_review_tool_provider(
+                code_query_target_for_plan(
+                    repository_id=repository.id,
+                    repository_name=repository.full_name,
+                    remote_url=repository.scm_base_url,
+                    default_branch=repository.default_branch,
+                    context_plan=context_plan,
+                    include_related=bool(context_plan.related_snapshots),
+                ),
+                recorder=MemoryToolRecorder(),
+            )
         stage("running review model")
         report = generate_review(
             local_diff.diff_text,
             list(context.contexts),
-            progress_callback=model_progress,
-            policy=policy,
-            # Pass the models recorded in the run state rather than letting
-            # generation re-read the environment, so a resumed attempt uses the
-            # pair the drift check just validated.
-            candidate_model=selected_review_model,
-            verifier_model=selected_verifier_model,
+            request=ReviewRequest(
+                diff_text=local_diff.diff_text,
+                contexts=list(context.contexts),
+                progress_callback=model_progress,
+                policy=policy,
+                candidate_model=selected_review_model,
+                verifier_model=selected_verifier_model,
+                worktree=root,
+                context_plan=context_plan,
+                tools=tools,
+            ),
         )
     except Exception:
         _write_state(
