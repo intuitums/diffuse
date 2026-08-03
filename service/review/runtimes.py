@@ -1,9 +1,15 @@
 """Selectable review runtimes.
 
-A review runtime turns a diff plus retrieved context into a `ReviewReport`.
-`litellm` is the only one implemented today: it orchestrates the candidate
-passes, deduplication, diagram, and verifier itself, and every model call is a
-one-shot structured completion.
+A review runtime turns a diff plus context into a `ReviewReport`. Diffuse owns
+the contract; the runtime supplies the investigation. See
+`docs/agent-runtimes.md`.
+
+`litellm` is the only selectable implementation today: the one-shot API path
+that orchestrates candidate passes, deduplication, diagram, and verifier via
+structured completions (implemented with the LiteLLM library). Planned
+local-only values `claude-code` and `codex` are named here so host plumbing and
+tests can refer to them, but they are not in `RUNTIME_NAMES` until an adapter
+exists.
 
 The seam is deliberately the whole report rather than a single model call.
 `_call_structured` is the wrong altitude for it -- an agentic runtime that

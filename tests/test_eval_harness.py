@@ -811,6 +811,7 @@ def test_a_baseline_captured_at_a_different_confidence_floor_is_refused():
     (
         ("prompt_version", "native-review-v7-something-else", "PROMPT_VERSION"),
         ("review_passes", ["security", "correctness"], "REVIEW_PASSES"),
+        ("review_runtime", "claude-code", "REVIEW_RUNTIME"),
         ("requested_review_depth", "thorough", "review depth"),
     ),
 )
@@ -1081,6 +1082,7 @@ def test_run_records_the_configuration_that_moves_the_score(tmp_path, monkeypatc
     assert configuration is not None
     assert configuration.min_review_confidence == 0.6
     assert configuration.review_passes == ["security"]
+    assert configuration.review_runtime == "litellm"
     assert configuration.prompt_version == review_engine.PROMPT_VERSION
     assert configuration.requested_review_depth is None
 

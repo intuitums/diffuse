@@ -1,4 +1,9 @@
-"""Sign in and report on the agent CLIs Diffuse hosts."""
+"""Sign in and report on the agent CLIs Diffuse can host for local review.
+
+Host plumbing only: configuration directory, sandbox policy, version floor, and
+login/status. No agent CLI is a selectable `REVIEW_RUNTIME` until its adapter
+lands — see `docs/agent-runtimes.md`.
+"""
 
 from __future__ import annotations
 
