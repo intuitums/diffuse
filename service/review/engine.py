@@ -19,12 +19,10 @@ from retriever.retrieve import RetrievedContext, format_as_extra_instructions
 from service.diff_parser import ParsedDiff, pack_diff_files, parse_unified_diff
 from service.hosted.workflow import NonRetryableError
 from service.model_capabilities import (
-    EFFORT_LEVELS,
     REVIEW_DEPTHS,
     ModelCapabilities,
     ReasoningPlan,
     accepts,
-    depth_for_effort,
     describe,
     plan_reasoning,
     plan_structured_output,
@@ -56,10 +54,6 @@ PROMPT_VERSION = "native-review-v6-review-diagrams"
 REVIEW_TEMPERATURE = 0.1
 # Diffuse's own vocabulary for REVIEW_DEPTH: an intent, not provider syntax.
 REVIEW_DEPTH_LEVELS = REVIEW_DEPTHS
-# The LiteLLM effort rungs REVIEW_DEPTH's predecessor `REVIEW_EFFORT` accepts,
-# one per depth. Kept so an operator already on `REVIEW_EFFORT` keeps working;
-# `REVIEW_DEPTH` is the spelling documented from here on.
-REVIEW_EFFORT_LEVELS = EFFORT_LEVELS
 DEFAULT_PASSES = ("correctness", "security", "performance", "tests")
 PASS_INSTRUCTIONS = {
     "correctness": (
@@ -142,22 +136,6 @@ def review_verifier_model() -> str:
     return value or review_model()
 
 
-def review_effort() -> str | None:
-    """`REVIEW_EFFORT`, the LiteLLM-rung spelling of `REVIEW_DEPTH`.
-
-    Superseded by `REVIEW_DEPTH`, which names an intent rather than a provider's
-    effort vocabulary, and still read so an operator already configured on this
-    variable is not broken. Deliberately has no default.
-    """
-
-    value = os.environ.get("REVIEW_EFFORT", "").strip().lower()
-    if not value:
-        return None
-    if value not in REVIEW_EFFORT_LEVELS:
-        raise ValueError(f"REVIEW_EFFORT must be one of {', '.join(REVIEW_EFFORT_LEVELS)}")
-    return value
-
-
 def review_depth() -> str | None:
     """How carefully to review, or `None` to leave it entirely to the model.
 
@@ -172,28 +150,11 @@ def review_depth() -> str | None:
     """
 
     depth = os.environ.get("REVIEW_DEPTH", "").strip().lower()
-    effort = review_effort()
-    if depth and effort:
-        raise ValueError(
-            "REVIEW_DEPTH and REVIEW_EFFORT are both set and they configure the same "
-            f"thing (REVIEW_DEPTH={depth}, REVIEW_EFFORT={effort}). Keep REVIEW_DEPTH "
-            "and unset REVIEW_EFFORT."
-        )
-    if depth:
-        if depth not in REVIEW_DEPTH_LEVELS:
-            raise ValueError(
-                f"REVIEW_DEPTH must be one of {', '.join(REVIEW_DEPTH_LEVELS)}"
-            )
-        return depth
-    if effort:
-        return depth_for_effort(effort)
-    return None
-
-
-def review_depth_variable() -> str:
-    """Which variable the operator actually set, for use in diagnostics."""
-
-    return "REVIEW_DEPTH" if os.environ.get("REVIEW_DEPTH", "").strip() else "REVIEW_EFFORT"
+    if not depth:
+        return None
+    if depth not in REVIEW_DEPTH_LEVELS:
+        raise ValueError(f"REVIEW_DEPTH must be one of {', '.join(REVIEW_DEPTH_LEVELS)}")
+    return depth
 
 
 def review_provenance_minimum_confidence() -> float:
@@ -344,7 +305,7 @@ class ReviewDepthSupport:
     operator could only fix between runs.
     """
 
-    #: None when neither REVIEW_DEPTH nor REVIEW_EFFORT is set.
+    #: None when REVIEW_DEPTH is not set.
     depth: str | None
     variable: str
     #: (stage, plan), candidate first. Empty when no depth was requested.
@@ -445,7 +406,7 @@ def resolve_review_depth_support(
     if depth is None:
         return ReviewDepthSupport(
             depth=None,
-            variable=review_depth_variable(),
+            variable="REVIEW_DEPTH",
             plans=(),
             source=source,
         )
@@ -461,7 +422,7 @@ def resolve_review_depth_support(
     )
     return ReviewDepthSupport(
         depth=depth,
-        variable=review_depth_variable(),
+        variable="REVIEW_DEPTH",
         plans=tuple(
             (stage, plan_reasoning(model, depth, max_output_tokens=max_output_tokens))
             for stage, model in stages
