@@ -21,14 +21,7 @@ def _credential_status(model: str) -> tuple[str, tuple[str, ...], bool]:
     credential_names = record.credential_env_names
     configured_names = tuple(name for name in credential_names if os.environ.get(name))
     configured = bool(configured_names) or not record.credential_required
-    if record.provider_id == "aws-bedrock":
-        # Bedrock accepts either a shared profile or an explicit key pair, so a
-        # single non-empty name is not sufficient evidence.
-        configured = bool(os.environ.get("AWS_PROFILE")) or bool(
-            os.environ.get("AWS_ACCESS_KEY_ID")
-            and os.environ.get("AWS_SECRET_ACCESS_KEY")
-        )
-    elif model.strip().casefold().startswith("vertex_ai/"):
+    if model.strip().casefold().startswith("vertex_ai/"):
         # Vertex uses Google application-default credentials rather than an API
         # key. The credential file is optional when gcloud or workload identity
         # supplies ADC, while project and location are the normal routing hints.

@@ -1068,7 +1068,6 @@ def test_run_records_the_configuration_that_moves_the_score(tmp_path, monkeypatc
     monkeypatch.setenv("REVIEW_PASSES", "security")
     monkeypatch.setenv("MIN_REVIEW_CONFIDENCE", "0.6")
     monkeypatch.delenv("REVIEW_DEPTH", raising=False)
-    monkeypatch.delenv("REVIEW_EFFORT", raising=False)
     _stub_call(monkeypatch, findings=[_candidate()], keep={"candidate-0"})
     _write_fixture(tmp_path, "configured")
     output = tmp_path / "suite.json"
@@ -1100,7 +1099,6 @@ def test_run_records_what_the_model_was_actually_sent_for_a_depth(
     monkeypatch.delenv("REVIEW_VERIFIER_MODEL", raising=False)
     monkeypatch.setenv("REVIEW_PASSES", "security")
     monkeypatch.setenv("REVIEW_DEPTH", "thorough")
-    monkeypatch.delenv("REVIEW_EFFORT", raising=False)
     _stub_call(monkeypatch, findings=[_candidate()], keep={"candidate-0"})
     _write_fixture(tmp_path, "deep")
     output = tmp_path / "suite.json"
@@ -1125,7 +1123,6 @@ def test_run_refuses_a_depth_the_candidate_model_cannot_express(
     monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.delenv("REVIEW_VERIFIER_MODEL", raising=False)
     monkeypatch.setenv("REVIEW_DEPTH", "thorough")
-    monkeypatch.delenv("REVIEW_EFFORT", raising=False)
 
     def never(*_args, **_kwargs):
         raise AssertionError("a model was called at a depth it cannot express")
