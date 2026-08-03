@@ -12,12 +12,14 @@ Three boundaries stack here and none of them subsumes another:
    credential Diffuse never names cannot reach the CLI. This is
    `RepositoryMirror._git_environment` (`service/hosted/repository_mirror.py`)
    applied to a second untrusted subprocess.
-2. `sandbox_settings` is the CLI's own OS sandbox: no Bash egress, no reads
-   outside the worktree, no credential files.
-3. `require_version_floor` exists because (2) is version-gated. An older build
-   parses a settings key it does not know and drops it *silently*, so the
-   review runs against a weaker boundary than the policy on disk describes and
-   nothing says so. The floor is the only way to know the policy was enforced.
+2. The CLI's own OS sandbox policy written into the Diffuse-owned config
+   directory (Claude: JSON `settings.json`; Codex: TOML `config.toml`): no
+   Bash egress, no reads outside the worktree, no credential files.
+3. `require_version_floor` exists because Claude's sandbox keys are
+   version-gated. An older build parses a settings key it does not know and
+   drops it *silently*, so the review runs against a weaker boundary than the
+   policy on disk describes and nothing says so. The floor is the only way to
+   know the policy was enforced. Codex's floor is empty until U4 empirics.
 
 The sandbox is a real OS boundary -- Seatbelt on macOS, bubblewrap on Linux --
 but not a complete one. Its documented scope is Bash subprocesses, and MCP
@@ -40,7 +42,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from service.review.runtimes import CLAUDE_CODE_RUNTIME
+from service.review.runtimes import CLAUDE_CODE_RUNTIME, CODEX_RUNTIME
 
 #: Where Diffuse keeps the agent configuration it owns. Deliberately not
 #: `~/.claude` or `~/.codex`: Diffuse never reads or writes the developer's own
@@ -49,6 +51,10 @@ from service.review.runtimes import CLAUDE_CODE_RUNTIME
 #: credential in its own directory and owns the macOS Keychain ACL for it.
 AGENT_HOME_VARIABLE = "DIFFUSE_AGENT_HOME"
 DEFAULT_AGENT_HOME = "~/.diffuse/agent"
+
+#: How a vendor auth-status command reports success.
+AUTH_STATUS_JSON = "json"
+AUTH_STATUS_EXIT = "exit_code"
 
 #: Read once, at the top of the process, before anything rewrites `HOME` for a
 #: child. The sandbox policy has to name the *developer's* home directory, and
@@ -129,16 +135,23 @@ class AgentCli:
     #: from, which is what lets Diffuse own a second, separate login.
     config_directory_variable: str
     directory_name: str
+    #: Filename inside the config directory. Claude uses JSON `settings.json`;
+    #: Codex uses TOML `config.toml`.
+    settings_filename: str
     capabilities: tuple[AgentCapability, ...]
     #: Argument vectors for the vendor's own auth commands. Diffuse drives these
     #: rather than reimplementing a login: the credential stays the vendor's.
     login_arguments: tuple[str, ...]
     logout_arguments: tuple[str, ...]
     auth_status_arguments: tuple[str, ...]
+    #: `AUTH_STATUS_JSON` (Claude) or `AUTH_STATUS_EXIT` (Codex `login status`).
+    auth_status_kind: str
     upgrade_hint: str
 
     @property
     def version_floor(self) -> tuple[int, int, int]:
+        if not self.capabilities:
+            return (0, 0, 0)
         return max(capability.minimum for capability in self.capabilities)
 
     @property
@@ -155,6 +168,7 @@ CLAUDE_CODE = AgentCli(
     display_name="Claude Code",
     config_directory_variable="CLAUDE_CONFIG_DIR",
     directory_name="claude",
+    settings_filename="settings.json",
     capabilities=CLAUDE_CODE_CAPABILITIES,
     # Claude's own interactive auth: subscription (Claude.ai), Anthropic API
     # key, or a third-party / gateway option the CLI offers. Diffuse does not
@@ -163,16 +177,36 @@ CLAUDE_CODE = AgentCli(
     login_arguments=("auth", "login"),
     logout_arguments=("auth", "logout"),
     auth_status_arguments=("auth", "status", "--json"),
+    auth_status_kind=AUTH_STATUS_JSON,
     upgrade_hint="claude update",
 )
 
-#: Every CLI `diffuse agent` will act on. Codex is absent deliberately, on the
-#: same rule `RUNTIME_NAMES` follows: a name is listed once it works, not once it
-#: is planned. Its version floor has not been established -- nothing has been run
-#: against it -- and its sandbox configuration is TOML with a different shape
-#: than the JSON below, so signing a developer in would authenticate them for a
-#: runtime `REVIEW_RUNTIME` does not accept.
-AGENT_CLIS: tuple[AgentCli, ...] = (CLAUDE_CODE,)
+#: Codex host plumbing is live for login/status/write-policy. The version floor
+#: is empty until U4 empirics measure which settings fail silently on older
+#: builds — any parseable `--version` currently passes. The adapter that would
+#: make `REVIEW_RUNTIME=codex` selectable is still Phase 5.
+CODEX = AgentCli(
+    runtime=CODEX_RUNTIME,
+    executable="codex",
+    display_name="Codex",
+    config_directory_variable="CODEX_HOME",
+    directory_name="codex",
+    settings_filename="config.toml",
+    capabilities=(),
+    # Codex's own interactive auth: ChatGPT OAuth by default (`codex login`),
+    # or API key via Codex's stdin path (`codex login --with-api-key`). Diffuse
+    # does not collect keys; it only points CODEX_HOME at ~/.diffuse/agent/codex.
+    login_arguments=("login",),
+    logout_arguments=("logout",),
+    auth_status_arguments=("login", "status"),
+    auth_status_kind=AUTH_STATUS_EXIT,
+    upgrade_hint="npm install -g @openai/codex@latest",
+)
+
+#: Every CLI `diffuse agent` will act on. A name is listed once host plumbing
+#: works (login, status, policy), not once a review adapter is selectable —
+#: `RUNTIME_NAMES` is the gate for `REVIEW_RUNTIME`.
+AGENT_CLIS: tuple[AgentCli, ...] = (CLAUDE_CODE, CODEX)
 
 #: Inherited verbatim by the agent process. Everything absent from this set is
 #: absent from the child by construction, which is the point: an allowlist keeps
@@ -227,16 +261,16 @@ CREDENTIAL_ENVIRONMENT = (
 def require_supported_platform() -> None:
     """Refuse where the CLI sandbox does not exist, rather than run without one.
 
-    Claude Code's sandbox is unsupported on native Windows. Running there would
-    mean handing an untrusted diff to an agent with no OS boundary at all, which
-    is worse than not offering the runtime.
+    Claude Code's sandbox is unsupported on native Windows; Codex's Linux/macOS
+    Seatbelt/bubblewrap path is what Diffuse intends to rely on. Running without
+    an OS boundary would mean handing an untrusted diff to an agent with none at
+    all, which is worse than not offering the runtime.
     """
 
     if sys.platform.startswith("win"):
         raise AgentHostError(
-            "The agent CLI review runtimes need an OS sandbox, and Claude Code "
-            "does not sandbox on native Windows. Use WSL2, or set "
-            "REVIEW_RUNTIME=litellm."
+            "The agent CLI review runtimes need an OS sandbox, and native Windows "
+            "is not supported. Use WSL2, or set REVIEW_RUNTIME=litellm."
         )
 
 
@@ -276,7 +310,7 @@ def ensure_agent_config_directory(cli: AgentCli) -> Path:
 
 
 def sandbox_settings(worktree: Path | str | None = None) -> dict[str, object]:
-    """The sandbox policy Diffuse runs an agent CLI under.
+    """The Claude Code sandbox policy Diffuse persists under CLAUDE_CONFIG_DIR.
 
     Four keys are load-bearing, and each closes a failure that is silent rather
     than loud:
@@ -328,28 +362,82 @@ def sandbox_settings(worktree: Path | str | None = None) -> dict[str, object]:
     }
 
 
-def rendered_sandbox_settings() -> str:
-    """The exact bytes `write_sandbox_settings` persists.
+#: Env-var globs Codex must not forward into sandboxed shell tools. Mirrors the
+#: intent of `CREDENTIAL_ENVIRONMENT` as Codex's `shell_environment_policy`
+#: exclude list (case-insensitive globs).
+CODEX_SHELL_EXCLUDES: tuple[str, ...] = (
+    "ANTHROPIC_*",
+    "OPENAI_*",
+    "AWS_*",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "SSH_AUTH_SOCK",
+    "DATABASE_URL",
+    "DIFFUSE_*",
+    "POSTGRES_*",
+    "GITHUB_APP_*",
+    "GITHUB_WEBHOOK_*",
+)
 
-    One renderer for both writing and checking, so "is the file current" cannot
-    answer differently from "what would we write".
-    """
+
+def rendered_claude_sandbox_settings() -> str:
+    """The exact bytes Diffuse persists for Claude Code."""
 
     return json.dumps(sandbox_settings(), indent=2, sort_keys=True) + "\n"
+
+
+def rendered_codex_config() -> str:
+    """The exact bytes Diffuse persists as Codex `config.toml`.
+
+    `cli_auth_credentials_store = "file"` keeps the login in `CODEX_HOME`
+    (auth.json) rather than the OS keychain, so review runs that pass
+    `--ignore-user-config` still see the Diffuse-owned credential — the
+    Conductor pattern. `sandbox_mode = "read-only"` and `approval_policy =
+    "never"` are the host-level defaults; the adapter may tighten further via
+    `-c` / `-s` at call time. Empirics for silent-ignore behaviour are U4.
+    """
+
+    exclude_lines = ",\n".join(f'  "{item}"' for item in CODEX_SHELL_EXCLUDES)
+    return (
+        'cli_auth_credentials_store = "file"\n'
+        'sandbox_mode = "read-only"\n'
+        'approval_policy = "never"\n'
+        "\n"
+        "[shell_environment_policy]\n"
+        'inherit = "core"\n'
+        "ignore_default_excludes = false\n"
+        f"exclude = [\n{exclude_lines},\n]\n"
+    )
+
+
+def rendered_sandbox_settings(cli: AgentCli | None = None) -> str:
+    """The exact bytes `write_sandbox_settings` persists for `cli`.
+
+    One renderer for both writing and checking, so "is the file current" cannot
+    answer differently from "what would we write". `cli is None` keeps the
+    Claude JSON form for callers that still mean Claude's policy document.
+    """
+
+    if cli is None or cli.runtime == CLAUDE_CODE_RUNTIME:
+        return rendered_claude_sandbox_settings()
+    if cli.runtime == CODEX_RUNTIME:
+        return rendered_codex_config()
+    raise AgentHostError(f"no sandbox policy renderer for {cli.runtime!r}")
 
 
 def write_sandbox_settings(cli: AgentCli) -> Path:
     """Persist the worktree-independent policy as the CLI's user settings.
 
     Persisted rather than passed inline on every call so that an operator can
-    read what an agent review actually runs under. The worktree is the one part
-    that cannot live here -- it differs per review -- so the adapter adds
-    `allowRead` through `--settings` at call time.
+    read what an agent review actually runs under. For Claude the worktree is
+    the one part that cannot live here -- it differs per review -- so the
+    adapter adds `allowRead` through `--settings` at call time. For Codex the
+    adapter tightens the worktree via `-C` / `-c` instead.
     """
 
     directory = ensure_agent_config_directory(cli)
-    path = directory / "settings.json"
-    path.write_text(rendered_sandbox_settings())
+    path = directory / cli.settings_filename
+    path.write_text(rendered_sandbox_settings(cli))
     path.chmod(0o600)
     return path
 
@@ -369,11 +457,11 @@ def sandbox_settings_are_current(cli: AgentCli) -> bool:
     and this proves the policy it will read is the current one.
     """
 
-    path = agent_config_directory(cli) / "settings.json"
+    path = agent_config_directory(cli) / cli.settings_filename
     if not path.is_file():
         return False
     try:
-        return path.read_text() == rendered_sandbox_settings()
+        return path.read_text() == rendered_sandbox_settings(cli)
     except OSError:
         return False
 
@@ -507,13 +595,25 @@ def authentication_status(cli: AgentCli) -> dict[str, object]:
     Reads the vendor's own answer rather than looking for a credential file:
     Claude Code stores its credential in the macOS Keychain on a Mac and on disk
     elsewhere, so a file probe would report a signed-in developer as signed out
-    on the one platform this runtime is most used from.
+    on the one platform this runtime is most used from. Codex with
+    `cli_auth_credentials_store = "file"` keeps auth.json under CODEX_HOME, but
+    status still goes through `codex login status` so the vendor owns the
+    definition of "signed in".
     """
 
     def unauthenticated(detail: str | None) -> dict[str, object]:
         return {"logged_in": False, "auth_method": None, "account": None, "detail": detail}
 
     completed = _run_cli(cli, cli.auth_status_arguments)
+    if cli.auth_status_kind == AUTH_STATUS_EXIT:
+        if completed.returncode != 0:
+            return unauthenticated((completed.stderr or completed.stdout).strip() or None)
+        return {
+            "logged_in": True,
+            "auth_method": None,
+            "account": None,
+            "detail": (completed.stdout or "").strip() or None,
+        }
     if completed.returncode != 0:
         return unauthenticated((completed.stderr or "").strip() or None)
     try:
@@ -548,8 +648,10 @@ def login(cli: AgentCli) -> int:
     menu the vendor CLI presents), so it needs their real `HOME`, `PATH`, and
     terminal. Only the configuration directory is overridden, which is the
     whole point -- the credential lands in Diffuse's directory and the
-    developer's own `~/.claude` is never read or written. Diffuse never asks
-    for an API key of its own; auth methods are entirely the vendor's.
+    developer's own `~/.claude` / `~/.codex` is never read or written. Diffuse
+    never asks for an API key of its own; auth methods are entirely the
+    vendor's. The sandbox / config policy is written *before* login so Codex
+    sees `cli_auth_credentials_store = "file"` for the credential it creates.
     """
 
     require_supported_platform()
@@ -592,11 +694,12 @@ def cli_status(cli: AgentCli) -> dict[str, object]:
     if version < cli.version_floor:
         return {**status, "ready": False, "problem": version_floor_message(cli, version)}
 
-    settings_path = agent_config_directory(cli) / "settings.json"
+    settings_path = agent_config_directory(cli) / cli.settings_filename
     settings_written = settings_path.is_file()
     settings_current = sandbox_settings_are_current(cli)
     status["sandbox_settings_written"] = settings_written
     status["sandbox_settings_current"] = settings_current
+    status["settings_filename"] = cli.settings_filename
 
     authentication = authentication_status(cli)
     status["authenticated"] = authentication["logged_in"]
@@ -617,8 +720,7 @@ def cli_status(cli: AgentCli) -> dict[str, object]:
             )
         else:
             status["problem"] = (
-                f"run `diffuse agent login {cli.runtime}` to sign in and write the "
-                "sandbox policy"
+                f"run `diffuse agent login {cli.runtime}` to sign in and write the sandbox policy"
             )
     return status
 

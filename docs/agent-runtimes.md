@@ -35,12 +35,19 @@ Planned values: `claude`, `codex`. Neither is in `RUNTIME_NAMES` yet, so
   `~/.diffuse/agent/claude`. Auth method is Claude's own menu (Claude.ai
   subscription, Anthropic API key, or a third-party / gateway option). Diffuse
   does not collect or store API keys itself.
-- `diffuse agent status` / `write-policy`
+- `diffuse agent login codex` — runs `codex login` into
+  `~/.diffuse/agent/codex` (`CODEX_HOME`), with `cli_auth_credentials_store =
+  "file"` so the credential stays in that directory. ChatGPT OAuth by default;
+  Codex's own API-key path if you prefer. Same rule: Diffuse does not collect
+  keys.
+- `diffuse agent status` / `write-policy` for both
 - Diffuse-owned config under `~/.diffuse/agent` (`DIFFUSE_AGENT_HOME`)
-- Child environment allowlist, sandbox policy, version floor (2.1.219+)
-- Native Windows refused (no OS sandbox)
+- Child environment allowlist; Claude sandbox policy + version floor (2.1.219+);
+  Codex TOML policy (`sandbox_mode = "read-only"`, shell env excludes). Codex
+  version floor pending U4 empirics.
+- Native Windows refused (no OS sandbox Diffuse can rely on)
 
-What has **not** landed: an adapter that spawns the CLI for a review, or lets
+What has **not** landed: an adapter that spawns either CLI for a review, or lets
 `diffuse review` run without `REVIEW_MODEL`.
 
 **Preflight for Phase 3 (agent adapter):**
@@ -49,18 +56,20 @@ What has **not** landed: an adapter that spawns the CLI for a review, or lets
 | --- | --- |
 | `ReviewRequest` seam | Done — runtimes take a request object |
 | Internal `search_code` tool provider + recorders | Done — agent path can log calls |
+| Claude + Codex host plumbing | Done — login/status/write-policy |
 | D1 baseline capture | **Owner** — needs a real `REVIEW_MODEL` credential (~$0.75) |
 | R1 licensing | **Owner** — redistributing a tool that drives subscriber CLIs |
 | U3 `diffuse agent login claude` UX | **Owner machine** — interactive `claude auth login`; Claude Code must be installed |
+| U4 Codex empirics | **Owner machine** — version floor + silent-ignore matrix for Codex settings |
 
 Near-term delivery order lives in the working plan at
 `.context/agent-cli-runtime-plan.md` (gitignored). Summary:
 
 1. ~~`ReviewRuntime` seam~~ done
-2. ~~Claude Code host plumbing~~ done
+2. ~~Claude + Codex host plumbing~~ done
 3. Claude Code adapter — next; blocked on owner items D1 (baseline fund) and R1 (licensing)
 4. Retire pass scaffolding only after eval parity
-5. Codex host + adapter
+5. Codex adapter
 6. Measure per runtime
 
 ## Pass scaffolding

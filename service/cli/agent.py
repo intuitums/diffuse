@@ -54,18 +54,21 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         help="Sign in to an agent CLI inside the Diffuse-owned configuration directory",
         description=(
             "Run the vendor CLI's own sign-in with its configuration directory pointed\n"
-            "at Diffuse's. For Claude that is `claude auth login`: pick Claude.ai\n"
-            "subscription, an Anthropic API key, or a third-party / gateway option the\n"
-            "CLI offers — Diffuse does not collect API keys or reimplement auth.\n"
+            "at Diffuse's. For Claude that is `claude auth login` (Claude.ai subscription,\n"
+            "Anthropic API key, or a third-party / gateway option). For Codex that is\n"
+            "`codex login` (ChatGPT OAuth by default; API key via Codex's own\n"
+            "`--with-api-key` path if you prefer). Diffuse does not collect API keys or\n"
+            "reimplement auth.\n"
             "\n"
-            "This is a second sign-in. Diffuse never reads or writes ~/.claude, so the\n"
-            "terminal CLI you already use is untouched, and the credential Diffuse\n"
-            "creates is one Diffuse's own process owns."
+            "This is a second sign-in. Diffuse never reads or writes ~/.claude or\n"
+            "~/.codex, so the terminal CLI you already use is untouched, and the\n"
+            "credential Diffuse creates is one Diffuse's own process owns."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
             "  diffuse agent login claude\n"
+            "  diffuse agent login codex\n"
             "  diffuse agent status\n"
         ),
     )
@@ -73,7 +76,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "cli",
         choices=RUNTIME_CHOICES,
         metavar="CLI",
-        help="Which agent CLI to sign in to (currently: claude)",
+        help="Which agent CLI to sign in to (claude or codex)",
     )
     login_parser.set_defaults(handler=_login)
 
