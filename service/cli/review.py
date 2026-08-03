@@ -32,8 +32,8 @@ from repository_policy.resolve import (
     apply_approved_learned_rules,
     resolve_review_policy,
 )
-from retriever.retrieve import parse_changed_files, retrieve_context_from_plan
 from retriever.context_models import CrossRepositoryContextPlan
+from retriever.retrieve import parse_changed_files, retrieve_context_from_plan
 from service.cli import (
     agent as agent_cli,
 )

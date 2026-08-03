@@ -53,25 +53,32 @@ diffuse evaluate evals/baseline.example.json
   locally authenticated agent CLI. A `diffuse review` capability only; the API
   and worker refuse them at startup. **Not selectable yet.**
 
-`diffuse agent` manages host plumbing for those CLIs (today: Claude):
+`diffuse agent` manages host plumbing for those CLIs:
 
 ```bash
 diffuse agent status                    # installed, current, and signed in?
-diffuse agent login claude              # Claude's own auth menu into ~/.diffuse/agent/claude
+diffuse agent login claude              # Claude's own auth into ~/.diffuse/agent/claude
+diffuse agent login codex               # Codex's own auth into ~/.diffuse/agent/codex
 diffuse agent write-policy claude       # restore the sandbox policy without signing in
+diffuse agent write-policy codex
 ```
 
 `diffuse agent login claude` runs `claude auth login` with `CLAUDE_CONFIG_DIR`
 pointed at Diffuse's directory. Pick whatever Claude offers — Claude.ai
-subscription, Anthropic API key, or a third-party / gateway option. Diffuse
-does not collect API keys or reimplement that flow.
+subscription, Anthropic API key, or a third-party / gateway option.
 
-`diffuse agent status` reports the version floor as well as the sign-in. The
-sandbox settings a review depends on are version-gated and are *silently ignored*
-by older builds, so Diffuse refuses to run below the floor and names the settings
-that would have been dropped rather than reviewing behind a weaker boundary than
-the policy on disk describes. On native Windows, where Claude Code does not
-sandbox at all, the runtime is refused outright.
+`diffuse agent login codex` runs `codex login` with `CODEX_HOME` pointed at
+Diffuse's directory (ChatGPT OAuth by default; Codex's own
+`login --with-api-key` stdin path if you prefer an API key). Diffuse does not
+collect API keys or reimplement either vendor flow.
+
+`diffuse agent status` reports the version floor as well as the sign-in. Claude's
+sandbox settings are version-gated and are *silently ignored* by older builds,
+so Diffuse refuses to run below the floor and names the settings that would have
+been dropped rather than reviewing behind a weaker boundary than the policy on
+disk describes. Codex's floor is empty until measured (U4). On native Windows,
+where these CLIs do not provide the OS sandbox Diffuse relies on, the runtime is
+refused outright.
 
 ## Reviewing a local branch
 
