@@ -40,6 +40,43 @@ Planned values: `claude`, `codex`. Neither is in `RUNTIME_NAMES` yet, so
   "file"` so the credential stays in that directory. ChatGPT OAuth by default;
   Codex's own API-key path if you prefer. Same rule: Diffuse does not collect
   keys.
+- **Arguments after the CLI name are forwarded to the vendor command
+  unchanged.** Choosing *how* to authenticate is the vendor's menu, so Diffuse
+  does not mirror their flags — an allowlist here would need updating on every
+  vendor release and would be silently wrong in between.
+
+### Signing in on a server with no browser
+
+This is the normal case for a self-hosted operator, and the default flows do
+not cover it. Codex's default OAuth expects a browser that can reach a callback
+on the host's own localhost; on a headless box it hangs until you build an SSH
+tunnel. Use device authorization instead — it prints a URL and a one-time code
+you complete from any machine:
+
+```bash
+diffuse agent login codex --device-auth
+diffuse agent login claude --console   # Anthropic Console / API billing
+```
+
+Anything else the vendor accepts works the same way, including the stdin
+credential paths:
+
+```bash
+printenv OPENAI_API_KEY | diffuse agent login codex --with-api-key
+```
+
+Use `--` before the vendor arguments if one ever collides with a Diffuse flag:
+`diffuse agent login codex -- --device-auth`.
+
+**One exception.** Codex's `-c key=value` is refused, because it writes the same
+`config.toml` keys Diffuse persists — including the
+`cli_auth_credentials_store = "file"` that keeps the credential inside
+`CODEX_HOME`. Sending it back to the OS keychain would put the credential where
+a review run with `--ignore-user-config` cannot read it, and the login would
+still exit 0, so the breakage would surface much later as a review that cannot
+authenticate. Change the persisted policy with `diffuse agent write-policy
+codex` instead. The refusal is per-CLI: `-c` means nothing to `claude auth
+login`, so Claude forwards it.
 - `diffuse agent status` / `write-policy` for both
 - Diffuse-owned config under `~/.diffuse/agent` (`DIFFUSE_AGENT_HOME`)
 - Child environment allowlist; Claude sandbox policy + version floor (2.1.219+);
