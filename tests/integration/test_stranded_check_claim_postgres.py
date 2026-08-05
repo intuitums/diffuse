@@ -10,7 +10,6 @@ import os
 from contextlib import closing
 
 import psycopg2
-import pytest
 
 from service.hosted.workflow import (
     claim_stranded_review_jobs,
