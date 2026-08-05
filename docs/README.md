@@ -13,7 +13,7 @@ first pull request. These pages are the reference behind it.
 | [configuration.md](configuration.md) | Repository review policy: every `.diffuse/` file, field, default, and inheritance rule. |
 | [deployment.md](deployment.md) | Single-server operation: host preparation, secrets, backups and restore drills, upgrades, rollback, and the operational checklist. |
 | [cli.md](cli.md) | The `diffuse` command: every subcommand, the local-review flags and output modes, and the stable exit-code table. |
-| [mcp.md](mcp.md) | The MCP server at `/mcp`: authentication, scopes, the twenty tools, fix handoffs, and analytics. |
+| [mcp.md](mcp.md) | The MCP server at `/mcp`: authentication, scopes, the twenty-two tools, fix handoffs, and analytics. |
 | [rest-api.md](rest-api.md) | The versioned REST API under `/api/v1`: scopes, conventions, and idempotency. The schema itself is served at `/openapi.json`. |
 
 Elsewhere in the repository:
