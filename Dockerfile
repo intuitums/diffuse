@@ -105,11 +105,38 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 
 WORKDIR /src
 
-COPY requirements.txt requirements-dev.txt pyproject.toml ./
+# See the builder stage for why docker-clean goes away before the cache mounts.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean \
+    && printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\n' \
+        > /etc/apt/apt.conf.d/keep-cache
+
+# `git`, because the suite shells out to it. Twenty tests across test_index_repo,
+# test_repositories, test_repository_policy, and test_review_cli build throwaway
+# repositories with `git init` and drive the real binary; without it they fail
+# with `FileNotFoundError: 'git'`, which reads like a code bug and is not one.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && apt-get install -y --no-install-recommends git
+
+# The lock FIRST, hash-checked, exactly as the builder stage and CI do it. This
+# stage used to install requirements-dev.txt alone, which re-resolves the
+# version RANGES in requirements.txt on every build: it produced litellm 1.95.0,
+# fastapi 0.141.1, and openai 2.53.0 against a shipped image pinned to 1.93.0,
+# 0.139.2, and 2.48.0. The stage meant to test what ships was the one stage not
+# testing it.
+#
+# requirements-dev.txt goes on top and adds test tooling only. It re-states
+# requirements.txt, but every range there is already satisfied by the locked
+# version installed above, so pip leaves those alone rather than upgrading them.
+# `pip check` is the backstop if that ever stops being true.
+COPY requirements.lock requirements.txt requirements-dev.txt pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install -r requirements-dev.txt \
+    python -m pip install --require-hashes -r requirements.lock \
+    && python -m pip install -r requirements-dev.txt \
     && python -m pip check
 
+# Source under test.
 COPY indexer ./indexer
 COPY repository_policy ./repository_policy
 COPY retriever ./retriever
@@ -117,7 +144,42 @@ COPY service ./service
 COPY sql ./sql
 COPY tests ./tests
 
-ENTRYPOINT ["python", "-m", "pytest"]
+# Files the suite reads as fixtures rather than imports. Each one is load-bearing
+# for a test that fails without it, and each was absent while nothing built this
+# stage: evals/ for the harness fixtures (test_eval_harness), .env.example and
+# deploy/env.example for the documented-configuration checks
+# (test_env_documentation, test_deploy_env_example), and the workflow definitions
+# for the release-provenance assertions.
+COPY evals ./evals
+COPY deploy ./deploy
+COPY .env.example ./.env.example
+COPY .github ./.github
+# This file, read as text: test_release_artifacts_ship_the_license asserts that
+# the runtime stage below installs the BSL text, because a release that ships
+# without it is a licensing problem rather than a functional one.
+COPY Dockerfile ./Dockerfile
+
+# Migrate first when an integration database is configured, then hand every
+# argument to pytest. The integration suite connects to an already-migrated
+# database and fails with `relation "repositories" does not exist` against an
+# empty one -- CI's test-postgres job runs `diffuse database migrate` as a
+# separate step, and a container that did not would make the container path
+# look broken when only its setup was missing.
+#
+# Unset POSTGRES_TEST_DATABASE_URL means a unit-only run, which needs no
+# database and must not wait for one.
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'set -e' \
+    'if [ -n "${POSTGRES_TEST_DATABASE_URL}" ]; then' \
+    '    DATABASE_URL="${POSTGRES_TEST_DATABASE_URL}" \' \
+    '        python -m service.cli.review database migrate >&2' \
+    'fi' \
+    'exec python -m pytest "$@"' \
+    > /usr/local/bin/run-tests \
+    && chmod +x /usr/local/bin/run-tests
+
+ENTRYPOINT ["/usr/local/bin/run-tests"]
 
 FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS runtime
 

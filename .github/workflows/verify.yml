@@ -229,6 +229,88 @@ jobs:
       - name: Run PostgreSQL integration tests
         run: python -m pytest -m integration
 
+  # The suite, on the platform Diffuse ships to, against the dependency set the
+  # image contains. `lint-and-unit` and `test-postgres` above run on a GitHub
+  # runner's Python with pip-installed dependencies; this runs inside the image.
+  #
+  # Its other job is to keep the `test-runner` stage alive. That stage existed for
+  # months with nothing building it and rotted exactly the way an unbuilt stage
+  # does: it installed version ranges instead of the lock (litellm 1.95.0 against
+  # a shipped 1.93.0), had no `git` for the twenty tests that shell out to it, and
+  # was missing every fixture file the suite reads from disk. 35 failures, none of
+  # them a code bug. Deleting this job puts the stage back on that path. See DEV-320.
+  test-container:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # Its own cache key, not `diffuse/Dockerfile`: this builds a different target
+      # from build-container, and sharing one disk would have them evict each other.
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@a5256a73e30f09e37e3eceb8ca36043d17621d24 # v2.1.0
+        with:
+          cache-key: diffuse/Dockerfile-test-runner
+
+      - name: Build the test image
+        uses: useblacksmith/build-push-action@fb9e3e6a9299c78462bfadd0d93352c316adc9b8 # v2.2.0
+        with:
+          context: .
+          target: test-runner
+          load: true
+          tags: diffuse-tests:ci
+
+      # Proves the point of the stage rather than trusting it: if requirements-dev.txt
+      # ever drags a runtime dependency off the locked version again, the tested set
+      # stops being the shipped set and this fails here instead of in production.
+      - name: Confirm the image tests the shipped dependency set
+        run: |
+          docker run --rm --entrypoint pip diffuse-tests:ci freeze > /tmp/installed.txt
+          python - <<'PY'
+          import re, sys
+
+          installed = {}
+          for line in open("/tmp/installed.txt"):
+              match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==(.+)$", line.strip())
+              if match:
+                  installed[match.group(1).lower().replace("_", "-")] = match.group(2)
+
+          drifted, checked = [], 0
+          for line in open("requirements.lock"):
+              match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)", line)
+              if not match:
+                  continue
+              name = match.group(1).lower().replace("_", "-")
+              pinned = match.group(2)
+              actual = installed.get(name)
+              if actual is None:
+                  continue
+              checked += 1
+              if actual != pinned:
+                  drifted.append(f"  {name}: image has {actual}, lock pins {pinned}")
+
+          if not checked:
+              sys.exit("Compared nothing -- the parse above is broken, not the image.")
+          if drifted:
+              sys.exit(
+                  f"The test image does not contain the shipped dependency set "
+                  f"({len(drifted)} of {checked} differ):\n" + "\n".join(drifted)
+              )
+          print(f"{checked} locked packages match the image exactly.")
+          PY
+
+      # Unit and integration in one run, against the disposable PostgreSQL in
+      # docker-compose.tests.yml. DIFFUSE_REQUIRE_INTEGRATION_TESTS is set there,
+      # so a run that skips the integration tests fails rather than passing quietly.
+      - name: Run the whole suite in the container
+        run: |
+          DIFFUSE_TEST_IMAGE=diffuse-tests:ci \
+            docker compose -f docker-compose.tests.yml run --rm tests
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.tests.yml down -v
+
   build-container:
     runs-on: blacksmith-8vcpu-ubuntu-2404
     # 30 -> 40: this job now boots the stack as well as building it, which adds a
