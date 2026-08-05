@@ -35,14 +35,19 @@ def _git(root, *arguments):
     )
 
 
-def test_clone_url_joins_a_trailing_slash_origin_with_a_nested_name():
+def test_clone_url_joins_a_trailing_slash_origin_with_owner_repo():
     assert (
         repository_clone_url(
             "https://github.example.com/",
-            "platform/backend/payments",
+            "platform/payments",
         )
-        == "https://github.example.com/platform/backend/payments.git"
+        == "https://github.example.com/platform/payments.git"
     )
+
+
+def test_repository_name_rejects_nested_namespaces():
+    with pytest.raises(ValueError, match="Repository name"):
+        validate_repository_name("group/platform/repo")
 
 
 def test_repository_onboarding_origin_requires_explicit_allowlist(monkeypatch):

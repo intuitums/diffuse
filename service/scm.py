@@ -13,7 +13,9 @@ from urllib.parse import unquote, urlsplit
 
 from repository_policy.models import validate_repo_path
 
-REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$")
+# GitHub repositories are always owner/repo — nested GitLab-style namespaces
+# are rejected at the boundary so onboarded names cannot break API path splits.
+REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
 BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 ACTION_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -99,7 +101,7 @@ def validate_repository_name(value: str) -> str:
         or any(part in {".", ".."} for part in value.split("/"))
         or len(value) > 512
     ):
-        raise ValueError("Repository name must be a safe slash-separated namespace and name")
+        raise ValueError("Repository name must be a safe owner/repo path")
     return value
 
 
@@ -147,13 +149,10 @@ class PullRequestEvent:
     source_merged_at: str = ""
     additions: int = 0
     deletions: int = 0
-    source_project_id: int = 0
-    start_sha: str = ""
 
     def __post_init__(self) -> None:
         scm_base_url = normalize_base_url(self.scm_base_url, field_name="scm_base_url")
         api_base_url = normalize_base_url(self.api_base_url, field_name="api_base_url")
-        start_sha = self.start_sha or self.base_sha
         valid = (
             self.provider == "github"
             and validate_repository_name(self.repo_full_name)
@@ -162,7 +161,6 @@ class PullRequestEvent:
             and ACTION_PATTERN.fullmatch(self.action)
             and COMMIT_SHA_PATTERN.fullmatch(self.head_sha)
             and COMMIT_SHA_PATTERN.fullmatch(self.base_sha)
-            and COMMIT_SHA_PATTERN.fullmatch(start_sha)
             and 0 < len(self.delivery_id) <= 255
             and self.trigger_kind in TRIGGER_KINDS
             and 0 <= len(self.trigger_id) <= 255
@@ -178,9 +176,6 @@ class PullRequestEvent:
             and isinstance(self.deletions, int)
             and not isinstance(self.deletions, bool)
             and 0 <= self.deletions <= 100_000_000
-            and isinstance(self.source_project_id, int)
-            and not isinstance(self.source_project_id, bool)
-            and 0 <= self.source_project_id <= 9_223_372_036_854_775_807
         )
         if self.trigger_kind == "manual" and not self.trigger_id:
             valid = False
@@ -222,7 +217,6 @@ class PullRequestEvent:
         object.__setattr__(self, "api_base_url", api_base_url)
         object.__setattr__(self, "head_sha", self.head_sha.lower())
         object.__setattr__(self, "base_sha", self.base_sha.lower())
-        object.__setattr__(self, "start_sha", start_sha.lower())
         object.__setattr__(self, "labels", normalized_labels)
         object.__setattr__(self, "updated_at", normalize_timestamp(self.updated_at))
         source_created_at = normalize_optional_timestamp(
@@ -297,8 +291,10 @@ class PullRequestEvent:
             "source_merged_at": self.source_merged_at,
             "additions": self.additions,
             "deletions": self.deletions,
-            "source_project_id": self.source_project_id,
-            "start_sha": self.start_sha,
+            # Retired GitLab-shaped fields kept as constants so trigger
+            # fingerprints stay stable across the payload-schema cutover.
+            "source_project_id": 0,
+            "start_sha": self.base_sha,
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -355,6 +351,8 @@ class PullRequestEvent:
             "source_closed_at",
             "source_merged_at",
         }
+        # metadata_v4/v5 carried retired GitLab-shaped fields. Still accepted so
+        # in-flight queue payloads deserialize across the deploy that drops them.
         metadata_v4 = metadata_v3 | {
             "source_project_id",
         }
@@ -412,8 +410,6 @@ class PullRequestEvent:
             source_merged_at=str(payload.get("source_merged_at", "")),
             additions=payload.get("additions", 0),
             deletions=payload.get("deletions", 0),
-            source_project_id=payload.get("source_project_id", 0),
-            start_sha=str(payload.get("start_sha", "")),
         )
 
 
@@ -438,7 +434,6 @@ class ReviewConversationEvent:
     line: int
     side: str
     diff_hunk: str
-    thread_id: str = ""
 
     def __post_init__(self) -> None:
         scm_base_url = normalize_base_url(self.scm_base_url, field_name="scm_base_url")
@@ -465,8 +460,6 @@ class ReviewConversationEvent:
             and self.side in {"LEFT", "RIGHT"}
             and len(self.diff_hunk) <= 100_000
             and "\x00" not in self.diff_hunk
-            and 0 <= len(self.thread_id) <= 255
-            and "\x00" not in self.thread_id
         )
         if not valid:
             raise ValueError("Invalid review-conversation event")
@@ -521,6 +514,8 @@ class ReviewConversationEvent:
             "diff_hunk",
         }
         required_v2 = required_v1 | {"thread_id"}
+        # required_v2 carried a retired GitLab-shaped thread_id. Still accepted so
+        # in-flight conversation jobs deserialize across the deploy that drops it.
         if frozenset(payload) not in {
             frozenset(required_v1),
             frozenset(required_v2),
@@ -551,7 +546,6 @@ class ReviewConversationEvent:
             line=line,
             side=str(payload["side"]),
             diff_hunk=str(payload["diff_hunk"]),
-            thread_id=str(payload.get("thread_id", "")),
         )
 
 

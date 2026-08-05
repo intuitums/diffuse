@@ -157,13 +157,13 @@ def test_timestamp_requires_timezone():
         normalize_timestamp("2026-07-23T15:30:00")
 
 
-def test_push_event_supports_nested_namespaces_and_exact_commit_identity():
+def test_push_event_requires_owner_repo_and_exact_commit_identity():
     event = PushEvent.from_payload(
         {
             "provider": "github",
             "scm_base_url": "https://github.example.com/",
             "api_base_url": "https://github.example.com/api/v3",
-            "repo_full_name": "group/platform/repo",
+            "repo_full_name": "owner/repo",
             "ref_name": "refs/heads/main",
             "default_branch": "main",
             "before_sha": "a" * 40,
@@ -173,9 +173,57 @@ def test_push_event_supports_nested_namespaces_and_exact_commit_identity():
         }
     )
 
-    assert event.scope_key.endswith("group/platform/repo:repository_index:refs/heads/main")
+    assert event.scope_key.endswith("owner/repo:repository_index:refs/heads/main")
     assert event.idempotency_key == f"{event.scope_key}:{'b' * 40}"
     assert PushEvent.from_payload(event.to_payload()) == event
+
+
+def test_push_event_rejects_nested_namespaces():
+    with pytest.raises(ValueError, match="Invalid push event|Repository name"):
+        PushEvent.from_payload(
+            {
+                "provider": "github",
+                "scm_base_url": "https://github.example.com/",
+                "api_base_url": "https://github.example.com/api/v3",
+                "repo_full_name": "group/platform/repo",
+                "ref_name": "refs/heads/main",
+                "default_branch": "main",
+                "before_sha": "a" * 40,
+                "after_sha": "b" * 40,
+                "pushed_at": "2026-07-23T15:30:00Z",
+                "delivery_id": "push-1",
+            }
+        )
+
+
+def test_pull_request_event_ignores_retired_gitlab_shaped_payload_fields():
+    event = PullRequestEvent.from_payload(
+        {
+            **_payload(),
+            "state": "open",
+            "source_created_at": "2026-07-22T15:30:00Z",
+            "source_closed_at": "",
+            "source_merged_at": "",
+            "additions": 1,
+            "deletions": 0,
+            "source_project_id": 99,
+            "start_sha": "c" * 40,
+        }
+    )
+
+    assert "source_project_id" not in event.to_payload()
+    assert "start_sha" not in event.to_payload()
+    assert event.trigger_fingerprint == PullRequestEvent.from_payload(
+        {
+            **_payload(),
+            "state": "open",
+            "source_created_at": "2026-07-22T15:30:00Z",
+            "source_closed_at": "",
+            "source_merged_at": "",
+            "additions": 1,
+            "deletions": 0,
+        }
+    ).trigger_fingerprint
 
 
 def test_feedback_events_have_scoped_safe_identities():
