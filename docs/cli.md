@@ -59,6 +59,7 @@ diffuse evaluate evals/baseline.example.json
 diffuse agent status                    # installed, current, and signed in?
 diffuse agent login claude              # Claude's own auth into ~/.diffuse/agent/claude
 diffuse agent login codex               # Codex's own auth into ~/.diffuse/agent/codex
+diffuse agent login codex --device-auth # headless server: no browser needed
 diffuse agent write-policy claude       # restore the sandbox policy without signing in
 diffuse agent write-policy codex
 ```
@@ -71,6 +72,13 @@ subscription, Anthropic API key, or a third-party / gateway option.
 Diffuse's directory (ChatGPT OAuth by default; Codex's own
 `login --with-api-key` stdin path if you prefer an API key). Diffuse does not
 collect API keys or reimplement either vendor flow.
+
+Arguments after the CLI name go to the vendor command unchanged, which is how
+you sign in on a machine with no browser — the usual case for a self-hosted
+operator. `--device-auth` prints a URL and a one-time code you complete from
+anywhere; the default Codex flow instead waits on a browser reaching the host's
+own localhost. Codex's `-c key=value` is the one refused argument, because it
+rewrites the `config.toml` Diffuse just persisted; see `docs/agent-runtimes.md`.
 
 `diffuse agent status` reports the version floor as well as the sign-in. Claude's
 sandbox settings are version-gated and are *silently ignored* by older builds,
