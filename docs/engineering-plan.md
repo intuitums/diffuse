@@ -2,7 +2,7 @@
 
 The delivery phases live in [roadmap.md](roadmap.md). This is the shorter,
 faster-moving document: the specific defects and structural work in front of us
-right now, in dependency order, and the decisions that block them.
+right now, in dependency order, and the open questions that gate them.
 
 Status is recorded per item so a reader picking this up cold knows what is left.
 Delete an item once it has landed and stayed landed for a release.
@@ -12,31 +12,37 @@ self-hosted server; local `diffuse review` may rent a developer agent CLI.
 See [agent-runtimes.md](agent-runtimes.md). The server path is not scheduled
 for deletion.
 
-## Decisions that block work
+## Open questions that gate the work below
 
-Each of these is an owner decision, not an engineering task. Nothing below them
-can proceed until they are recorded.
+These are choices, not engineering tasks. The items further down that depend on
+them say so.
 
-| # | Decision | Blocks | Status |
-| --- | --- | --- | --- |
-| D1 | Fund one baseline capture run, and choose the model and depth it is captured at | The review-quality gate, honest measurement of everything else, and merging an agent-CLI review runtime | **Open** |
-| D2 | Roadmap source-execution validation (execute PR code in a sandbox): keep, defer, or delete | That roadmap phase — distinct from `REVIEW_RUNTIME` / agent CLIs | **Open** |
-| D3 | Learned rules: who works the approval queue, or is there an auto-activation path | The "grows with you" thesis | **Open** — see [roadmap.md](roadmap.md) open questions |
-| D4 | How much reproducibility to trade for agentic retrieval | Giving the reviewer its own tools | **Open** |
-| D5 | Re-cut the frozen version-1 migration baseline, so the Postgres image can drop pgvector | Nothing urgent; decide before the next release | **Open** |
-| D6 | The retrieval-eval corpus: expand the synthetic fixtures into real trees, or label real merged pull requests | The retrieval gate | **Open** |
-| R1 | Licensing: driving a developer's subscription CLI from a tool shipped to other operators | Shipping `claude` / `codex` as selectable `REVIEW_RUNTIME` values | **Open** |
-
-D1 is the cheapest and unblocks the most. Everything needed for it is committed
-and working; see [`../evals/CAPTURE.md`](../evals/CAPTURE.md).
+- **Capture a review-quality baseline**, and choose the model and depth to
+  capture it at. This gates the quality gate itself, honest measurement of
+  everything else, and merging any agent-CLI review runtime. It is the cheapest
+  one and unblocks the most: everything needed is committed and working, see
+  [`../evals/CAPTURE.md`](../evals/CAPTURE.md).
+- **Source-execution validation** (executing pull-request code in a sandbox):
+  keep, defer, or drop. Distinct from `REVIEW_RUNTIME` and agent CLIs.
+- **Learned rules** — who works the approval queue, or whether there is an
+  auto-activation path. This gates the "grows with you" claim; see the open
+  questions in [roadmap.md](roadmap.md).
+- **How much reproducibility to trade for agentic retrieval**, which gates
+  giving the reviewer its own tools.
+- **Re-cutting the frozen version-1 migration baseline** so the PostgreSQL image
+  can drop pgvector. Nothing depends on it urgently; worth settling before the
+  next release.
+- **The retrieval-eval corpus** — expand the synthetic fixtures into real trees,
+  or label real merged pull requests. This gates the retrieval gate.
 
 ## Wave 0 — instruments
 
 Nothing after this is verifiable without it.
 
 - **Capture and commit the review baseline; wire `scripts/eval.sh` into CI.**
-  *Blocked on D1.* Measures the one-shot API review runtime — not retrieval, not
-  policy, not an agent CLI. Prove it can fail against a seeded regression before
+  *Blocked on capturing the baseline.* Measures the one-shot API review runtime
+  — not retrieval, not policy, not an agent CLI. Prove it can fail against a
+  seeded regression before
   trusting it (`../evals/CAPTURE.md` §6); a gate that has never failed is not
   yet known to be a gate.
 - **Make token cost observable.** *Done.* Cache-read and cache-write counts
@@ -64,10 +70,10 @@ pluggable; see [agent-runtimes.md](agent-runtimes.md).
 - **`ReviewRuntime` seam at `generate_review`.** *Done.* `LiteLLMRuntime` is
   the only selectable implementation (`REVIEW_RUNTIME=litellm`).
 - **Agent CLI host plumbing.** *Done for Claude and Codex.* Config dir, sandbox
-  policy, version floor (Claude measured; Codex pending U4), `diffuse agent
-  login|status|write-policy`. Adapters that make either a selectable
+  policy, version floor (measured for Claude; not yet set for Codex),
+  `diffuse agent login|status|write-policy`. Adapters that make either a selectable
   `REVIEW_RUNTIME` are still open.
-- **Claude Code adapter.** *Not started.* Blocked on D1 and R1. Exit: fixture
+- **Claude Code adapter.** *Not started.* Blocked on the baseline. Exit: fixture
   review completes, `review_tool_calls` has rows, `claude` enters
   `RUNTIME_NAMES` (not `HOSTED_RUNTIME_NAMES`).
 - **`ReviewRequest` + internal tool provider.** *Done (preflight).* Runtimes
@@ -82,14 +88,14 @@ pluggable; see [agent-runtimes.md](agent-runtimes.md).
 - **Retrievers as tools.** `search_code` and `ask_codebase` are exposed over MCP
   to external agents but unused by Diffuse's own one-shot runtime, which receives
   a pre-fused blob capped at 18 chunks and 24,000 characters. The agent-CLI
-  runtime should consume them as tools. *Blocked on the adapter, D4, and (for
-  measurement) D6.*
-- **Extend the harness to exercise retrieval.** *Blocked on D6.*
+  runtime should consume them as tools. *Blocked on the adapter, on the
+  reproducibility trade-off, and — for measurement — on the retrieval corpus.*
+- **Extend the harness to exercise retrieval.** *Blocked on the retrieval corpus.*
 - **Retire one-shot pass scaffolding** (`REVIEW_PASSES` fan-out, diff chunking,
   pre-fused blob, verifier pass) from being the default story — and from the
   agent path — only after measured parity on fixtures. Not before.
 - **Codex adapter.** Restores cross-family verification across CLIs. Empirics
-  still open (plan U4).
+  still unmeasured.
 - **Record runtime (+ CLI version) on eval runs and review runs.** Partial:
   harness still assumes one-shot token splits via `_call_structured`.
 
