@@ -209,14 +209,15 @@ CODEX = AgentCli(
     auth_status_arguments=("login", "status"),
     auth_status_kind=AUTH_STATUS_EXIT,
     upgrade_hint="npm install -g @openai/codex@latest",
-    # `-c key=value` sets any key in config.toml, including the
-    # `cli_auth_credentials_store = "file"` that `rendered_codex_config` writes
-    # to keep the credential inside CODEX_HOME. Overriding it back to the OS
-    # keychain would still *look* like a successful login while putting the
-    # credential somewhere a review run with `--ignore-user-config` cannot see.
-    # A silent break is worth refusing; `diffuse agent write-policy codex` is
-    # the supported way to change what Diffuse persists.
-    refused_login_arguments=("-c", "--config"),
+    # `-c` / `--config` and `-p` / `--profile` all reach the same config.toml
+    # keys `rendered_codex_config` writes — including
+    # `cli_auth_credentials_store = "file"` that keeps the credential inside
+    # CODEX_HOME. A profile or override that sends it back to the OS keychain
+    # would still *look* like a successful login while putting the credential
+    # somewhere a review run with `--ignore-user-config` cannot see. A silent
+    # break is worth refusing; `diffuse agent write-policy codex` is the
+    # supported way to change what Diffuse persists.
+    refused_login_arguments=("-c", "--config", "-p", "--profile"),
 )
 
 #: Every CLI `diffuse agent` will act on. A name is listed once host plumbing
@@ -718,9 +719,9 @@ def resolve_cli(name: str) -> AgentCli:
 def refuse_policy_overrides(cli: AgentCli, vendor_arguments: Sequence[str]) -> None:
     """Reject the forwarded flags that would undo the policy just written.
 
-    Matches `-c value`, `-c=value`, and `--config=value` alike, because a
-    prefix check that only caught the bare form would wave through the one
-    spelling most people type.
+    Each argument is compared by name only: `-c`, `-c=value`, and
+    `--config=value` all resolve to a refused name, so the `=value` spelling
+    cannot slip past a check that only looked for the bare flag.
     """
 
     for argument in vendor_arguments:

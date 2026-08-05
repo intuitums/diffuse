@@ -852,16 +852,24 @@ def test_vendor_arguments_are_not_interpreted(monkeypatch, owned_home, installed
 
 @pytest.mark.parametrize(
     "argument",
-    ["-c", "--config", '-c=cli_auth_credentials_store="keychain"'],
+    [
+        "-c",
+        "--config",
+        '-c=cli_auth_credentials_store="keychain"',
+        "-p",
+        "--profile",
+        "--profile=keychain-auth",
+    ],
 )
 def test_codex_config_overrides_are_refused(monkeypatch, owned_home, installed_cli, argument):
-    """The one exception to forwarding, and why it is worth having.
+    """The exception to forwarding, and why it is worth having.
 
-    `-c` writes the same config.toml keys Diffuse just wrote. Sending
-    `cli_auth_credentials_store` back to the OS keychain would put the
-    credential where a review run with `--ignore-user-config` cannot read it,
-    and the login would still exit 0 -- so the breakage surfaces later, as a
-    review that cannot authenticate, with nothing pointing back here.
+    `-c` / `--config` and `-p` / `--profile` reach the same config.toml keys
+    Diffuse just wrote. Sending `cli_auth_credentials_store` back to the OS
+    keychain — directly or via a profile — would put the credential where a
+    review run with `--ignore-user-config` cannot read it, and the login would
+    still exit 0 -- so the breakage surfaces later, as a review that cannot
+    authenticate, with nothing pointing back here.
     """
 
     ran: list[object] = []
@@ -873,13 +881,14 @@ def test_codex_config_overrides_are_refused(monkeypatch, owned_home, installed_c
     assert ran == [], "the vendor login must not run when an argument was refused"
 
 
-def test_claude_forwards_a_dash_c_that_codex_would_refuse(
-    monkeypatch, owned_home, installed_cli
+@pytest.mark.parametrize("argument", ["-c", "--profile"])
+def test_claude_forwards_flags_that_codex_would_refuse(
+    monkeypatch, owned_home, installed_cli, argument
 ):
     """The refusal is per-CLI, not a global blocklist.
 
-    `-c` means nothing to `claude auth login`; refusing it there would be
-    Diffuse inventing a restriction the vendor does not have.
+    `-c` and `--profile` mean nothing to `claude auth login`; refusing them
+    there would be Diffuse inventing a restriction the vendor does not have.
     """
 
     seen: dict[str, object] = {}
@@ -888,8 +897,8 @@ def test_claude_forwards_a_dash_c_that_codex_would_refuse(
         "run",
         lambda command, **k: (seen.update(command=command), _completed())[1],
     )
-    agent_host.login(CLAUDE_CODE, ["-c"])
-    assert seen["command"][1:] == ["auth", "login", "-c"]
+    agent_host.login(CLAUDE_CODE, [argument])
+    assert seen["command"][1:] == ["auth", "login", argument]
 
 
 # --- The command line -----------------------------------------------------
@@ -944,3 +953,42 @@ def test_cli_collects_vendor_arguments(argv, expected):
 
     parsed = review_cli._parser().parse_args(argv)
     assert agent_cli._vendor_arguments(parsed) == expected
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_help_after_cli_name_shows_diffuse_login_help(monkeypatch, flag, capsys):
+    """`diffuse agent login codex --help` must not become `codex login --help`.
+
+    `argparse.REMAINDER` captures `--help` after the CLI name, so without an
+    explicit intercept the flag is forwarded to the vendor and Diffuse's own
+    login help is never shown.
+    """
+
+    ran: list[object] = []
+    monkeypatch.setattr(
+        agent_host.subprocess, "run", lambda *a, **k: ran.append(a) or _completed()
+    )
+    parsed = review_cli._parser().parse_args(["agent", "login", "codex", flag])
+    with pytest.raises(SystemExit) as exited:
+        agent_cli._login(parsed)
+    assert exited.value.code == 0
+    assert ran == [], "help must not run the vendor login"
+    out = capsys.readouterr().out
+    assert "device-auth" in out
+    assert "forwarded" in out.lower() or "VENDOR_ARGS" in out
+
+
+def test_help_after_cli_name_does_not_forward_to_vendor(monkeypatch):
+    """Even mixed with other vendor args, `-h` / `--help` stay with Diffuse."""
+
+    ran: list[object] = []
+    monkeypatch.setattr(
+        agent_host.subprocess, "run", lambda *a, **k: ran.append(a) or _completed()
+    )
+    parsed = review_cli._parser().parse_args(
+        ["agent", "login", "codex", "--device-auth", "--help"]
+    )
+    with pytest.raises(SystemExit) as exited:
+        agent_cli._login(parsed)
+    assert exited.value.code == 0
+    assert ran == []
