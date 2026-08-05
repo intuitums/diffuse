@@ -156,6 +156,10 @@ COPY evals ./evals
 COPY deploy ./deploy
 COPY .env.example ./.env.example
 COPY .github ./.github
+# CI helper imported by tests/test_check_lock_freeze.py (and invoked from the
+# host in verify.yml). Without it the container suite fails at collection with
+# `No module named 'scripts'`, which reads like a packaging bug and is not one.
+COPY scripts ./scripts
 # This file, read as text: test_release_artifacts_ship_the_license asserts that
 # the runtime stage below installs the BSL text, because a release that ships
 # without it is a licensing problem rather than a functional one.

@@ -2,16 +2,36 @@
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from scripts.check_lock_freeze import compare_freeze_to_lock, main, parse_freeze, parse_lock
-
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPOSITORY_ROOT / "scripts" / "check_lock_freeze.py"
+
+
+def _load_script():
+    """Load by path so the test works both on a checkout and in test-runner.
+
+    `scripts/` is not a setuptools package (see pyproject.toml include list);
+    the image copies it next to `tests/` and this keeps the import honest.
+    """
+
+    spec = importlib.util.spec_from_file_location("check_lock_freeze", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_script = _load_script()
+compare_freeze_to_lock = _script.compare_freeze_to_lock
+main = _script.main
+parse_freeze = _script.parse_freeze
+parse_lock = _script.parse_lock
 
 
 def test_parse_freeze_normalizes_name():
@@ -90,3 +110,10 @@ def test_verify_workflow_calls_the_script_not_an_inline_copy():
     assert "scripts/check_lock_freeze.py" in workflow
     # The old skip-on-missing pattern must not return.
     assert "if actual is None:\n                  continue" not in workflow
+
+
+def test_test_runner_stage_copies_the_script():
+    """Without this COPY the container suite fails at collection."""
+
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
+    assert "COPY scripts ./scripts" in dockerfile
