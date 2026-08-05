@@ -7,6 +7,7 @@ from service.github.check import (
     MAX_CHECK_ANNOTATIONS,
     complete_github_check_run,
     ensure_github_check_run,
+    find_github_check_run,
     review_check_conclusion,
 )
 from service.models.review import Category, ReviewFinding, ReviewReport, Severity
@@ -89,6 +90,26 @@ async def test_check_run_recovers_remote_creation_by_external_key(monkeypatch):
     assert methods == ["GET"]
     assert check_run.external_id == "91"
     assert check_run.external_url == "https://example/check/91"
+
+
+@pytest.mark.anyio
+async def test_find_github_check_run_does_not_create(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(200, json={"check_runs": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        check_run = await find_github_check_run(
+            _event(),
+            external_key="diffuse-review-run:42",
+            client=client,
+        )
+
+    assert methods == ["GET"]
+    assert check_run is None
 
 
 @pytest.mark.anyio
