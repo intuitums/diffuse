@@ -68,15 +68,15 @@ printenv OPENAI_API_KEY | diffuse agent login codex --with-api-key
 Use `--` before the vendor arguments if one ever collides with a Diffuse flag:
 `diffuse agent login codex -- --device-auth`.
 
-**One exception.** Codex's `-c key=value` is refused, because it writes the same
-`config.toml` keys Diffuse persists — including the
-`cli_auth_credentials_store = "file"` that keeps the credential inside
-`CODEX_HOME`. Sending it back to the OS keychain would put the credential where
-a review run with `--ignore-user-config` cannot read it, and the login would
-still exit 0, so the breakage would surface much later as a review that cannot
-authenticate. Change the persisted policy with `diffuse agent write-policy
-codex` instead. The refusal is per-CLI: `-c` means nothing to `claude auth
-login`, so Claude forwards it.
+**Exceptions.** Codex's `-c` / `--config` and `-p` / `--profile` are refused,
+because they write or select the same `config.toml` keys Diffuse persists —
+including the `cli_auth_credentials_store = "file"` that keeps the credential
+inside `CODEX_HOME`. Sending it back to the OS keychain would put the
+credential where a review run with `--ignore-user-config` cannot read it, and
+the login would still exit 0, so the breakage would surface much later as a
+review that cannot authenticate. Change the persisted policy with
+`diffuse agent write-policy codex` instead. The refusal is per-CLI: those flags
+mean nothing to `claude auth login`, so Claude forwards them.
 - `diffuse agent status` / `write-policy` for both
 - Diffuse-owned config under `~/.diffuse/agent` (`DIFFUSE_AGENT_HOME`)
 - Child environment allowlist; Claude sandbox policy + version floor (2.1.219+);

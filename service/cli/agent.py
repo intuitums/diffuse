@@ -42,9 +42,25 @@ def _vendor_arguments(args: argparse.Namespace) -> list[str]:
     return extra
 
 
+def _help_requested(vendor_arguments: list[str]) -> bool:
+    """True when REMAINDER captured a help flag that belongs to Diffuse.
+
+    `argparse.REMAINDER` runs after the CLI name, so
+    `diffuse agent login codex --help` never reaches argparse's own help
+    handling — it would otherwise be forwarded as `codex login --help`.
+    """
+
+    return any(argument in {"-h", "--help"} for argument in vendor_arguments)
+
+
 def _login(args: argparse.Namespace) -> None:
-    cli = resolve_cli(args.cli)
     vendor_arguments = _vendor_arguments(args)
+    if _help_requested(vendor_arguments):
+        # REMAINDER ate `-h` / `--help`; print Diffuse's login help, not the
+        # vendor's. Exit 0 to match argparse's own `--help` behaviour.
+        args.login_parser.print_help()
+        raise SystemExit(0)
+    cli = resolve_cli(args.cli)
     code = login(cli, vendor_arguments)
     if code != 0:
         invocation = " ".join([cli.executable, *cli.login_arguments, *vendor_arguments])
@@ -113,7 +129,9 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
             "e.g. --device-auth for Codex on a machine with no browser"
         ),
     )
-    login_parser.set_defaults(handler=_login)
+    # Stash the parser so `_login` can print Diffuse help when REMAINDER
+    # captures `-h` / `--help` after the CLI name.
+    login_parser.set_defaults(handler=_login, login_parser=login_parser)
 
     status_parser = subparsers.add_parser(
         "status",

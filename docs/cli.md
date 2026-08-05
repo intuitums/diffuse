@@ -77,8 +77,9 @@ Arguments after the CLI name go to the vendor command unchanged, which is how
 you sign in on a machine with no browser — the usual case for a self-hosted
 operator. `--device-auth` prints a URL and a one-time code you complete from
 anywhere; the default Codex flow instead waits on a browser reaching the host's
-own localhost. Codex's `-c key=value` is the one refused argument, because it
-rewrites the `config.toml` Diffuse just persisted; see `docs/agent-runtimes.md`.
+own localhost. Codex's `-c` / `--config` and `-p` / `--profile` are refused,
+because they rewrite or select the `config.toml` Diffuse just persisted; see
+`docs/agent-runtimes.md`.
 
 `diffuse agent status` reports the version floor as well as the sign-in. Claude's
 sandbox settings are version-gated and are *silently ignored* by older builds,
