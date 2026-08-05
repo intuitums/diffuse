@@ -513,38 +513,6 @@ async def list_code_reviews(
 
 
 @diffuse_mcp.tool()
-async def list_merge_requests(
-    name: Annotated[
-        str | None,
-        Field(validation_alias=AliasChoices("name", "repository_name")),
-    ] = None,
-    remote: McpRemote | None = None,
-    defaultBranch: Annotated[
-        str | None,
-        Field(validation_alias=AliasChoices("defaultBranch", "default_branch")),
-    ] = None,
-    remoteUrl: Annotated[
-        str | None,
-        Field(validation_alias=AliasChoices("remoteUrl", "remote_url")),
-    ] = None,
-    state: PullRequestState | None = None,
-    limit: int = 20,
-    offset: int = 0,
-) -> dict[str, object]:
-    """List durable pull/merge requests and their review activity."""
-    return await _database_query_async(
-        list_mcp_merge_requests,
-        repository_name=name,
-        remote=remote,
-        default_branch=defaultBranch,
-        remote_url=remoteUrl,
-        state=state,
-        limit=limit,
-        offset=offset,
-    )
-
-
-@diffuse_mcp.tool()
 async def list_pull_requests(
     name: Annotated[
         str | None,
@@ -563,7 +531,7 @@ async def list_pull_requests(
     limit: int = 20,
     offset: int = 0,
 ) -> dict[str, object]:
-    """GitHub-compatible alias for list_merge_requests."""
+    """List durable pull requests and their review activity."""
     return await _database_query_async(
         list_mcp_merge_requests,
         repository_name=name,
@@ -573,6 +541,69 @@ async def list_pull_requests(
         state=state,
         limit=limit,
         offset=offset,
+    )
+
+
+@diffuse_mcp.tool()
+async def list_merge_requests(
+    name: Annotated[
+        str | None,
+        Field(validation_alias=AliasChoices("name", "repository_name")),
+    ] = None,
+    remote: McpRemote | None = None,
+    defaultBranch: Annotated[
+        str | None,
+        Field(validation_alias=AliasChoices("defaultBranch", "default_branch")),
+    ] = None,
+    remoteUrl: Annotated[
+        str | None,
+        Field(validation_alias=AliasChoices("remoteUrl", "remote_url")),
+    ] = None,
+    state: PullRequestState | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, object]:
+    """Compatibility alias for list_pull_requests."""
+    return await _database_query_async(
+        list_mcp_merge_requests,
+        repository_name=name,
+        remote=remote,
+        default_branch=defaultBranch,
+        remote_url=remoteUrl,
+        state=state,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@diffuse_mcp.tool()
+async def get_pull_request(
+    name: Annotated[
+        str,
+        Field(validation_alias=AliasChoices("name", "repository_name")),
+    ],
+    remote: McpRemote,
+    defaultBranch: Annotated[
+        str,
+        Field(validation_alias=AliasChoices("defaultBranch", "default_branch")),
+    ],
+    prNumber: Annotated[
+        int,
+        Field(validation_alias=AliasChoices("prNumber", "pull_request_number")),
+    ],
+    remoteUrl: Annotated[
+        str | None,
+        Field(validation_alias=AliasChoices("remoteUrl", "remote_url")),
+    ] = None,
+) -> dict[str, object]:
+    """Get pull-request metadata, Diffuse findings, and review history."""
+    return await _database_query_async(
+        get_mcp_merge_request,
+        repository_name=name,
+        remote=remote,
+        default_branch=defaultBranch,
+        remote_url=remoteUrl,
+        pull_request_number=prNumber,
     )
 
 
@@ -596,7 +627,7 @@ async def get_merge_request(
         Field(validation_alias=AliasChoices("remoteUrl", "remote_url")),
     ] = None,
 ) -> dict[str, object]:
-    """Get pull-request metadata, Diffuse findings, and review history."""
+    """Compatibility alias for get_pull_request."""
     return await _database_query_async(
         get_mcp_merge_request,
         repository_name=name,
@@ -713,7 +744,7 @@ async def get_fix_all_handoff(
 
 
 @diffuse_mcp.tool()
-async def list_merge_request_comments(
+async def list_pull_request_comments(
     name: Annotated[
         str,
         Field(validation_alias=AliasChoices("name", "repository_name")),
@@ -740,6 +771,48 @@ async def list_merge_request_comments(
     offset: int = 0,
 ) -> dict[str, object]:
     """List each current published Diffuse finding lineage for a pull request."""
+    return await _database_query_async(
+        list_mcp_merge_request_comments,
+        repository_name=name,
+        remote=remote,
+        default_branch=defaultBranch,
+        remote_url=remoteUrl,
+        pull_request_number=prNumber,
+        addressed=addressed,
+        generated=diffuseGenerated,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@diffuse_mcp.tool()
+async def list_merge_request_comments(
+    name: Annotated[
+        str,
+        Field(validation_alias=AliasChoices("name", "repository_name")),
+    ],
+    remote: McpRemote,
+    defaultBranch: Annotated[
+        str,
+        Field(validation_alias=AliasChoices("defaultBranch", "default_branch")),
+    ],
+    prNumber: Annotated[
+        int,
+        Field(validation_alias=AliasChoices("prNumber", "pull_request_number")),
+    ],
+    remoteUrl: Annotated[
+        str | None,
+        Field(validation_alias=AliasChoices("remoteUrl", "remote_url")),
+    ] = None,
+    diffuseGenerated: Annotated[
+        bool | None,
+        Field(validation_alias=AliasChoices("diffuseGenerated", "generated")),
+    ] = None,
+    addressed: bool | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, object]:
+    """Compatibility alias for list_pull_request_comments."""
     return await _database_query_async(
         list_mcp_merge_request_comments,
         repository_name=name,

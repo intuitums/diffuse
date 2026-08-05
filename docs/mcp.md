@@ -75,24 +75,25 @@ codex mcp add diffuse \
 
 ## Tools
 
-The current server advertises twenty tools:
+The current server advertises twenty-two tools:
 
 - repository discovery, repository-authorized `get_review_analytics`,
   commit-pinned `search_code`, citation-grounded `ask_codebase`,
-  `list_pull_requests` alongside the identical `list_merge_requests`, and
-  `get_merge_request` for pull-request detail;
+  `list_pull_requests` / `get_pull_request` for pull-request listing and detail
+  (with `list_merge_requests` / `get_merge_request` kept as compatibility
+  aliases), and
+  `list_pull_request_comments` for PR comment projection (with
+  `list_merge_request_comments` as a compatibility alias);
 - review list/detail plus an authoritative re-run trigger;
-- `list_merge_request_comments` for PR comment projection plus
-  repository-filterable `search_review_comments`;
+- repository-filterable `search_review_comments`;
 - custom-context list/detail/search/create plus Diffuse-native optimistic
   update/delete; and
 - revision-safe `get_fix_handoff` and `get_fix_all_handoff` bundles.
 
-The `merge_request` names predate GitHub-only support and describe GitHub pull
-requests. `list_pull_requests` is the only one with a pull-request-named form;
-`get_merge_request` and `list_merge_request_comments` have none. Renaming them
-would break existing clients, so they stay as they are until a deliberate
-contract change.
+The `merge_request` tool names predate GitHub-only support. Pull-request-named
+tools are primary; the MR names remain as aliases so existing clients keep
+working until a later ADR 0024 contract break removes them. Response JSON keys
+still use `mergeRequest*` shapes for the same reason.
 
 ### Repository descriptors
 
