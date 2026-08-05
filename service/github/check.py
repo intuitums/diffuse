@@ -113,6 +113,28 @@ async def _find_existing_check_run(
     return None
 
 
+async def find_github_check_run(
+    event: PullRequestEvent,
+    *,
+    external_key: str,
+    client: httpx.AsyncClient | None = None,
+) -> PublishedCheckRun | None:
+    """Locate an existing check by Diffuse `external_key` without creating one.
+
+    Used when completing a check whose remote id was never persisted: creating
+    a second check would leave the original `in_progress` forever.
+    """
+    if event.provider != "github":
+        raise ValueError("GitHub check publisher received a non-GitHub event")
+    timeout = scm_api_timeout_seconds()
+    if client is None:
+        async with httpx.AsyncClient(timeout=timeout) as owned_client:
+            return await _find_existing_check_run(
+                owned_client, event, external_key
+            )
+    return await _find_existing_check_run(client, event, external_key)
+
+
 async def ensure_github_check_run(
     event: PullRequestEvent,
     *,

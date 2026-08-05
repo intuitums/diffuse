@@ -10,6 +10,7 @@ import os
 from contextlib import closing
 
 import psycopg2
+import pytest
 
 from service.hosted.workflow import claim_workflow_job, enqueue_review_event
 from service.models.review import ReviewReport
@@ -133,6 +134,15 @@ def test_check_run_creation_resumes_after_every_failure_and_completes_once():
             external_url=external_url,
         )
         mark_check_run_failed(connection, recovered_check.id)
+
+        # failed + already-persisted external_id is not startable without begin().
+        with pytest.raises(RuntimeError, match="not in a startable state"):
+            mark_check_run_started(
+                connection,
+                recovered_check.id,
+                external_id="github-check-456",
+                external_url=external_url,
+            )
 
         resumed_check = begin_check_run(
             connection,

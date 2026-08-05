@@ -65,6 +65,7 @@ from service.github.approval import (
 from service.github.check import (
     complete_github_check_run,
     ensure_github_check_run,
+    find_github_check_run,
     review_check_conclusion,
 )
 from service.github.conversation import publish_github_conversation_reply
@@ -1338,16 +1339,21 @@ async def _resolve_native_check_external_id(
     GitHub already has an `in_progress` check. Stranded reconcile (and any
     other completer) must rediscover that check by `external_key` before it can
     PATCH a terminal conclusion — otherwise required checks block merges forever.
+
+    Lookup only: never create. Creating during completion can leave the original
+    remote check `in_progress` if listing missed it.
     """
-    if event.provider == "github":
-        published = await ensure_github_check_run(
-            event,
-            external_key=handle.external_key,
-            existing_external_id=None,
-            existing_external_url=None,
-        )
-    else:
+    if event.provider != "github":
         raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
+    published = await find_github_check_run(
+        event,
+        external_key=handle.external_key,
+    )
+    if published is None:
+        raise RuntimeError(
+            "No GitHub check run found for "
+            f"{handle.external_key} at {event.head_sha[:12]}"
+        )
     await anyio.to_thread.run_sync(
         partial(
             _mark_native_check_started,
