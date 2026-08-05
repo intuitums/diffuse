@@ -1,0 +1,71 @@
+# The whole suite -- unit and integration -- on Linux, against a real
+# PostgreSQL, using the dependency set the shipped image contains.
+#
+#   docker compose -f docker-compose.tests.yml run --rm tests
+#   docker compose -f docker-compose.tests.yml run --rm tests -m integration
+#   docker compose -f docker-compose.tests.yml down -v
+#
+# Arguments after `tests` go straight to pytest. The image entrypoint is
+# `/usr/local/bin/run-tests`, which migrates when POSTGRES_TEST_DATABASE_URL is
+# set and then execs `python -m pytest`.
+#
+# Both services default to linux/amd64 — the platform the release image is
+# built for — so a Mac arm64 host exercises the same userspace the server runs.
+# Override with DIFFUSE_TEST_PLATFORM=linux/arm64 when you only need the locked
+# dependency set and not the amd64 instruction set.
+#
+# Why this is a separate file rather than a profile inside docker-compose.yml:
+# Compose interpolates every service in a file before it applies `--profile`, so
+# a profiled service here would still fail on the runtime stack's
+# `${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}`. Running the tests would
+# then require an operator .env that the tests must specifically not inherit.
+# Separate file, no interpolation, no .env.
+services:
+  testdb:
+    # Same image as the runtime `db` service for the same reason: `sql/schema.sql`
+    # is the frozen version-1 migration and still runs `CREATE EXTENSION IF NOT
+    # EXISTS vector`, which stock postgres:17 cannot satisfy. See docker-compose.yml.
+    image: pgvector/pgvector:pg17
+    platform: ${DIFFUSE_TEST_PLATFORM:-linux/amd64}
+    restart: "no"
+    environment:
+      POSTGRES_USER: diffuse
+      POSTGRES_PASSWORD: diffuse-test
+      POSTGRES_DB: diffuse_test
+    # Deliberately not the `db` service and deliberately not the `pgdata` volume.
+    # Integration tests migrate their database from scratch and treat it as
+    # disposable (tests/integration/conftest.py); pointing them at the dev
+    # database would hand that treatment to real data. On tmpfs the database
+    # cannot outlive the run, which is also why it is fast.
+    tmpfs:
+      - /var/lib/postgresql/data:size=2g
+    # 64MB of /dev/shm is not enough for PostgreSQL's parallel query workers.
+    shm_size: 1gb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U diffuse -d diffuse_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  tests:
+    build:
+      context: .
+      target: test-runner
+    image: ${DIFFUSE_TEST_IMAGE:-diffuse-tests:local}
+    platform: ${DIFFUSE_TEST_PLATFORM:-linux/amd64}
+    restart: "no"
+    init: true
+    depends_on:
+      testdb:
+        condition: service_healthy
+    # No `env_file`, on purpose. The suite must not inherit an operator .env: the
+    # dev `DIFFUSE_MCP_ALLOWED_HOSTS` alone fails the MCP tests with a 421 that
+    # reads like a code bug. AGENTS.md documents the same trap for local runs.
+    environment:
+      POSTGRES_TEST_DATABASE_URL: postgresql://diffuse:diffuse-test@testdb:5432/diffuse_test
+      # Turns a green run that silently skipped every integration test into a
+      # failure. Without it, a typo in the URL above reports success having
+      # asserted nothing. See tests/integration/conftest.py and DEV-238.
+      DIFFUSE_REQUIRE_INTEGRATION_TESTS: "1"
+    tmpfs:
+      - /tmp:size=512m,mode=1777
