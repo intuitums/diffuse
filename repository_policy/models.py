@@ -37,7 +37,7 @@ RULE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 MAX_GLOB_LENGTH = 512
 MAX_FILTER_PATTERN_LENGTH = 256
 CONTEXT_REPOSITORY_PATTERN = re.compile(
-    r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$"
+    r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
 )
 PRIVATE_KEY_EXTENSIONS = frozenset(
     {
@@ -316,7 +316,7 @@ class ContextSettingsPatch(StrictPolicyModel):
             for item in normalized
         ):
             raise ValueError(
-                "context repositories must be safe slash-separated owner/repo names"
+                "context repositories must be safe owner/repo names"
             )
         if len({item.casefold() for item in normalized}) != len(normalized):
             raise ValueError("context repositories must be unique ignoring case")

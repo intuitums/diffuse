@@ -236,8 +236,10 @@ def test_context_repositories_cascade_per_path_and_affect_policy_identity():
 def test_context_repositories_reject_duplicates_and_unsafe_names():
     with pytest.raises(ValueError, match="unique ignoring case"):
         ContextSettingsPatch(repos=("Owner/SDK", "owner/sdk"))
-    with pytest.raises(ValueError, match="safe slash-separated"):
+    with pytest.raises(ValueError, match="safe owner/repo"):
         ContextSettingsPatch(repos=("../secrets",))
+    with pytest.raises(ValueError, match="safe owner/repo"):
+        ContextSettingsPatch(repos=("group/platform/repo",))
 
 
 def test_preventative_security_policy_cascades_and_affects_identity():

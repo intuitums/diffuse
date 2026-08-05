@@ -269,7 +269,7 @@ authenticated surfaces, both using non-recoverable repository-scoped service
 tokens minted by `diffuse token add`:
 
 - **[MCP](docs/mcp.md)** — a stateless JSON Streamable HTTP endpoint at `/mcp`
-  advertising twenty tools: commit-pinned code search, citation-grounded
+  advertising twenty-two tools: commit-pinned code search, citation-grounded
   repository Q&A, pull-request and review state, review analytics, custom
   context, and revision-safe fix handoffs for Codex, Claude Code, Conductor,
   Cursor, and Devin.
