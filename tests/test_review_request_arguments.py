@@ -135,7 +135,28 @@ def test_structured_output_stays_forced_on_the_anthropic_routes(
 
     rendered = _rendered_parameters(_request_arguments(monkeypatch, model))
 
-    assert rendered["tool_choice"] == FORCED_JSON_TOOL
+    # A route that carries the tool must require it. This is the original
+    # failure: the tool present, the `tool_choice` gone, and the model free to
+    # answer in prose.
+    if "tools" in rendered:
+        assert rendered.get("tool_choice") == FORCED_JSON_TOOL
+    else:
+        # No tool to force. LiteLLM moved `anthropic/claude-opus-4-8` to
+        # Anthropic's native `output_format` in 1.95 -- the same shape
+        # `plan_structured_output` already documents for sonnet-4-6 and
+        # opus-4-6, and a stronger guarantee than a forced tool rather than a
+        # weaker one. Asserting the mechanism instead of the guarantee made
+        # this test fail on a version inside the range `requirements.txt`
+        # declares, while `requirements.lock` pinned an older one -- so a
+        # contributor following DEVELOPMENT.md got a red suite on a clean
+        # checkout, and a known-red test is one nobody reads.
+        output_format = rendered.get("output_format")
+        assert isinstance(output_format, dict), (
+            f"{model} renders neither a forced tool nor a native output_format, "
+            "so nothing requires the model to answer in the schema"
+        )
+        assert output_format.get("type") == "json_schema"
+        assert output_format.get("schema")
 
 
 def test_temperature_is_omitted_for_models_that_refuse_it(

@@ -59,8 +59,10 @@ What has **not** landed: an adapter that spawns either CLI for a review, or lets
 | Claude + Codex host plumbing | Done — login/status/write-policy |
 | D1 baseline capture | **Owner** — needs a real `REVIEW_MODEL` credential (~$0.75) |
 | R1 licensing | **Owner** — redistributing a tool that drives subscriber CLIs |
-| U3 `diffuse agent login claude` UX | **Owner machine** — interactive `claude auth login`; Claude Code must be installed |
+| U3 `diffuse agent login claude` UX | Done — signed in and verified on macOS; `diffuse agent status` reports `ready` |
 | U4 Codex empirics | **Owner machine** — version floor + silent-ignore matrix for Codex settings |
+| Credential reachable from the session | **Open (DEV-316)** — on macOS the CLI reads its credential from the login Keychain via `USER`, the real `HOME`, and `security` on `PATH`, all of which `agent_environment` removes. The read-only probes take `probe_environment`; a review cannot, so how the agent process receives its credential is undecided |
+| Read policy over a worktree under `$HOME` | **Open (DEV-319)** — `denyRead` covers all of `REAL_HOME` and `allowRead` names the worktree, which for local review is normally inside it. Precedence is unmeasured and the one test covering the pair uses a `/tmp` path |
 
 Near-term delivery order lives in the working plan at
 `.context/agent-cli-runtime-plan.md` (gitignored). Summary:
