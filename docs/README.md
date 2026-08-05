@@ -8,7 +8,7 @@ first pull request. These pages are the reference behind it.
 | [capabilities.md](capabilities.md) | The acceptance ledger: every required capability and its honest status. The authoritative answer to "does Diffuse do X yet?" |
 | [architecture.md](architecture.md) | Target architecture, component boundaries, data model, durable workflow model, and security invariants. Says explicitly where it describes a target rather than the current state. |
 | [roadmap.md](roadmap.md) | Delivery phases, ordered by dependency and risk, with the exit condition each phase has to pass. |
-| [engineering-plan.md](engineering-plan.md) | The near-term work in dependency order, with per-item status and the owner decisions that block it. Shorter-lived than the roadmap. |
+| [engineering-plan.md](engineering-plan.md) | The near-term work in dependency order, with per-item status and the open questions that gate it. Shorter-lived than the roadmap. |
 | [agent-runtimes.md](agent-runtimes.md) | Review runtimes: API one-shot vs local agent CLIs, what `litellm` means, and what has actually landed. |
 | [configuration.md](configuration.md) | Repository review policy: every `.diffuse/` file, field, default, and inheritance rule. |
 | [deployment.md](deployment.md) | Single-server operation: host preparation, secrets, backups and restore drills, upgrades, rollback, and the operational checklist. |

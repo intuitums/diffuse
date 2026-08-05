@@ -81,32 +81,44 @@ mean nothing to `claude auth login`, so Claude forwards them.
 - Diffuse-owned config under `~/.diffuse/agent` (`DIFFUSE_AGENT_HOME`)
 - Child environment allowlist; Claude sandbox policy + version floor (2.1.219+);
   Codex TOML policy (`sandbox_mode = "read-only"`, shell env excludes). Codex
-  version floor pending U4 empirics.
+  has no version floor yet: setting one means first measuring which of its
+  settings older builds accept and then ignore.
 - Native Windows refused (no OS sandbox Diffuse can rely on)
 
 What has **not** landed: an adapter that spawns either CLI for a review, or lets
 `diffuse review` run without `REVIEW_MODEL`.
 
-**Preflight for Phase 3 (agent adapter):**
+**What the adapter still needs.** In place:
 
-| Item | Status |
+| Item | State |
 | --- | --- |
 | `ReviewRequest` seam | Done — runtimes take a request object |
 | Internal `search_code` tool provider + recorders | Done — agent path can log calls |
-| Claude + Codex host plumbing | Done — login/status/write-policy |
-| D1 baseline capture | **Owner** — needs a real `REVIEW_MODEL` credential (~$0.75) |
-| R1 licensing | **Owner** — redistributing a tool that drives subscriber CLIs |
-| U3 `diffuse agent login claude` UX | Done — signed in and verified on macOS; `diffuse agent status` reports `ready` |
-| U4 Codex empirics | **Owner machine** — version floor + silent-ignore matrix for Codex settings |
-| Credential reachable from the session | **Open (DEV-316)** — on macOS the CLI reads its credential from the login Keychain via `USER`, the real `HOME`, and `security` on `PATH`, all of which `agent_environment` removes. The read-only probes take `probe_environment`; a review cannot, so how the agent process receives its credential is undecided |
-| Read policy over a worktree under `$HOME` | **Open (DEV-319)** — `denyRead` covers all of `REAL_HOME` and `allowRead` names the worktree, which for local review is normally inside it. Precedence is unmeasured and the one test covering the pair uses a `/tmp` path |
+| Claude + Codex host plumbing | Done — login / status / write-policy |
+| `diffuse agent login` end to end | Done — signing in reports `ready` from `diffuse agent status` |
 
-Near-term delivery order lives in the working plan at
-`.context/agent-cli-runtime-plan.md` (gitignored). Summary:
+Two unsolved problems, both about the boundary rather than the model:
+
+- **How the agent process receives its credential.** On macOS the CLI reads it
+  from the login Keychain, which needs `USER`, the real `HOME`, and `security`
+  on `PATH` — all three removed by `agent_environment`. The read-only status
+  probes get a wider `probe_environment`; a review cannot have one, because the
+  diff it is reading is untrusted. Undecided.
+- **Read policy for a worktree inside `$HOME`.** `denyRead` covers all of
+  `REAL_HOME` while `allowRead` names the worktree, which for local review is
+  normally somewhere under it. Which one wins is unmeasured, and the single test
+  covering the pair uses a `/tmp` path that never exercises the overlap.
+
+Two further things are decisions rather than engineering: capturing the review
+baseline that makes "is this runtime better?" answerable at all, and measuring
+which Codex settings older builds ignore silently, which is what a Codex version
+floor would have to be derived from.
+
+Delivery order:
 
 1. ~~`ReviewRuntime` seam~~ done
 2. ~~Claude + Codex host plumbing~~ done
-3. Claude Code adapter — next; blocked on owner items D1 (baseline fund) and R1 (licensing)
+3. Claude Code adapter — next; needs the baseline above first
 4. Retire pass scaffolding only after eval parity
 5. Codex adapter
 6. Measure per runtime
