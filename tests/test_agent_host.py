@@ -32,6 +32,7 @@ from service.review.agent_host import (
     agent_scratch_directory,
     ensure_agent_config_directory,
     parse_version,
+    probe_environment,
     rendered_codex_config,
     require_supported_platform,
     require_version_floor,
@@ -142,6 +143,98 @@ def test_codex_environment_points_at_codex_home(owned_home):
     with agent_scratch_directory() as scratch:
         environment = agent_environment(CODEX, scratch=scratch)
     assert environment["CODEX_HOME"] == str(owned_home / "codex")
+
+
+# --- The probe environment ------------------------------------------------
+
+
+def test_probe_can_reach_the_macos_keychain(monkeypatch, owned_home):
+    """The three things a Keychain credential read needs, which the review
+    environment removes on purpose.
+
+    Measured against Claude Code 2.1.220: with `USER` unset, `HOME` pointed at a
+    scratch directory, or `security` absent from `PATH`, `claude auth status
+    --json` answers `loggedIn: false` for a developer who is signed in. Running
+    the probe under the review boundary therefore made `diffuse agent status`
+    contradict the login that had just succeeded.
+    """
+
+    monkeypatch.setattr(agent_host, "REAL_HOME", Path("/Users/developer"))
+    monkeypatch.setenv("USER", "developer")
+    monkeypatch.setenv("LOGNAME", "developer")
+
+    environment = probe_environment(CLAUDE_CODE)
+
+    assert environment["USER"] == "developer"
+    assert environment["HOME"] == "/Users/developer"
+    assert "/usr/bin" in environment["PATH"].split(":")
+
+
+def test_probe_still_excludes_every_credential(monkeypatch, owned_home):
+    """Widened for the Keychain read, not opened up.
+
+    `ANTHROPIC_API_KEY` is the one that matters and the reason the probe cannot
+    simply inherit the environment: with it set, `claude auth status` answers
+    `loggedIn: true` against an *empty* configuration directory. A probe that
+    forwarded it would report a directory nobody had signed into as ready, and
+    the review that followed would fail -- `agent_environment` does not forward
+    it, so the session would have no credential at all.
+    """
+
+    for name in CREDENTIAL_ENVIRONMENT:
+        monkeypatch.setenv(name, "leaked")
+    monkeypatch.setenv("A_VARIABLE_NOBODY_LISTED", "leaked")
+
+    environment = probe_environment(CLAUDE_CODE)
+
+    for name in CREDENTIAL_ENVIRONMENT:
+        assert name not in environment, f"{name} reached the auth probe"
+    assert "A_VARIABLE_NOBODY_LISTED" not in environment
+    assert "leaked" not in environment.values()
+
+
+def test_probe_does_not_inherit_the_developers_path(monkeypatch, owned_home):
+    """`security` is what the probe needs; `gh` and `aws` are not.
+
+    Inheriting `PATH` would fix the Keychain read and put every
+    credential-bearing tool on the developer's machine back within reach by
+    name, which is the thing the empty `PATH` exists to prevent.
+    """
+
+    monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+
+    assert probe_environment(CLAUDE_CODE)["PATH"] == agent_host.PROBE_PATH
+    assert "/opt/homebrew/bin" not in probe_environment(CLAUDE_CODE)["PATH"]
+
+
+def test_probe_points_each_cli_at_its_own_diffuse_directory(owned_home):
+    assert probe_environment(CLAUDE_CODE)["CLAUDE_CONFIG_DIR"] == str(owned_home / "claude")
+    assert probe_environment(CODEX)["CODEX_HOME"] == str(owned_home / "codex")
+
+
+def test_auth_probe_runs_under_the_probe_environment(monkeypatch, owned_home, installed_cli):
+    """The regression itself, at the seam a caller actually goes through.
+
+    `authentication_status` reaching for `agent_environment` is what reported a
+    signed-in developer as signed out, so this pins the environment the probe is
+    spawned with rather than only the builder that produces it.
+    """
+
+    monkeypatch.setattr(agent_host, "REAL_HOME", Path("/Users/developer"))
+    monkeypatch.setenv("USER", "developer")
+    seen: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        seen["env"] = kwargs["env"]
+        return _completed(json.dumps({"loggedIn": True, "authMethod": "claude.ai"}))
+
+    monkeypatch.setattr(agent_host.subprocess, "run", fake_run)
+    status = agent_host.authentication_status(CLAUDE_CODE)
+
+    assert status["logged_in"] is True
+    assert seen["env"]["HOME"] == "/Users/developer"
+    assert seen["env"]["USER"] == "developer"
+    assert "/usr/bin" in seen["env"]["PATH"].split(":")
 
 
 # --- The sandbox policy ---------------------------------------------------
@@ -560,6 +653,35 @@ def test_auth_status_reads_the_diffuse_directory(monkeypatch, owned_home, instal
     agent_host.authentication_status(CLAUDE_CODE)
 
     assert seen["env"]["CLAUDE_CONFIG_DIR"] == str(owned_home / "claude")
+
+
+def test_a_hung_auth_probe_is_reported_rather_than_raised(monkeypatch, owned_home, installed_cli):
+    """One unresponsive probe must not erase the whole status document.
+
+    `resolve_executable` and `probe_version` failures are already reported in
+    place; the auth probe was not, so a `claude auth status` that hung for its
+    timeout took the platform check, the agent home, and Codex's entry down
+    with it -- from the one command whose entire job is to say what is wrong.
+    """
+
+    def fake_run(command, **kwargs):
+        if command[1:] == ["--version"]:
+            return _completed("2.1.220 (Claude Code)")
+        raise subprocess.TimeoutExpired(cmd=command, timeout=30)
+
+    monkeypatch.setattr(agent_host.subprocess, "run", fake_run)
+    document = agent_host.agent_status()
+    entry = _runtime_entry(document, "claude")
+
+    assert document["agent_home"] == str(owned_home)
+    assert entry["authenticated"] is False
+    assert entry["ready"] is False
+    assert "did not respond" in entry["problem"]
+    # The remedy for a hung probe is not "sign in again", and saying so would
+    # send the developer to a command that cannot fix it.
+    assert "diffuse agent login" not in entry["problem"]
+    # The other runtime is still described.
+    assert _runtime_entry(document, "codex")
 
 
 def test_unreadable_auth_output_is_not_read_as_signed_in(monkeypatch, owned_home, installed_cli):
