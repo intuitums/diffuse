@@ -85,7 +85,9 @@ because they rewrite or select the `config.toml` Diffuse just persisted; see
 sandbox settings are version-gated and are *silently ignored* by older builds,
 so Diffuse refuses to run below the floor and names the settings that would have
 been dropped rather than reviewing behind a weaker boundary than the policy on
-disk describes. Codex's floor is empty until measured (U4). On native Windows,
+disk describes. Codex has no floor yet, so any parseable version passes; setting
+one means first measuring which settings older builds silently drop. On native
+Windows,
 where these CLIs do not provide the OS sandbox Diffuse relies on, the runtime is
 refused outright.
 
