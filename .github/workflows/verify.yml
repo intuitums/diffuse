@@ -263,41 +263,13 @@ jobs:
       # Proves the point of the stage rather than trusting it: if requirements-dev.txt
       # ever drags a runtime dependency off the locked version again, the tested set
       # stops being the shipped set and this fails here instead of in production.
+      # The comparison lives in scripts/check_lock_freeze.py so the missing-package
+      # case is unit-tested; an inline copy is how the previous check silently
+      # skipped absences.
       - name: Confirm the image tests the shipped dependency set
         run: |
           docker run --rm --entrypoint pip diffuse-tests:ci freeze > /tmp/installed.txt
-          python - <<'PY'
-          import re, sys
-
-          installed = {}
-          for line in open("/tmp/installed.txt"):
-              match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==(.+)$", line.strip())
-              if match:
-                  installed[match.group(1).lower().replace("_", "-")] = match.group(2)
-
-          drifted, checked = [], 0
-          for line in open("requirements.lock"):
-              match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)", line)
-              if not match:
-                  continue
-              name = match.group(1).lower().replace("_", "-")
-              pinned = match.group(2)
-              actual = installed.get(name)
-              if actual is None:
-                  continue
-              checked += 1
-              if actual != pinned:
-                  drifted.append(f"  {name}: image has {actual}, lock pins {pinned}")
-
-          if not checked:
-              sys.exit("Compared nothing -- the parse above is broken, not the image.")
-          if drifted:
-              sys.exit(
-                  f"The test image does not contain the shipped dependency set "
-                  f"({len(drifted)} of {checked} differ):\n" + "\n".join(drifted)
-              )
-          print(f"{checked} locked packages match the image exactly.")
-          PY
+          python scripts/check_lock_freeze.py /tmp/installed.txt requirements.lock
 
       # Unit and integration in one run, against the disposable PostgreSQL in
       # docker-compose.tests.yml. DIFFUSE_REQUIRE_INTEGRATION_TESTS is set there,

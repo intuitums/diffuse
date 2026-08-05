@@ -98,7 +98,9 @@ image built from a hash-pinned lock. Those differ, and the difference has bitten
 in both directions — DEV-315 was a macOS-only bug found only because someone ran
 on a Mac, and its Linux-only mirror image would be invisible to everyone who
 does. This path runs unit and integration tests inside the shipped image's
-platform and dependency set, against a real PostgreSQL:
+platform and dependency set, against a real PostgreSQL. Compose pins
+`platform: linux/amd64` by default (override with
+`DIFFUSE_TEST_PLATFORM=linux/arm64` if you only need the locked dependency set):
 
 ```bash
 docker compose -f docker-compose.tests.yml run --rm tests            # everything

@@ -129,7 +129,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # requirements-dev.txt goes on top and adds test tooling only. It re-states
 # requirements.txt, but every range there is already satisfied by the locked
 # version installed above, so pip leaves those alone rather than upgrading them.
-# `pip check` is the backstop if that ever stops being true.
+# `pip check` only confirms the resulting graph is consistent — it would still
+# pass if a range pulled a locked package forward. The freeze comparison in
+# verify.yml's `test-container` job is what catches that.
 COPY requirements.lock requirements.txt requirements-dev.txt pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --require-hashes -r requirements.lock \

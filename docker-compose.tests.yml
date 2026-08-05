@@ -5,8 +5,14 @@
 #   docker compose -f docker-compose.tests.yml run --rm tests -m integration
 #   docker compose -f docker-compose.tests.yml down -v
 #
-# Arguments after `tests` go straight to pytest; the image's entrypoint is
-# `python -m pytest`.
+# Arguments after `tests` go straight to pytest. The image entrypoint is
+# `/usr/local/bin/run-tests`, which migrates when POSTGRES_TEST_DATABASE_URL is
+# set and then execs `python -m pytest`.
+#
+# Both services default to linux/amd64 — the platform the release image is
+# built for — so a Mac arm64 host exercises the same userspace the server runs.
+# Override with DIFFUSE_TEST_PLATFORM=linux/arm64 when you only need the locked
+# dependency set and not the amd64 instruction set.
 #
 # Why this is a separate file rather than a profile inside docker-compose.yml:
 # Compose interpolates every service in a file before it applies `--profile`, so
@@ -20,6 +26,7 @@ services:
     # is the frozen version-1 migration and still runs `CREATE EXTENSION IF NOT
     # EXISTS vector`, which stock postgres:17 cannot satisfy. See docker-compose.yml.
     image: pgvector/pgvector:pg17
+    platform: ${DIFFUSE_TEST_PLATFORM:-linux/amd64}
     restart: "no"
     environment:
       POSTGRES_USER: diffuse
@@ -45,6 +52,7 @@ services:
       context: .
       target: test-runner
     image: ${DIFFUSE_TEST_IMAGE:-diffuse-tests:local}
+    platform: ${DIFFUSE_TEST_PLATFORM:-linux/amd64}
     restart: "no"
     init: true
     depends_on:
