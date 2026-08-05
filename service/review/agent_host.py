@@ -37,7 +37,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -147,6 +147,12 @@ class AgentCli:
     #: `AUTH_STATUS_JSON` (Claude) or `AUTH_STATUS_EXIT` (Codex `login status`).
     auth_status_kind: str
     upgrade_hint: str
+    #: Vendor flags that would rewrite the configuration Diffuse just persisted.
+    #: Everything else an operator passes to `diffuse agent login` is forwarded
+    #: untouched, because the auth *method* is the vendor's business and
+    #: enumerating their flags here would mean chasing every release. These are
+    #: the exception: they reach the same keys `write_sandbox_settings` owns.
+    refused_login_arguments: tuple[str, ...] = ()
 
     @property
     def version_floor(self) -> tuple[int, int, int]:
@@ -194,13 +200,24 @@ CODEX = AgentCli(
     settings_filename="config.toml",
     capabilities=(),
     # Codex's own interactive auth: ChatGPT OAuth by default (`codex login`),
-    # or API key via Codex's stdin path (`codex login --with-api-key`). Diffuse
-    # does not collect keys; it only points CODEX_HOME at ~/.diffuse/agent/codex.
+    # `--device-auth` for a machine with no browser, or an API key / access token
+    # via Codex's stdin paths. Diffuse does not collect keys; it only points
+    # CODEX_HOME at ~/.diffuse/agent/codex and forwards what the operator asked
+    # for.
     login_arguments=("login",),
     logout_arguments=("logout",),
     auth_status_arguments=("login", "status"),
     auth_status_kind=AUTH_STATUS_EXIT,
     upgrade_hint="npm install -g @openai/codex@latest",
+    # `-c` / `--config` and `-p` / `--profile` all reach the same config.toml
+    # keys `rendered_codex_config` writes — including
+    # `cli_auth_credentials_store = "file"` that keeps the credential inside
+    # CODEX_HOME. A profile or override that sends it back to the OS keychain
+    # would still *look* like a successful login while putting the credential
+    # somewhere a review run with `--ignore-user-config` cannot see. A silent
+    # break is worth refusing; `diffuse agent write-policy codex` is the
+    # supported way to change what Diffuse persists.
+    refused_login_arguments=("-c", "--config", "-p", "--profile"),
 )
 
 #: Every CLI `diffuse agent` will act on. A name is listed once host plumbing
@@ -699,7 +716,28 @@ def resolve_cli(name: str) -> AgentCli:
     return known[name]
 
 
-def login(cli: AgentCli) -> int:
+def refuse_policy_overrides(cli: AgentCli, vendor_arguments: Sequence[str]) -> None:
+    """Reject the forwarded flags that would undo the policy just written.
+
+    Each argument is compared by name only: `-c`, `-c=value`, and
+    `--config=value` all resolve to a refused name, so the `=value` spelling
+    cannot slip past a check that only looked for the bare flag.
+    """
+
+    for argument in vendor_arguments:
+        name = argument.split("=", 1)[0]
+        if name in cli.refused_login_arguments:
+            raise AgentHostError(
+                f"`{argument}` is not forwarded to `{cli.executable} "
+                f"{' '.join(cli.login_arguments)}`: it can rewrite the same "
+                f"{cli.settings_filename} keys Diffuse just wrote, including the "
+                "setting that keeps the credential in Diffuse's own directory, and "
+                "the login would still report success. Change the persisted policy "
+                f"with `diffuse agent write-policy {cli.runtime}` instead."
+            )
+
+
+def login(cli: AgentCli, vendor_arguments: Sequence[str] = ()) -> int:
     """Drive the vendor's own sign-in into the Diffuse-owned directory.
 
     Deliberately *not* run under `agent_environment`: this is an interactive
@@ -711,16 +749,24 @@ def login(cli: AgentCli) -> int:
     never asks for an API key of its own; auth methods are entirely the
     vendor's. The sandbox / config policy is written *before* login so Codex
     sees `cli_auth_credentials_store = "file"` for the credential it creates.
+
+    `vendor_arguments` are appended to the vendor's own login command and are
+    not interpreted, with the narrow exception in `refuse_policy_overrides`.
+    Selecting *how* to authenticate belongs to the vendor -- `codex login
+    --device-auth` for a server with no browser, `claude auth login --console`
+    for API billing -- and a Diffuse-side allowlist of those flags would be one
+    more thing to update on every vendor release, silently wrong in between.
     """
 
     require_supported_platform()
+    refuse_policy_overrides(cli, vendor_arguments)
     executable = resolve_executable(cli)
     directory = ensure_agent_config_directory(cli)
     write_sandbox_settings(cli)
     environment = dict(os.environ)
     environment[cli.config_directory_variable] = str(directory)
     completed = subprocess.run(
-        [str(executable), *cli.login_arguments],
+        [str(executable), *cli.login_arguments, *vendor_arguments],
         env=environment,
         check=False,
     )
