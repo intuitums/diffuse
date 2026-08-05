@@ -22,16 +22,28 @@ the unit tests or the linter.
 
 ## Set up a development environment
 
-Create a virtual environment and install the development dependencies plus the
-package itself in editable mode. The editable install is what puts the
-`diffuse` command on your `PATH`; `--no-deps` matches CI and keeps the pinned
-runtime requirements from being re-resolved.
+Create a virtual environment and install, in this order, the locked runtime
+dependencies, the development tooling, and the package itself in editable mode.
+The editable install is what puts the `diffuse` command on your `PATH`;
+`--no-deps` matches CI and keeps the pinned runtime requirements from being
+re-resolved.
+
+**The order matters.** `requirements-dev.txt` re-states `requirements.txt`,
+which holds version *ranges*; `requirements.lock` holds the exact versions the
+shipped image contains. Installing the lock first pins everything, and the
+ranges are then already satisfied so nothing gets upgraded past them. Installing
+`requirements-dev.txt` alone — which is what this file used to tell you to do —
+resolves those ranges fresh against whatever is on PyPI today. That is not
+hypothetical: it resolved litellm 1.95.0 against a CI and image pin of 1.93.0
+and left a clean checkout with a failing suite, while CI stayed green throughout
+(DEV-318).
 
 With [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv venv --seed .venv --python 3.12
 source .venv/bin/activate
+pip install --require-hashes -r requirements.lock
 pip install -r requirements-dev.txt
 pip install --no-deps -e .
 ```
@@ -41,6 +53,7 @@ With the standard library's `venv`:
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
+pip install --require-hashes -r requirements.lock
 pip install -r requirements-dev.txt
 pip install --no-deps -e .
 ```
@@ -70,6 +83,40 @@ The suite is hermetic against a local `.env`. `litellm` calls `load_dotenv()`
 on import, which would otherwise merge your `.env` into the test environment
 and fail tests you did not touch; `tests/conftest.py` disables that for the
 test process. You do not need to move `.env` aside.
+
+**A bare local run leaves the entire database layer unexercised.** `pytest -m
+"not integration"` reports something like `956 passed, 29 deselected`, which
+reads like a full pass and is not one: migrations, every store, the debounce,
+and MCP are only covered by `tests/integration/`, which needs a PostgreSQL. Run
+the container path below, or the integration suite directly, before believing a
+green unit run means the change is sound.
+
+## Run the suite the way the server runs it
+
+Your machine is probably macOS on arm64. Diffuse ships to Linux on amd64, in an
+image built from a hash-pinned lock. Those differ, and the difference has bitten
+in both directions — DEV-315 was a macOS-only bug found only because someone ran
+on a Mac, and its Linux-only mirror image would be invisible to everyone who
+does. This path runs unit and integration tests inside the shipped image's
+platform and dependency set, against a real PostgreSQL. Compose pins
+`platform: linux/amd64` by default (override with
+`DIFFUSE_TEST_PLATFORM=linux/arm64` if you only need the locked dependency set):
+
+```bash
+docker compose -f docker-compose.tests.yml run --rm tests            # everything
+docker compose -f docker-compose.tests.yml run --rm tests -m integration
+docker compose -f docker-compose.tests.yml run --rm tests tests/test_review_engine.py
+docker compose -f docker-compose.tests.yml down -v                   # clean up
+```
+
+Arguments after `tests` go straight to `pytest`. The database is disposable and
+lives on tmpfs — it is created, migrated, and destroyed per run, and it is
+deliberately not the `db` service from `docker-compose.yml`, so this cannot
+touch your development data. CI runs the same image in its `test-container` job.
+
+This is slower than a local `pytest` and is not meant to replace it. Use the
+local suite while you work; use this before you open a pull request, and any
+time you touch `subprocess`, filesystem paths, the sandbox, or the mirror.
 
 ## Run the linter
 
