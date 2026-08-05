@@ -1409,9 +1409,10 @@ async def _complete_native_check(
         else:
             raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
     except Exception:
-        await anyio.to_thread.run_sync(
-            partial(_mark_native_check_failed, handle.id)
-        )
+        # Do not mark durable `failed` here. A known external_id means GitHub
+        # already has the check; durable failed was excluded from stranded
+        # reconcile and left the remote check `in_progress` forever (DEV-313).
+        # Status stays `completing` (set above) so the next pass can retry.
         raise
     await anyio.to_thread.run_sync(
         partial(_mark_native_check_completed, handle.id, conclusion)

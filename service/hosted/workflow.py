@@ -1362,6 +1362,10 @@ def claim_stranded_review_jobs(
     finalize them in this transaction without racing a newer job that adopts the
     same review run. The grace period keeps the sweep clear of `run_once`, which
     finalizes its own failures moments after a job reaches a terminal status.
+
+    A check row marked durable `failed` is still reclaimable when `external_id`
+    is known: the provider PATCH failed after GitHub already had the check, and
+    the store permits failed→completing so a later pass can terminalize it.
     """
     if grace_seconds < 0:
         raise ValueError("grace_seconds cannot be negative")
@@ -1386,7 +1390,15 @@ def claim_stranded_review_jobs(
                       SELECT 1
                       FROM review_check_runs AS check_run
                       WHERE check_run.review_run_id = review.id
-                        AND check_run.status NOT IN ('completed', 'failed')
+                        AND check_run.status <> 'completed'
+                        -- failed + known remote id is reclaimable: the store
+                        -- already allows failed→completing, but we used to
+                        -- exclude failed here so a single PATCH timeout left
+                        -- GitHub in_progress forever (DEV-313).
+                        AND (
+                            check_run.status <> 'failed'
+                            OR check_run.external_id IS NOT NULL
+                        )
                   )
               )
             ORDER BY job.completed_at, job.id
