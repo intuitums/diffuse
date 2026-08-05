@@ -802,7 +802,103 @@ def test_codex_login_writes_config_toml_before_running_vendor_login(
 def test_failed_login_is_reported(monkeypatch, owned_home, installed_cli):
     monkeypatch.setattr(agent_host.subprocess, "run", lambda *a, **k: _completed(returncode=1))
     with pytest.raises(RuntimeError, match="exited 1"):
-        agent_cli._login(_namespace(cli=CLAUDE_CODE_RUNTIME))
+        agent_cli._login(_namespace(cli=CLAUDE_CODE_RUNTIME, vendor_arguments=[]))
+
+
+def test_vendor_arguments_reach_the_vendor_login_unchanged(
+    monkeypatch, owned_home, tmp_path
+):
+    """`--device-auth` is the reason this exists.
+
+    Codex's default OAuth expects a browser that can reach a callback on
+    localhost. On a headless server -- which is where a self-hosting operator
+    runs this -- there is no such browser, and without a way to pass the flag
+    the only route to a signed-in Codex is an SSH tunnel.
+    """
+
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_text("")
+    monkeypatch.setattr(
+        agent_host.shutil, "which", lambda name: str(executable) if name == "codex" else None
+    )
+    seen: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        return _completed()
+
+    monkeypatch.setattr(agent_host.subprocess, "run", fake_run)
+    assert agent_host.login(CODEX, ["--device-auth"]) == 0
+    assert seen["command"][1:] == ["login", "--device-auth"]
+
+
+def test_vendor_arguments_are_not_interpreted(monkeypatch, owned_home, installed_cli):
+    """Diffuse forwards, it does not curate.
+
+    Which auth method to use is the vendor's menu. An allowlist here would need
+    updating on every vendor release and would be silently wrong in between.
+    """
+
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        agent_host.subprocess,
+        "run",
+        lambda command, **k: (seen.update(command=command), _completed())[1],
+    )
+    agent_host.login(CLAUDE_CODE, ["--console", "--email", "dev@example.com"])
+    assert seen["command"][1:] == ["auth", "login", "--console", "--email", "dev@example.com"]
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "-c",
+        "--config",
+        '-c=cli_auth_credentials_store="keychain"',
+        "-p",
+        "--profile",
+        "--profile=keychain-auth",
+    ],
+)
+def test_codex_config_overrides_are_refused(monkeypatch, owned_home, installed_cli, argument):
+    """The exception to forwarding, and why it is worth having.
+
+    `-c` / `--config` and `-p` / `--profile` reach the same config.toml keys
+    Diffuse just wrote. Sending `cli_auth_credentials_store` back to the OS
+    keychain — directly or via a profile — would put the credential where a
+    review run with `--ignore-user-config` cannot read it, and the login would
+    still exit 0 -- so the breakage surfaces later, as a review that cannot
+    authenticate, with nothing pointing back here.
+    """
+
+    ran: list[object] = []
+    monkeypatch.setattr(
+        agent_host.subprocess, "run", lambda *a, **k: ran.append(a) or _completed()
+    )
+    with pytest.raises(agent_host.AgentHostError, match="write-policy"):
+        agent_host.login(CODEX, [argument])
+    assert ran == [], "the vendor login must not run when an argument was refused"
+
+
+@pytest.mark.parametrize("argument", ["-c", "--profile"])
+def test_claude_forwards_flags_that_codex_would_refuse(
+    monkeypatch, owned_home, installed_cli, argument
+):
+    """The refusal is per-CLI, not a global blocklist.
+
+    `-c` and `--profile` mean nothing to `claude auth login`; refusing them
+    there would be Diffuse inventing a restriction the vendor does not have.
+    """
+
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        agent_host.subprocess,
+        "run",
+        lambda command, **k: (seen.update(command=command), _completed())[1],
+    )
+    agent_host.login(CLAUDE_CODE, [argument])
+    assert seen["command"][1:] == ["auth", "login", argument]
 
 
 # --- The command line -----------------------------------------------------
@@ -833,3 +929,66 @@ def test_cli_refuses_an_unhosted_runtime_at_parse_time(capsys):
     err = capsys.readouterr().err
     assert "claude" in err
     assert "codex" in err
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["agent", "login", "codex"], []),
+        (["agent", "login", "codex", "--device-auth"], ["--device-auth"]),
+        (["agent", "login", "codex", "--", "--device-auth"], ["--device-auth"]),
+        (
+            ["agent", "login", "claude", "--email", "dev@example.com"],
+            ["--email", "dev@example.com"],
+        ),
+    ],
+)
+def test_cli_collects_vendor_arguments(argv, expected):
+    """A vendor flag must not be parsed as one of Diffuse's.
+
+    Without `REMAINDER`, argparse sees `--device-auth` as an unrecognised
+    Diffuse option and exits 2 before the vendor CLI is ever reached. The `--`
+    form has to work too, and must not forward the separator itself.
+    """
+
+    parsed = review_cli._parser().parse_args(argv)
+    assert agent_cli._vendor_arguments(parsed) == expected
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_help_after_cli_name_shows_diffuse_login_help(monkeypatch, flag, capsys):
+    """`diffuse agent login codex --help` must not become `codex login --help`.
+
+    `argparse.REMAINDER` captures `--help` after the CLI name, so without an
+    explicit intercept the flag is forwarded to the vendor and Diffuse's own
+    login help is never shown.
+    """
+
+    ran: list[object] = []
+    monkeypatch.setattr(
+        agent_host.subprocess, "run", lambda *a, **k: ran.append(a) or _completed()
+    )
+    parsed = review_cli._parser().parse_args(["agent", "login", "codex", flag])
+    with pytest.raises(SystemExit) as exited:
+        agent_cli._login(parsed)
+    assert exited.value.code == 0
+    assert ran == [], "help must not run the vendor login"
+    out = capsys.readouterr().out
+    assert "device-auth" in out
+    assert "forwarded" in out.lower() or "VENDOR_ARGS" in out
+
+
+def test_help_after_cli_name_does_not_forward_to_vendor(monkeypatch):
+    """Even mixed with other vendor args, `-h` / `--help` stay with Diffuse."""
+
+    ran: list[object] = []
+    monkeypatch.setattr(
+        agent_host.subprocess, "run", lambda *a, **k: ran.append(a) or _completed()
+    )
+    parsed = review_cli._parser().parse_args(
+        ["agent", "login", "codex", "--device-auth", "--help"]
+    )
+    with pytest.raises(SystemExit) as exited:
+        agent_cli._login(parsed)
+    assert exited.value.code == 0
+    assert ran == []
