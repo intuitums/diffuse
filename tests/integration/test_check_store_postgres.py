@@ -108,6 +108,16 @@ def test_check_run_creation_resumes_after_every_failure_and_completes_once():
         assert first_check.external_id is None
         mark_check_run_failed(connection, first_check.id)
 
+        # DEV-289: stranded recovery may persist a rediscovered remote id from a
+        # failed row that never got external_id, without re-entering begin().
+        mark_check_run_started(
+            connection,
+            first_check.id,
+            external_id="github-check-456",
+            external_url=external_url,
+        )
+        mark_check_run_failed(connection, first_check.id)
+
         recovered_check = begin_check_run(
             connection,
             review_run_id=run.id,
@@ -115,6 +125,7 @@ def test_check_run_creation_resumes_after_every_failure_and_completes_once():
             head_sha=event.head_sha,
         )
         assert recovered_check.id == first_check.id
+        assert recovered_check.external_id == "github-check-456"
         mark_check_run_started(
             connection,
             recovered_check.id,

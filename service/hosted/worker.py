@@ -1327,6 +1327,45 @@ async def _ensure_native_check(
     )
 
 
+async def _resolve_native_check_external_id(
+    event: PullRequestEvent,
+    handle: CheckRunHandle,
+) -> CheckRunHandle:
+    """Recover a remote check id that was never persisted locally.
+
+    The create path POSTs to GitHub, then writes `external_id` in a separate
+    step. A crash between those leaves the durable row with a null id while
+    GitHub already has an `in_progress` check. Stranded reconcile (and any
+    other completer) must rediscover that check by `external_key` before it can
+    PATCH a terminal conclusion — otherwise required checks block merges forever.
+    """
+    if event.provider == "github":
+        published = await ensure_github_check_run(
+            event,
+            external_key=handle.external_key,
+            existing_external_id=None,
+            existing_external_url=None,
+        )
+    else:
+        raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
+    await anyio.to_thread.run_sync(
+        partial(
+            _mark_native_check_started,
+            handle.id,
+            published.external_id,
+            published.external_url,
+        )
+    )
+    return CheckRunHandle(
+        id=handle.id,
+        status="in_progress",
+        external_key=handle.external_key,
+        external_id=published.external_id,
+        external_url=published.external_url,
+        conclusion=None,
+    )
+
+
 async def _complete_native_check(
     event: PullRequestEvent,
     handle: CheckRunHandle | None,
@@ -1340,10 +1379,13 @@ async def _complete_native_check(
     if handle is None or handle.is_completed:
         return
     if handle.external_id is None:
-        await anyio.to_thread.run_sync(
-            partial(_mark_native_check_failed, handle.id)
-        )
-        return
+        try:
+            handle = await _resolve_native_check_external_id(event, handle)
+        except Exception:
+            await anyio.to_thread.run_sync(
+                partial(_mark_native_check_failed, handle.id)
+            )
+            raise
     await anyio.to_thread.run_sync(
         partial(_mark_native_check_completing, handle.id)
     )
