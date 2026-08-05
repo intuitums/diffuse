@@ -174,7 +174,10 @@ def mark_check_run_started(
                 started_at = COALESCE(started_at, now()),
                 updated_at = now()
             WHERE id = %s
-              AND status IN ('creating', 'in_progress')
+              AND (
+                    status IN ('creating', 'in_progress')
+                    OR (status = 'failed' AND external_id IS NULL)
+              )
               AND (external_id IS NULL OR external_id = %s)
             """,
             (external_id, external_url, check_run_id, external_id),
