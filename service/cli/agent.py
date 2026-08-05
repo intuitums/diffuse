@@ -26,12 +26,46 @@ RUNTIME_CHOICES = tuple(cli.runtime for cli in AGENT_CLIS)
 POLICY_COMMAND = "write-policy"
 
 
+def _vendor_arguments(args: argparse.Namespace) -> list[str]:
+    """Everything after the CLI name, with one leading `--` removed.
+
+    `argparse.REMAINDER` keeps the separator, so `diffuse agent login codex --
+    --device-auth` would otherwise forward a bare `--` and Codex would read it
+    as the end of its own options. Both spellings are supported because the
+    unseparated one is what people type and the separated one is what they
+    reach for when a flag collides with Diffuse's.
+    """
+
+    extra = list(args.vendor_arguments or [])
+    if extra and extra[0] == "--":
+        extra = extra[1:]
+    return extra
+
+
+def _help_requested(vendor_arguments: list[str]) -> bool:
+    """True when REMAINDER captured a help flag that belongs to Diffuse.
+
+    `argparse.REMAINDER` runs after the CLI name, so
+    `diffuse agent login codex --help` never reaches argparse's own help
+    handling — it would otherwise be forwarded as `codex login --help`.
+    """
+
+    return any(argument in {"-h", "--help"} for argument in vendor_arguments)
+
+
 def _login(args: argparse.Namespace) -> None:
+    vendor_arguments = _vendor_arguments(args)
+    if _help_requested(vendor_arguments):
+        # REMAINDER ate `-h` / `--help`; print Diffuse's login help, not the
+        # vendor's. Exit 0 to match argparse's own `--help` behaviour.
+        args.login_parser.print_help()
+        raise SystemExit(0)
     cli = resolve_cli(args.cli)
-    code = login(cli)
+    code = login(cli, vendor_arguments)
     if code != 0:
+        invocation = " ".join([cli.executable, *cli.login_arguments, *vendor_arguments])
         raise RuntimeError(
-            f"`{cli.executable} {' '.join(cli.login_arguments)}` exited {code}; "
+            f"`{invocation}` exited {code}; "
             f"Diffuse did not change the credential in {cli.display_name}'s own "
             "configuration directory."
         )
@@ -60,6 +94,11 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
             "`--with-api-key` path if you prefer). Diffuse does not collect API keys or\n"
             "reimplement auth.\n"
             "\n"
+            "Any further arguments are forwarded to the vendor command unchanged, so the\n"
+            "auth method stays the vendor's to define. `--device-auth` is the one to\n"
+            "reach for on a server: the default Codex flow expects a browser that can\n"
+            "reach a callback on localhost, which a headless host does not have.\n"
+            "\n"
             "This is a second sign-in. Diffuse never reads or writes ~/.claude or\n"
             "~/.codex, so the terminal CLI you already use is untouched, and the\n"
             "credential Diffuse creates is one Diffuse's own process owns."
@@ -68,7 +107,10 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         epilog=(
             "examples:\n"
             "  diffuse agent login claude\n"
+            "  diffuse agent login claude --console\n"
             "  diffuse agent login codex\n"
+            "  diffuse agent login codex --device-auth      # headless server\n"
+            "  printenv OPENAI_API_KEY | diffuse agent login codex --with-api-key\n"
             "  diffuse agent status\n"
         ),
     )
@@ -78,7 +120,18 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         metavar="CLI",
         help="Which agent CLI to sign in to (claude or codex)",
     )
-    login_parser.set_defaults(handler=_login)
+    login_parser.add_argument(
+        "vendor_arguments",
+        nargs=argparse.REMAINDER,
+        metavar="-- VENDOR_ARGS",
+        help=(
+            "Arguments forwarded verbatim to the vendor's login command, "
+            "e.g. --device-auth for Codex on a machine with no browser"
+        ),
+    )
+    # Stash the parser so `_login` can print Diffuse help when REMAINDER
+    # captures `-h` / `--help` after the CLI name.
+    login_parser.set_defaults(handler=_login, login_parser=login_parser)
 
     status_parser = subparsers.add_parser(
         "status",
