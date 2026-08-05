@@ -234,6 +234,22 @@ INHERITED_ENVIRONMENT = frozenset(
     }
 )
 
+#: Additionally inherited by the read-only probes (`--version`, auth status),
+#: and by nothing else. `USER` is required: Claude Code resolves the macOS
+#: Keychain item for its credential through it, and without it the probe reports
+#: a signed-in developer as signed out. `LOGNAME` is its companion on the same
+#: lookup. Neither carries a credential, so widening the probe by these two does
+#: not widen what a review session sees -- `agent_environment` is unchanged.
+PROBE_ENVIRONMENT = INHERITED_ENVIRONMENT | {"USER", "LOGNAME"}
+
+#: `PATH` for the read-only probes. Claude Code reads its Keychain credential by
+#: shelling out to `security`, resolved *by name*, so the empty `PATH` a review
+#: session gets makes the probe answer "signed out" no matter who is signed in.
+#: Fixed system directories rather than the developer's own `PATH`: the probe
+#: needs `security`, and inheriting `PATH` would put `gh` and `aws` back within
+#: reach by name for no gain.
+PROBE_PATH = "/usr/bin:/bin"
+
 #: Named here only so a test can assert their absence by name. The allowlist
 #: above already excludes them, and it excludes the ones nobody listed too.
 CREDENTIAL_ENVIRONMENT = (
@@ -483,12 +499,24 @@ def agent_environment(cli: AgentCli, *, scratch: Path) -> dict[str, str]:
     `PATH` points at an empty scratch directory so that `gh`, `aws`, and every
     other credential-bearing tool on the developer's `PATH` cannot be resolved by
     name from inside the session. Diffuse resolves the agent CLI to an absolute
-    path itself before spawning it, so the empty `PATH` costs nothing; the CLIs
-    Diffuse hosts are native binaries and need no interpreter looked up.
+    path itself before spawning it, so the empty `PATH` costs nothing at spawn
+    time; the CLIs Diffuse hosts are native binaries and need no interpreter
+    looked up.
 
     `HOME` points there too, so anything the CLI reads out of a home directory
     Diffuse did not anticipate finds an empty one. The configuration directory is
     named explicitly and so is unaffected.
+
+    Unresolved for the adapter, and measured rather than assumed: on macOS this
+    environment also stops the CLI reading *its own* credential. Claude Code
+    keeps that credential in the login Keychain and reaches it through `USER`,
+    the real `HOME`, and `security` resolved by name -- so a review session
+    spawned under this environment is a signed-out one. The read-only probes
+    take `probe_environment` instead, which is why `diffuse agent status` is
+    truthful; a review cannot use that escape, because the whole point of the
+    boundary is that a session handling an untrusted diff must not have
+    `security` within reach. Deciding how the agent process receives its
+    credential without reopening that door is adapter work, not probe work.
     """
 
     environment = {key: value for key, value in os.environ.items() if key in INHERITED_ENVIRONMENT}
@@ -515,6 +543,38 @@ def resolve_executable(cli: AgentCli) -> Path:
     return Path(found)
 
 
+def probe_environment(cli: AgentCli) -> dict[str, str]:
+    """Build the environment for a read-only vendor probe.
+
+    Deliberately *not* `agent_environment`. That one hardens a session that
+    investigates an untrusted diff; a probe asks the CLI its version or whether
+    a directory is signed in, reads no repository, and calls no model. Running
+    it under the review boundary bought nothing and cost correctness: on macOS
+    the credential lives in the login Keychain, and reaching it needs `USER`,
+    the developer's real `HOME`, and `security` resolvable on `PATH` -- all
+    three of which `agent_environment` removes on purpose. The result was
+    `authenticated: false` for a developer who had just signed in.
+
+    Widened by exactly what the Keychain read needs, and no further. The
+    credential allowlist still applies, which is the property that matters
+    here: an ambient `ANTHROPIC_API_KEY` makes `claude auth status` answer
+    `loggedIn: true` against an *empty* configuration directory, so a probe
+    that inherited the environment would report a Diffuse directory as ready
+    when nothing had ever been signed into it -- and the review that followed
+    would fail, because `agent_environment` does not forward that key.
+    """
+
+    environment = {key: value for key, value in os.environ.items() if key in PROBE_ENVIRONMENT}
+    environment.update(
+        {
+            "HOME": str(REAL_HOME),
+            "PATH": PROBE_PATH,
+            cli.config_directory_variable: str(agent_config_directory(cli)),
+        }
+    )
+    return environment
+
+
 def _run_cli(
     cli: AgentCli,
     arguments: tuple[str, ...],
@@ -524,21 +584,20 @@ def _run_cli(
     """Run a read-only vendor subcommand against the Diffuse-owned config dir."""
 
     executable = resolve_executable(cli)
-    with agent_scratch_directory() as scratch:
-        try:
-            return subprocess.run(
-                [str(executable), *arguments],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-                env=agent_environment(cli, scratch=scratch),
-            )
-        except subprocess.TimeoutExpired as error:
-            raise AgentHostError(
-                f"{cli.display_name} did not respond to "
-                f"`{cli.executable} {' '.join(arguments)}` within {timeout}s"
-            ) from error
+    try:
+        return subprocess.run(
+            [str(executable), *arguments],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=probe_environment(cli),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise AgentHostError(
+            f"{cli.display_name} did not respond to "
+            f"`{cli.executable} {' '.join(arguments)}` within {timeout}s"
+        ) from error
 
 
 def parse_version(text: str) -> tuple[int, int, int]:
@@ -701,7 +760,24 @@ def cli_status(cli: AgentCli) -> dict[str, object]:
     status["sandbox_settings_current"] = settings_current
     status["settings_filename"] = cli.settings_filename
 
-    authentication = authentication_status(cli)
+    try:
+        authentication = authentication_status(cli)
+    except AgentHostError as error:
+        # Guarded like the two probes above it, and for the same reason. An
+        # unresponsive `auth status` is not a developer who is signed out, so
+        # "run `diffuse agent login`" would be the wrong remedy -- and letting
+        # it propagate loses the whole document: the platform check, the agent
+        # home, this runtime's version, and the *other* runtime's entry, none
+        # of which the failure says anything about. A command whose only job is
+        # diagnosis has to report the thing that broke rather than become it.
+        return {
+            **status,
+            "authenticated": False,
+            "auth_method": None,
+            "account": None,
+            "ready": False,
+            "problem": str(error),
+        }
     status["authenticated"] = authentication["logged_in"]
     status["auth_method"] = authentication.get("auth_method")
     status["account"] = authentication.get("account")
