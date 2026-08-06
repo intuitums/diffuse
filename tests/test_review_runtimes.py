@@ -14,7 +14,6 @@ from service.review import engine as review_engine
 from service.review import runtimes
 from service.review.request import ReviewRequest
 from service.review.runtimes import (
-    HOSTED_RUNTIME_NAMES,
     LITELLM_RUNTIME,
     RUNTIME_NAMES,
     hosted_review_runtime_name,
@@ -105,19 +104,17 @@ def test_hosted_runtime_accepts_litellm(monkeypatch):
     assert hosted_review_runtime_name() == LITELLM_RUNTIME
 
 
-def test_hosted_runtime_refuses_local_only_names(monkeypatch):
-    local_only = [name for name in ("claude", "codex") if name not in HOSTED_RUNTIME_NAMES]
-    if not local_only:
-        pytest.skip("no local-only runtime names to refuse yet")
-    monkeypatch.setenv("REVIEW_RUNTIME", local_only[0])
-    # Still refused as unimplemented first when not in RUNTIME_NAMES
-    with pytest.raises(ValueError):
-        hosted_review_runtime_name()
+def test_hosted_runtime_refuses_an_unsupported_runtime(monkeypatch):
+    """Keep this test meaningful when a planned CLI runtime becomes hosted.
 
-
-def test_hosted_runtime_refuses_unknown(monkeypatch):
+    `claude` and `codex` are intentional future values, so using either as a
+    rejection fixture silently turned this test into a skip as soon as the
+    adapter shipped. The sentinel is never a runtime, and proves that startup
+    refuses a value the server cannot execute without constraining a future
+    product decision.
+    """
     monkeypatch.setenv("REVIEW_RUNTIME", UNSUPPORTED_RUNTIME)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="is not a runtime Diffuse implements"):
         hosted_review_runtime_name()
 
 
