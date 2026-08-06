@@ -108,6 +108,24 @@ mean nothing to `claude auth login`, so Claude forwards them.
 What has **not** landed: an adapter that spawns either CLI for a review, or lets
 `diffuse review` run without `REVIEW_MODEL`.
 
+The reusable session primitive is available in `service.agents` with no
+production callers. It constructs Claude Code's print/JSON invocation and can
+record or replay its subprocess transcript in offline unit tests.
+
+It carries all three of the local boundaries rather than leaving them to the
+adapter, because each fails silently when omitted: the `agent_environment`
+allowlist, `--settings` naming the Diffuse-owned sandbox policy (a session
+refuses to start if that policy is missing or stale, since without
+`failIfUnavailable` a host lacking bubblewrap runs the review unsandboxed), and
+`--strict-mcp-config` with a Diffuse-written `--mcp-config` — unconditionally,
+so the `.mcp.json` of the repository under review is never loaded. Tools come
+from the profile's allowlist via `--allowed-tools`, and the tool bridge's bearer
+token reaches the child through the environment rather than argv.
+
+Adapters remain responsible for their credential, evaluation, and
+runtime-selection gates; this primitive does not make an agent runtime
+selectable.
+
 **What the adapter still needs.** In place:
 
 | Item | State |
