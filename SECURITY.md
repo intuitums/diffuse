@@ -143,14 +143,19 @@ boundary; disabling the host-wide user-namespace restriction would weaken every
 workload on the host. Diffuse will not ask operators to do that.
 
 Accordingly, `agent_host.sandbox_settings` has a distinct
-`CONTAINER_COMPARTMENT_PROFILE`: it renders `sandbox.enabled: false` only as a
-declaration that the CLI sandbox is unavailable, and marks the profile as
-requiring a successful compartment preflight. That preflight must be implemented
-and run before any adapter selects this profile. It must establish the container
+`CONTAINER_COMPARTMENT_PROFILE` that renders `sandbox.enabled: false` only as a
+declaration that the CLI sandbox is unavailable. Selecting it is not enough to
+use it: `sandbox_settings` refuses to render that profile unless it is given a
+`CompartmentAssertion` produced by `assert_compartment` from a preflight that
+passed, and an assertion minted for one profile is not accepted for another. An
+adapter that selects the profile and skips the preflight therefore gets an
+error rather than an unsandboxed review.
+
+That preflight must still be implemented. It must establish the container
 properties that make the invariant checkable, rather than replacing a
-Bubblewrap refusal with an unverified unsandboxed run. Until then, agent runtimes
-remain unselectable and the existing local CLI policy still fails closed with
-`failIfUnavailable: true`.
+Bubblewrap refusal with an unverified unsandboxed run. Until then, no
+`assert_compartment` caller exists, agent runtimes remain unselectable, and the
+existing local CLI policy still fails closed with `failIfUnavailable: true`.
 
 ### Out of scope
 

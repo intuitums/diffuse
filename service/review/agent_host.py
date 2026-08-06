@@ -31,10 +31,13 @@ must never execute repository-supplied content.
 On the self-hosted Linux profile, Bubblewrap cannot create a user namespace in
 the review container (DEV-327). `CONTAINER_COMPARTMENT_PROFILE` therefore does
 not try to weaken Docker until Bubblewrap happens to work: it turns the CLI
-sandbox off and requires the later review-compartment preflight to be the
-boundary. That preflight and its service are deliberately not implemented here;
-no agent runtime is selectable yet. See SECURITY.md for the measured matrix and
-the invariant the preflight must assert.
+sandbox off and makes the later review-compartment preflight the boundary. That
+requirement is enforced rather than documented -- rendering the profile needs a
+`CompartmentAssertion`, and `assert_compartment` is the only thing that produces
+one -- because a boolean saying a check is required is not a check. The
+preflight itself is deliberately not implemented here; no agent runtime is
+selectable yet. See SECURITY.md for the measured matrix and the invariant the
+preflight must assert.
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,6 +99,43 @@ class SandboxProfile:
     name: str
     cli_sandbox_enabled: bool
     requires_compartment_preflight: bool
+
+
+@dataclass(frozen=True)
+class CompartmentAssertion:
+    """Evidence that the compartment preflight ran and passed for one profile.
+
+    A boolean on the profile could only ever *describe* the requirement. This
+    is the requirement: `sandbox_settings` will not render a profile that turns
+    the CLI sandbox off unless it is handed one of these, and the only way to
+    obtain one is `assert_compartment`, which produces it from a preflight that
+    returned rather than raised. A future adapter that forgets the ordering gets
+    an `AgentHostError`, not an unsandboxed review.
+    """
+
+    profile_name: str
+
+
+def assert_compartment(
+    profile: SandboxProfile,
+    preflight: Callable[[], object],
+) -> CompartmentAssertion:
+    """Run `preflight` and mint the assertion `sandbox_settings` demands.
+
+    Deliberately takes the check as an argument rather than importing it: this
+    module is the local agent host, and the compartment it is asserting is a
+    server-side deployment concern with its own service and its own failures.
+    Any exception the preflight raises propagates untouched -- it names the
+    control that failed, which is more useful than anything this could add.
+    """
+
+    if not profile.requires_compartment_preflight:
+        raise AgentHostError(
+            f"{profile.name} does not use a compartment boundary, so asserting one "
+            "would record a guarantee nothing checked"
+        )
+    preflight()
+    return CompartmentAssertion(profile_name=profile.name)
 
 
 LOCAL_CLI_SANDBOX_PROFILE = SandboxProfile(
@@ -386,6 +426,7 @@ def sandbox_settings(
     worktree: Path | str | None = None,
     *,
     profile: SandboxProfile = LOCAL_CLI_SANDBOX_PROFILE,
+    compartment: CompartmentAssertion | None = None,
 ) -> dict[str, object]:
     """The Claude Code sandbox policy Diffuse persists under CLAUDE_CONFIG_DIR.
 
@@ -415,14 +456,25 @@ def sandbox_settings(
 
     The container-compartment profile explicitly disables Claude's Bubblewrap
     sandbox because the supported container posture cannot create its user
-    namespace. It is valid only after `agent_compartment` has asserted the
-    container replacement boundary; this function records that requirement on
-    the profile rather than pretending that `sandbox.enabled: false` is safe on
-    its own. The only current caller uses the local profile.
+    namespace. `sandbox.enabled: false` is never safe on its own, so this
+    refuses to render it without a `CompartmentAssertion` for the same profile:
+    the replacement boundary has to have been checked, not merely intended. The
+    only current caller uses the local profile.
     """
 
     if not profile.cli_sandbox_enabled:
+        if compartment is None or compartment.profile_name != profile.name:
+            raise AgentHostError(
+                f"{profile.name} turns the CLI sandbox off, so it may only be rendered "
+                "with a CompartmentAssertion from a passing preflight for that same "
+                "profile; see assert_compartment"
+            )
         return {"sandbox": {"enabled": False}}
+    if compartment is not None:
+        raise AgentHostError(
+            f"{profile.name} keeps the CLI sandbox on and does not use a compartment "
+            "boundary; passing an assertion here hides which boundary is load-bearing"
+        )
 
     filesystem: dict[str, object] = {"denyRead": [f"{REAL_HOME}/"]}
     if worktree is not None:

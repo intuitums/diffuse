@@ -28,9 +28,10 @@ dedicated compartment must prove at runtime that the process reading untrusted
 content is non-root, has no control-plane credentials, cannot reach the database
 or other sensitive services, and has only intended egress. The corresponding
 `CONTAINER_COMPARTMENT_PROFILE` in `agent_host.sandbox_settings` disables the
-unavailable CLI sandbox and records that a successful compartment preflight is
-required. It does not make an agent runtime selectable or relax the local
-profile. The complete evidence matrix and security rationale are in
+unavailable CLI sandbox, and will not render at all without a
+`CompartmentAssertion` from a preflight that passed — the requirement is
+enforced, not annotated. It does not make an agent runtime selectable or relax
+the local profile. The complete evidence matrix and security rationale are in
 [SECURITY.md](../SECURITY.md).
 
 ## What `litellm` is

@@ -260,20 +260,69 @@ def test_settings_carry_every_hard_gate_key():
     assert all(entry["mode"] == "deny" for entry in sandbox["credentials"]["files"])
 
 
-def test_container_profile_is_explicitly_preflight_gated_not_a_weaker_local_policy():
+def test_container_profile_refuses_to_render_without_a_passing_preflight():
     """Bubblewrap cannot create a user namespace in the supported container.
 
     The replacement is the compartment, not an operator weakening Docker until
-    Bubblewrap starts. Keeping the preflight requirement alongside the policy
-    prevents a future adapter from mistaking ``enabled: false`` for a sufficient
-    boundary.
+    Bubblewrap starts. The requirement is enforced rather than described: a
+    future adapter that selects this profile and forgets the preflight gets an
+    error, not an unsandboxed review.
     """
 
     assert LOCAL_CLI_SANDBOX_PROFILE.requires_compartment_preflight is False
     assert CONTAINER_COMPARTMENT_PROFILE.requires_compartment_preflight is True
-    assert sandbox_settings(profile=CONTAINER_COMPARTMENT_PROFILE) == {
-        "sandbox": {"enabled": False}
-    }
+
+    with pytest.raises(AgentHostError, match="CompartmentAssertion"):
+        sandbox_settings(profile=CONTAINER_COMPARTMENT_PROFILE)
+
+
+def test_container_profile_renders_once_the_preflight_has_passed():
+    ran: list[str] = []
+    assertion = agent_host.assert_compartment(
+        CONTAINER_COMPARTMENT_PROFILE,
+        lambda: ran.append("preflight"),
+    )
+
+    assert ran == ["preflight"]
+    assert sandbox_settings(
+        profile=CONTAINER_COMPARTMENT_PROFILE,
+        compartment=assertion,
+    ) == {"sandbox": {"enabled": False}}
+
+
+def test_a_failing_preflight_yields_no_assertion_at_all():
+    """The preflight names the control that failed; nothing here should mask it."""
+
+    def failing_preflight():
+        raise RuntimeError("review compartment preflight failed (database isolation)")
+
+    with pytest.raises(RuntimeError, match="database isolation"):
+        agent_host.assert_compartment(CONTAINER_COMPARTMENT_PROFILE, failing_preflight)
+
+
+def test_an_assertion_for_another_profile_is_not_accepted():
+    """Otherwise one passing preflight would unlock every future profile."""
+
+    borrowed = agent_host.CompartmentAssertion(profile_name="some-other-compartment")
+
+    with pytest.raises(AgentHostError, match="that same"):
+        sandbox_settings(profile=CONTAINER_COMPARTMENT_PROFILE, compartment=borrowed)
+
+
+def test_the_local_profile_refuses_a_compartment_assertion():
+    """Two boundaries named at once hides which one is actually load-bearing."""
+
+    assertion = agent_host.CompartmentAssertion(
+        profile_name=LOCAL_CLI_SANDBOX_PROFILE.name
+    )
+
+    with pytest.raises(AgentHostError, match="does not use a compartment"):
+        sandbox_settings(profile=LOCAL_CLI_SANDBOX_PROFILE, compartment=assertion)
+
+
+def test_asserting_a_compartment_for_a_local_profile_is_refused():
+    with pytest.raises(AgentHostError, match="record a guarantee nothing checked"):
+        agent_host.assert_compartment(LOCAL_CLI_SANDBOX_PROFILE, lambda: None)
 
 
 def test_allowed_domains_is_empty_rather_than_curated():
