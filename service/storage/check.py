@@ -12,6 +12,24 @@ VALID_CONCLUSIONS = frozenset(
     {"cancelled", "failure", "neutral", "skipped", "success"}
 )
 
+#: How many times Diffuse will try to terminalize one check run before it stops.
+#:
+#: The reclaim predicate deliberately does not use `status` as its exit: DEV-313
+#: is exactly the bug where a `failed` row was the exit, and a single transient
+#: PATCH failure therefore stranded a required check permanently. So the bound
+#: has to be a count of attempts instead.
+#:
+#: Eight is chosen against the sweep interval rather than the failure: at one
+#: attempt per 300s pass, an unrecoverable check leaves the queue after roughly
+#: forty minutes, while a provider incident short of that is still ridden out.
+MAX_COMPLETION_ATTEMPTS = 8
+
+#: Recorded on a check Diffuse has stopped trying to complete. Distinct from
+#: `check_run_publication_failed`, which describes a single failed attempt: this
+#: one says no further attempt will be made, which is what an operator needs to
+#: know before reaching for the GitHub UI.
+COMPLETION_EXHAUSTED_ERROR_CODE = "check_run_completion_exhausted"
+
 
 @dataclass(frozen=True)
 class CheckRunHandle:
@@ -184,6 +202,50 @@ def mark_check_run_started(
         )
         if cursor.rowcount != 1:
             raise RuntimeError("Check run is not in a startable state")
+
+
+def begin_check_run_completion(conn, check_run_id: int) -> int | None:
+    """Count one attempt to terminalize a check and return the running total.
+
+    Called before the remote id is resolved rather than after, because
+    rediscovering a check that was created but never persisted is itself a
+    network call that can fail forever. Counting only the attempts that got as
+    far as the PATCH would leave that path unbounded, which is the shape of the
+    bug this whole change is about.
+
+    Returns `None` when the check is already `completed`, which is how a caller
+    tells "nothing to do" apart from "attempt recorded".
+    """
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE review_check_runs
+            SET completion_attempts = completion_attempts + 1,
+                updated_at = now()
+            WHERE id = %s
+              AND status <> 'completed'
+            RETURNING completion_attempts
+            """,
+            (check_run_id,),
+        )
+        row = cursor.fetchone()
+    return int(row[0]) if row else None
+
+
+def mark_check_run_completion_exhausted(conn, check_run_id: int) -> None:
+    """Stop retrying a check run, and say so durably.
+
+    Deliberately a distinct error code rather than reusing the per-attempt one:
+    an operator reading this row needs to know Diffuse will not try again, so
+    the remote check has to be resolved by hand.
+    """
+
+    mark_check_run_failed(
+        conn,
+        check_run_id,
+        error_code=COMPLETION_EXHAUSTED_ERROR_CODE,
+    )
 
 
 def mark_check_run_completing(conn, check_run_id: int) -> None:
