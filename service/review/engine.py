@@ -31,32 +31,30 @@ from service.model_providers import model_family, resolve_provider
 from service.models.review import (
     CandidateBatch,
     CandidateFinding,
-    Category,
     DiagramProposal,
     ReviewDiagram,
-    ReviewFinding,
     ReviewReport,
-    SecurityClassification,
-    Severity,
     VerificationBatch,
 )
 from service.review.report_assembly import (
-    SEVERITY_ORDER,
-    minimum_review_confidence,
+    all_files_disabled_report,
     review_confidence_score,
+    reviewable_diff,
+    verified_findings,
+)
+from service.review.report_assembly import (
+    deduplicate_candidates as _deduplicate_candidates,
 )
 from service.review.report_assembly import (
     diagram_would_help as _diagram_would_help,
 )
 from service.review.report_assembly import (
-    fingerprint as _fingerprint,
+    minimum_review_confidence as _minimum_review_confidence,
 )
 from service.review.report_assembly import (
     review_presentation as _review_presentation,
 )
-from service.review.report_assembly import (
-    risk_floor as _risk_floor,
-)
+from service.review.report_assembly import risk_floor as _risk_floor
 from service.review.request import ReviewRequest
 from service.review.runtimes import (
     LITELLM_RUNTIME,
@@ -106,6 +104,12 @@ class StructuredOutputValidationError(RuntimeError):
 
 class ModelConnectionProbe(BaseModel):
     ready: Literal[True]
+
+
+def minimum_review_confidence() -> float:
+    """Compatibility export for callers predating report-contract extraction."""
+
+    return _minimum_review_confidence()
 
 
 def review_model() -> str:
@@ -766,75 +770,6 @@ def _security_policy_text(policy: ResolvedReviewPolicy | None) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def _normalize_security_candidate(
-    candidate: CandidateFinding,
-    policy: ResolvedReviewPolicy | None,
-) -> CandidateFinding | None:
-    classification = candidate.security_classification
-    if candidate.category is not Category.SECURITY:
-        return candidate if classification is None else None
-    if classification is None:
-        candidate = candidate.model_copy(
-            update={
-                "security_classification": SecurityClassification.VULNERABILITY,
-            }
-        )
-        classification = SecurityClassification.VULNERABILITY
-    if (
-        classification is SecurityClassification.PREVENTATIVE
-        and (
-            policy is None
-            or not policy.allows_preventative_security(candidate.file_path)
-            or candidate.severity in {Severity.CRITICAL, Severity.HIGH}
-        )
-    ):
-        return None
-    return candidate
-
-
-def _deduplicate_candidates(
-    candidates: list[CandidateFinding],
-    parsed_diff: ParsedDiff,
-    policy: ResolvedReviewPolicy | None = None,
-) -> list[CandidateFinding]:
-    selected: dict[tuple[str, str, int, str, str], CandidateFinding] = {}
-    for raw_candidate in candidates:
-        candidate = _normalize_security_candidate(raw_candidate, policy)
-        if candidate is None:
-            continue
-        if policy is not None and not policy.allows_path(candidate.file_path):
-            continue
-        if not parsed_diff.is_commentable(
-            candidate.file_path,
-            candidate.side,
-            candidate.line,
-        ):
-            continue
-        key = (
-            candidate.file_path,
-            candidate.side,
-            candidate.line,
-            candidate.category.value,
-            (
-                candidate.security_classification.value
-                if candidate.security_classification is not None
-                else ""
-            ),
-        )
-        existing = selected.get(key)
-        if existing is None or candidate.confidence > existing.confidence:
-            selected[key] = candidate
-    return sorted(
-        selected.values(),
-        key=lambda finding: (
-            SEVERITY_ORDER[finding.severity],
-            -finding.confidence,
-            finding.file_path,
-            finding.line,
-        ),
-    )[:80]
-
-
 def _verification_prompt(
     candidates: list[CandidateFinding],
     parsed_diff: ParsedDiff,
@@ -963,35 +898,13 @@ def _generate_review_litellm(
     selected_candidate_model = candidate_model or review_model()
     selected_verifier_model = verifier_model or review_verifier_model()
     complete_diff = parse_unified_diff(diff_text)
-    parsed_diff = (
-        ParsedDiff(
-            files=tuple(
-                file
-                for file in complete_diff.files
-                if file.comment_path and policy.allows_path(file.comment_path)
-            )
-        )
-        if policy is not None
-        else complete_diff
-    )
-    ignored_file_count = len(complete_diff.files) - len(parsed_diff.files)
+    parsed_diff, ignored_file_count = reviewable_diff(complete_diff, policy)
     presentation = _review_presentation(policy)
     if complete_diff.files and not parsed_diff.files:
-        return ReviewReport(
-            summary="Review disabled by repository policy for all changed files.",
-            risk_score=0,
-            confidence_score=0,
-            findings=[],
+        return all_files_disabled_report(
             diff_file_count=len(complete_diff.files),
-            reviewed_file_count=0,
             ignored_file_count=ignored_file_count,
-            inline_comments_enabled=False,
-            publication_enabled=False,
-            skip_reason="all_files_disabled",
-            context_chunk_count=0,
-            prompt_tokens=0,
-            completion_tokens=0,
-            **presentation,
+            policy=policy,
         )
     chunks, reviewed_paths = pack_diff_files(
         parsed_diff,
@@ -1003,6 +916,8 @@ def _generate_review_litellm(
     security_policy_text = _security_policy_text(policy)
     prompt_tokens = 0
     completion_tokens = 0
+    verifier_prompt_tokens = 0
+    verifier_completion_tokens = 0
     cache_usage = PromptCacheUsage()
     cacheable_prompt_chars = 0
     raw_candidates: list[CandidateFinding] = []
@@ -1113,6 +1028,8 @@ def _generate_review_litellm(
     )
     prompt_tokens += input_tokens
     completion_tokens += output_tokens
+    verifier_prompt_tokens += input_tokens
+    verifier_completion_tokens += output_tokens
     if progress_callback:
         progress_callback()
     decisions = {}
@@ -1123,77 +1040,7 @@ def _generate_review_litellm(
         else:
             decisions[decision.candidate_id] = decision
 
-    findings: list[ReviewFinding] = []
-    for index, candidate in enumerate(candidates):
-        candidate_id = f"candidate-{index}"
-        decision = decisions.get(candidate_id)
-        if (
-            policy is not None
-            and candidate.security_classification
-            is SecurityClassification.PREVENTATIVE
-        ):
-            threshold = policy.preventative_security_threshold_for(
-                candidate.file_path
-            )
-        else:
-            threshold = (
-                policy.threshold_for(candidate.file_path)
-                if policy is not None
-                else minimum_review_confidence()
-            )
-        if (
-            decision is None
-            or candidate_id in duplicate_decisions
-            or not decision.keep
-            or min(candidate.confidence, decision.confidence) < threshold
-        ):
-            continue
-        title = decision.revised_title or candidate.title
-        body = decision.revised_body or candidate.body
-        severity = decision.revised_severity or candidate.severity
-        if (
-            candidate.security_classification
-            is SecurityClassification.PREVENTATIVE
-            and severity in {Severity.CRITICAL, Severity.HIGH}
-        ):
-            continue
-        if policy is not None and not policy.allows_severity(
-            candidate.file_path,
-            severity.value,
-        ):
-            continue
-        suggested_fix = (
-            decision.revised_suggested_fix
-            if decision.revised_suggested_fix is not None
-            else candidate.suggested_fix
-        )
-        findings.append(
-            ReviewFinding(
-                fingerprint=_fingerprint(candidate, title),
-                title=title,
-                body=body,
-                severity=severity,
-                category=candidate.category,
-                security_classification=candidate.security_classification,
-                confidence=min(candidate.confidence, decision.confidence),
-                file_path=candidate.file_path,
-                line=candidate.line,
-                side=candidate.side,
-                evidence=candidate.evidence,
-                suggested_fix=suggested_fix,
-            )
-        )
-        if len(findings) == 25:
-            break
-
-    findings.sort(
-        key=lambda finding: (
-            SEVERITY_ORDER[finding.severity],
-            -finding.confidence,
-            finding.file_path,
-            finding.line,
-        )
-    )
+    findings = verified_findings(candidates, decisions, duplicate_decisions, policy)
     risk_score = max(verification.risk_score, _risk_floor(findings)) if findings else 0
     summary = (
         verification.summary
@@ -1220,6 +1067,8 @@ def _generate_review_litellm(
         context_chunk_count=len(contexts),
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
+        verifier_prompt_tokens=verifier_prompt_tokens,
+        verifier_completion_tokens=verifier_completion_tokens,
         cache_read_tokens=cache_usage.read_tokens,
         cache_write_tokens=cache_usage.written_tokens,
         **presentation,

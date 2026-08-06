@@ -97,7 +97,9 @@ pluggable; see [agent-runtimes.md](agent-runtimes.md).
 - **Codex adapter.** Restores cross-family verification across CLIs. Empirics
   still unmeasured.
 - **Record runtime (+ CLI version) on eval runs and review runs.** Partial:
-  harness still assumes one-shot token splits via `_call_structured`.
+  `ReviewReport` now records the candidate/verifier token split, so the harness
+  no longer depends on the one-shot `_call_structured` seam. Runtime and CLI
+  version recording remain for the agent adapter.
 
 ## Wave 3 — split the state by lifetime
 

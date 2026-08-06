@@ -210,6 +210,11 @@ class ReviewReport(StrictModel):
     context_chunk_count: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
+    # Candidate and verifier stages can use different models. Keep their usage
+    # separate so evaluation can price a cross-family review correctly without
+    # inspecting a runtime's private call path.
+    verifier_prompt_tokens: int = Field(default=0, ge=0)
+    verifier_completion_tokens: int = Field(default=0, ge=0)
     # A breakdown of `prompt_tokens`, never an addition to it. LiteLLM folds both
     # cache counters into `prompt_tokens` on the Anthropic route, unlike
     # Anthropic's own `input_tokens`, which reports the uncached remainder alone;
@@ -219,3 +224,12 @@ class ReviewReport(StrictModel):
     # -- `prompt_tokens` alone cannot distinguish them.
     cache_read_tokens: int = Field(default=0, ge=0)
     cache_write_tokens: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def verifier_usage_is_part_of_total_usage(self) -> ReviewReport:
+        if (
+            self.verifier_prompt_tokens > self.prompt_tokens
+            or self.verifier_completion_tokens > self.completion_tokens
+        ):
+            raise ValueError("Verifier token usage cannot exceed total review usage")
+        return self

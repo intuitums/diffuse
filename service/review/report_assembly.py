@@ -24,7 +24,15 @@ import os
 
 from repository_policy.resolve import ResolvedReviewPolicy
 from service.diff_parser import ParsedDiff
-from service.models.review import CandidateFinding, ReviewFinding, Severity
+from service.models.review import (
+    CandidateFinding,
+    Category,
+    ReviewFinding,
+    ReviewReport,
+    SecurityClassification,
+    Severity,
+    VerificationDecision,
+)
 
 #: Presentation order. Not the same as the risk floor below: this decides what a
 #: reader sees first, that decides what the review is allowed to score.
@@ -50,6 +58,50 @@ MIN_MULTI_FILE_DIAGRAM_CHANGED_LINES = 12
 #: The most findings any single review publishes, whatever the runtime produced.
 #: A review nobody reads because it is too long is a review that did not happen.
 MAX_PUBLISHED_FINDINGS = 25
+
+
+def reviewable_diff(
+    parsed_diff: ParsedDiff,
+    policy: ResolvedReviewPolicy | None,
+) -> tuple[ParsedDiff, int]:
+    """Return the files this review may inspect and the number policy excluded."""
+
+    if policy is None:
+        return parsed_diff, 0
+    selected = ParsedDiff(
+        files=tuple(
+            file
+            for file in parsed_diff.files
+            if file.comment_path and policy.allows_path(file.comment_path)
+        )
+    )
+    return selected, len(parsed_diff.files) - len(selected.files)
+
+
+def all_files_disabled_report(
+    *,
+    diff_file_count: int,
+    ignored_file_count: int,
+    policy: ResolvedReviewPolicy | None,
+) -> ReviewReport:
+    """The policy-owned result when no changed file may be reviewed."""
+
+    return ReviewReport(
+        summary="Review disabled by repository policy for all changed files.",
+        risk_score=0,
+        confidence_score=0,
+        findings=[],
+        diff_file_count=diff_file_count,
+        reviewed_file_count=0,
+        ignored_file_count=ignored_file_count,
+        inline_comments_enabled=False,
+        publication_enabled=False,
+        skip_reason="all_files_disabled",
+        context_chunk_count=0,
+        prompt_tokens=0,
+        completion_tokens=0,
+        **review_presentation(policy),
+    )
 
 
 def minimum_review_confidence() -> float:
@@ -82,6 +134,153 @@ def fingerprint(candidate: CandidateFinding, title: str) -> str:
         )
     )
     return hashlib.sha256(identity.encode()).hexdigest()
+
+
+def _normalize_security_candidate(
+    candidate: CandidateFinding,
+    policy: ResolvedReviewPolicy | None,
+) -> CandidateFinding | None:
+    classification = candidate.security_classification
+    if candidate.category is not Category.SECURITY:
+        return candidate if classification is None else None
+    if classification is None:
+        candidate = candidate.model_copy(
+            update={"security_classification": SecurityClassification.VULNERABILITY}
+        )
+        classification = SecurityClassification.VULNERABILITY
+    if (
+        classification is SecurityClassification.PREVENTATIVE
+        and (
+            policy is None
+            or not policy.allows_preventative_security(candidate.file_path)
+            or candidate.severity in {Severity.CRITICAL, Severity.HIGH}
+        )
+    ):
+        return None
+    return candidate
+
+
+def deduplicate_candidates(
+    candidates: list[CandidateFinding],
+    parsed_diff: ParsedDiff,
+    policy: ResolvedReviewPolicy | None = None,
+) -> list[CandidateFinding]:
+    """Keep only policy-allowed candidates anchored to changed lines.
+
+    This is a report invariant, not a LiteLLM property: an agent runtime must
+    not publish a finding whose claimed location is outside the supplied diff.
+    """
+
+    selected: dict[tuple[str, str, int, str, str], CandidateFinding] = {}
+    for raw_candidate in candidates:
+        candidate = _normalize_security_candidate(raw_candidate, policy)
+        if candidate is None:
+            continue
+        if policy is not None and not policy.allows_path(candidate.file_path):
+            continue
+        if not parsed_diff.is_commentable(
+            candidate.file_path,
+            candidate.side,
+            candidate.line,
+        ):
+            continue
+        key = (
+            candidate.file_path,
+            candidate.side,
+            candidate.line,
+            candidate.category.value,
+            (
+                candidate.security_classification.value
+                if candidate.security_classification is not None
+                else ""
+            ),
+        )
+        existing = selected.get(key)
+        if existing is None or candidate.confidence > existing.confidence:
+            selected[key] = candidate
+    return sorted(
+        selected.values(),
+        key=lambda finding: (
+            SEVERITY_ORDER[finding.severity],
+            -finding.confidence,
+            finding.file_path,
+            finding.line,
+        ),
+    )[:80]
+
+
+def verified_findings(
+    candidates: list[CandidateFinding],
+    decisions: dict[str, VerificationDecision],
+    duplicate_decisions: set[str],
+    policy: ResolvedReviewPolicy | None,
+) -> list[ReviewFinding]:
+    """Apply the shared confidence, severity, and publication limits."""
+
+    findings: list[ReviewFinding] = []
+    for index, candidate in enumerate(candidates):
+        candidate_id = f"candidate-{index}"
+        decision = decisions.get(candidate_id)
+        if (
+            policy is not None
+            and candidate.security_classification is SecurityClassification.PREVENTATIVE
+        ):
+            threshold = policy.preventative_security_threshold_for(candidate.file_path)
+        else:
+            threshold = (
+                policy.threshold_for(candidate.file_path)
+                if policy is not None
+                else minimum_review_confidence()
+            )
+        if (
+            decision is None
+            or candidate_id in duplicate_decisions
+            or not decision.keep
+            or min(candidate.confidence, decision.confidence) < threshold
+        ):
+            continue
+        title = decision.revised_title or candidate.title
+        body = decision.revised_body or candidate.body
+        severity = decision.revised_severity or candidate.severity
+        if (
+            candidate.security_classification is SecurityClassification.PREVENTATIVE
+            and severity in {Severity.CRITICAL, Severity.HIGH}
+        ):
+            continue
+        if policy is not None and not policy.allows_severity(candidate.file_path, severity.value):
+            continue
+        suggested_fix = (
+            decision.revised_suggested_fix
+            if decision.revised_suggested_fix is not None
+            else candidate.suggested_fix
+        )
+        findings.append(
+            ReviewFinding(
+                fingerprint=fingerprint(candidate, title),
+                title=title,
+                body=body,
+                severity=severity,
+                category=candidate.category,
+                security_classification=candidate.security_classification,
+                confidence=min(candidate.confidence, decision.confidence),
+                file_path=candidate.file_path,
+                line=candidate.line,
+                side=candidate.side,
+                evidence=candidate.evidence,
+                suggested_fix=suggested_fix,
+            )
+        )
+        if len(findings) == MAX_PUBLISHED_FINDINGS:
+            break
+    return sorted(
+        findings,
+        key=lambda finding: (
+            SEVERITY_ORDER[finding.severity],
+            -finding.confidence,
+            finding.file_path,
+            finding.line,
+        ),
+    )
 
 
 def risk_floor(findings: list[ReviewFinding]) -> float:

@@ -394,10 +394,10 @@ def test_run_fixture_emits_the_observed_structure_the_scorer_consumes(
     assert score.false_positives == 0
 
 
-def test_run_fixture_records_candidate_and_verifier_tokens_separately(
+def test_run_fixture_uses_the_reported_candidate_and_verifier_tokens(
     tmp_path, monkeypatch
 ):
-    """`ReviewReport` folds the two together; the suite prices them apart."""
+    """The suite prices the public report contract, not a private call seam."""
 
     monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setenv("REVIEW_PASSES", "security,correctness")
@@ -416,26 +416,7 @@ def test_run_fixture_records_candidate_and_verifier_tokens_separately(
     assert (case.verifier_prompt_tokens, case.verifier_completion_tokens) == (7, 3)
 
 
-def test_the_token_recorder_restores_the_real_call_path(tmp_path, monkeypatch):
-    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
-    monkeypatch.setenv("REVIEW_PASSES", "security")
-    _stub_call(monkeypatch, findings=[_candidate()], keep={"candidate-0"})
-    _write_fixture(tmp_path, "restores")
-    loaded = eval_harness.load_fixtures(tmp_path)[0]
-    before = review_engine._call_structured
-
-    eval_harness.run_fixture(
-        loaded,
-        candidate_model="openai/gpt-4.1-mini",
-        verifier_model="openai/gpt-4.1-mini",
-    )
-
-    assert review_engine._call_structured is before
-
-
-def test_run_fixture_restores_the_call_path_when_the_review_raises(
-    tmp_path, monkeypatch
-):
+def test_run_fixture_preserves_the_review_exception(tmp_path, monkeypatch):
     monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setenv("REVIEW_PASSES", "security")
 
@@ -452,7 +433,6 @@ def test_run_fixture_restores_the_call_path_when_the_review_raises(
             candidate_model="openai/gpt-4.1-mini",
             verifier_model="openai/gpt-4.1-mini",
         )
-    assert review_engine._call_structured is exploding
 
 
 def test_run_suite_refuses_a_cross_family_pair_without_a_second_rate_card(
