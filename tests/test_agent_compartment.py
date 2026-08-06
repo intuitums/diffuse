@@ -12,6 +12,25 @@ import pytest
 from service.review import agent_compartment
 from service.review.agent_environment import CREDENTIAL_ENVIRONMENT
 
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+COMPOSE_FILES = (
+    REPOSITORY_ROOT / "docker-compose.yml",
+    REPOSITORY_ROOT / "deploy" / "compose.yaml",
+)
+
+
+def _service_block(text: str, name: str) -> str:
+    """Slice one Compose service out by its own indentation."""
+
+    lines = text.splitlines()
+    start = lines.index(f"  {name}:")
+    body = []
+    for line in lines[start + 1 :]:
+        if line.strip() and not line.startswith("   "):
+            break
+        body.append(line)
+    return "\n".join(body)
+
 
 class _Connection:
     def __init__(self, response: bytes = b"") -> None:
@@ -98,6 +117,91 @@ def test_agent_home_must_be_private_and_owned(monkeypatch, tmp_path):
         agent_compartment._check_agent_home()
 
 
+def test_a_client_that_hangs_up_does_not_take_the_proxy_down():
+    """The healthcheck does exactly this every two seconds.
+
+    `_read_request` catches only the parse errors, not the `recv`, so a peer
+    that closes early surfaced as an `OSError` in the accept loop's own frame
+    and ended the process. Serving each client on its own thread with the errors
+    contained is what keeps one bad client from being an outage.
+    """
+
+    server, client = socket.socketpair()
+    client.close()
+
+    agent_compartment._serve_proxy_client(server)
+
+
+def test_a_client_too_slow_to_send_its_request_is_dropped_not_fatal():
+    server, client = socket.socketpair()
+    thread = threading.Thread(target=agent_compartment._serve_proxy_client, args=(server,))
+    thread.start()
+    try:
+        # Never sends a request line; the parse timeout must contain it.
+        thread.join(timeout=agent_compartment.NETWORK_PROBE_TIMEOUT_SECONDS + 3)
+        assert not thread.is_alive()
+    finally:
+        client.close()
+
+
+def test_the_proxy_serves_clients_concurrently(monkeypatch):
+    """A CONNECT tunnel lives as long as its model call.
+
+    Handling these in the accept loop meant one in-flight request blocked every
+    other client, including the healthcheck that decides whether to restart the
+    container.
+    """
+
+    released = threading.Event()
+    upstreams: list[socket.socket] = []
+
+    def slow_upstream(_host: str, _port: int) -> socket.socket:
+        near, far = socket.socketpair()
+        upstreams.extend((near, far))
+        released.wait(timeout=5)
+        return near
+
+    monkeypatch.setattr(agent_compartment, "_connect", slow_upstream)
+
+    listener = socket.create_server(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    monkeypatch.setattr(agent_compartment, "EGRESS_PROXY_PORT", port)
+
+    accepted: list[socket.socket] = []
+
+    def serve_two():
+        for _ in range(2):
+            connection, _address = listener.accept()
+            accepted.append(connection)
+            threading.Thread(
+                target=agent_compartment._serve_proxy_client,
+                args=(connection,),
+                daemon=True,
+            ).start()
+
+    server_thread = threading.Thread(target=serve_two, daemon=True)
+    server_thread.start()
+
+    request = (
+        f"CONNECT {agent_compartment.MODEL_API_HOST}:443 HTTP/1.1\r\n"
+        f"Host: {agent_compartment.MODEL_API_HOST}:443\r\n\r\n"
+    ).encode()
+    clients = []
+    try:
+        for _ in range(2):
+            client = socket.create_connection(("127.0.0.1", port), timeout=5)
+            client.sendall(request)
+            clients.append(client)
+        # Both reached the handler while the first upstream connect is blocked.
+        server_thread.join(timeout=5)
+        assert len(accepted) == 2
+    finally:
+        released.set()
+        for sock in (*clients, *upstreams):
+            sock.close()
+        listener.close()
+
+
 def test_connect_proxy_refuses_every_authority_except_the_vendor():
     server, client = socket.socketpair()
     thread = threading.Thread(target=agent_compartment._handle_proxy_connection, args=(server,))
@@ -112,7 +216,7 @@ def test_connect_proxy_refuses_every_authority_except_the_vendor():
 
 
 def test_compose_keeps_agent_out_of_worker_environment_and_database_network():
-    for path in (Path("docker-compose.yml"), Path("deploy/compose.yaml")):
+    for path in COMPOSE_FILES:
         text = path.read_text()
         service = text.split("\n  agent-preflight:\n", 1)[1].split("\n  egress-proxy:", 1)[0]
 
@@ -126,9 +230,43 @@ def test_compose_keeps_agent_out_of_worker_environment_and_database_network():
         assert "backend:\n    internal: true" in text
         assert "agent_egress:\n    internal: true" in text
         assert "proxy_external:\n    internal: false" in text
+
+
+def test_the_compartment_does_not_gate_the_review_pipeline():
+    """No agent runtime is selectable, so nothing running may depend on it.
+
+    As a `depends_on` of the worker this made a live CONNECT to the model API a
+    precondition for starting reviews at all -- including for an operator on a
+    different provider, who would have no way to satisfy it.
+    """
+
+    for path in COMPOSE_FILES:
+        text = path.read_text()
         worker = text.split("\n  worker:\n", 1)[1].split("\n  agent-preflight:\n", 1)[0]
-        assert "agent-preflight:\n        condition: service_completed_successfully" in worker
+
+        assert "agent-preflight" not in worker
+        for service in ("agent-preflight", "egress-proxy"):
+            assert 'profiles: ["agent"]' in _service_block(text, service)
 
 
-def test_compartment_session_bound_is_explicit_and_positive():
-    assert agent_compartment.MAX_AGENT_SESSION_SECONDS == 600
+def test_the_app_keeps_its_outbound_route():
+    """`app` mints GitHub installation tokens and runs the OAuth code exchange.
+
+    Every network it was given is `internal: true`, which leaves it able to
+    reach the database and nothing else; both of those calls fail.
+    """
+
+    for path in COMPOSE_FILES:
+        text = path.read_text()
+        app = text.split("\n  app:\n", 1)[1].split("\n  worker:\n", 1)[0]
+        networks = next(line for line in app.splitlines() if "networks:" in line)
+
+        assert "control_egress" in networks
+    assert "control_egress:\n    internal: false" in text
+
+
+def test_the_allowlisted_model_host_follows_the_configured_provider(monkeypatch):
+    """Diffuse does not require Anthropic, so the allowlist must not either."""
+
+    for path in COMPOSE_FILES:
+        assert "DIFFUSE_AGENT_MODEL_HOST" in path.read_text()

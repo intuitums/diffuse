@@ -21,7 +21,9 @@ import select
 import socket
 import stat
 import sys
+import threading
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,7 +44,11 @@ DATABASE_HOST = "db"
 DATABASE_PORT = 5432
 EGRESS_PROXY_HOST = "egress-proxy"
 EGRESS_PROXY_PORT = 3128
-MODEL_API_HOST = "api.anthropic.com"
+#: The one authority the compartment may reach. Configurable because Diffuse
+#: does not require any particular provider -- `REVIEW_MODEL` and
+#: `REVIEW_API_BASE` decide that -- and an allowlist hardcoded to one vendor
+#: either blocks everyone else or gets switched off, which is worse.
+MODEL_API_HOST = os.environ.get("DIFFUSE_AGENT_MODEL_HOST", "api.anthropic.com")
 MODEL_API_PORT = 443
 PROXY_URL = f"http://{EGRESS_PROXY_HOST}:{EGRESS_PROXY_PORT}"
 NO_PROXY_VARIABLE = "NO_PROXY"
@@ -250,24 +256,56 @@ def _handle_proxy_connection(connection: socket.socket) -> None:
         connection.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
         return
     try:
-        with _connect(MODEL_API_HOST, MODEL_API_PORT) as upstream:
-            connection.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            # The short timeout protects parsing a new proxy request. A model
-            # response can legitimately take minutes, so it must not become an
-            # idle tunnel cutoff after CONNECT has been allowed.
-            connection.settimeout(None)
-            upstream.settimeout(None)
-            _relay(connection, upstream)
+        upstream = _connect(MODEL_API_HOST, MODEL_API_PORT)
     except OSError:
+        # Only reachable before the tunnel is established, which is the only
+        # point at which an HTTP response is still meaningful to the client.
         connection.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+        return
+    with upstream:
+        connection.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        # The short timeout protects parsing a new proxy request. A model
+        # response can legitimately take minutes, so it must not become an
+        # idle tunnel cutoff after CONNECT has been allowed.
+        connection.settimeout(None)
+        upstream.settimeout(None)
+        # A relay failure is not reported in-band. `200 Connection Established`
+        # has already been sent, so the client is speaking TLS and an
+        # `HTTP/1.1 502` written into that stream is corruption, not an error
+        # message. Dropping both ends is the only thing the client can read.
+        with suppress(OSError):
+            _relay(connection, upstream)
+
+
+def _serve_proxy_client(connection: socket.socket) -> None:
+    """Handle one client to completion, and never take the listener down.
+
+    Every failure here belongs to one client: a peer that vanished mid-request,
+    a slow sender that hit the parse timeout, a reset on the 403 write. All of
+    them raise `OSError`, and this used to run in the accept loop's own frame,
+    so any of them ended the process -- including the healthcheck, which
+    connects and immediately closes every two seconds.
+    """
+
+    with connection, suppress(OSError):
+        connection.settimeout(NETWORK_PROBE_TIMEOUT_SECONDS)
+        _handle_proxy_connection(connection)
 
 
 def run_egress_proxy() -> None:
-    """Serve the compartment's fixed CONNECT allowlist until terminated."""
+    """Serve the compartment's fixed CONNECT allowlist until terminated.
+
+    One thread per client. A CONNECT tunnel lives as long as the model call it
+    carries, so serving these from the accept loop meant a single in-flight
+    request blocked every other client -- and the healthcheck along with them.
+    """
 
     with socket.create_server(("0.0.0.0", EGRESS_PROXY_PORT), reuse_port=False) as listener:
         while True:
             connection, _address = listener.accept()
-            with connection:
-                connection.settimeout(NETWORK_PROBE_TIMEOUT_SECONDS)
-                _handle_proxy_connection(connection)
+            worker = threading.Thread(
+                target=_serve_proxy_client,
+                args=(connection,),
+                daemon=True,
+            )
+            worker.start()

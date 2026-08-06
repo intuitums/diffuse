@@ -107,7 +107,7 @@ services:
         max-size: "10m"
         max-file: "5"
     stop_grace_period: 30s
-    networks: [backend, agent_mcp]
+    networks: [backend, agent_mcp, control_egress]
 
   worker:
     image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
@@ -122,8 +122,6 @@ services:
       disable: true
     depends_on:
       migrate:
-        condition: service_completed_successfully
-      agent-preflight:
         condition: service_completed_successfully
     env_file:
       - ${DIFFUSE_ENV_FILE:-.env}
@@ -152,6 +150,13 @@ services:
   # This one-shot assertion runs as the same identity and on the same networks
   # a future agent session will use. It deliberately has no `env_file`: the
   # worker's env file contains control-plane and database credentials.
+  #
+  # Opt-in, via `docker compose --profile agent up`. No agent runtime is
+  # selectable yet, so nothing in the running stack needs this. It was briefly a
+  # `depends_on` of the worker, which meant the entire review pipeline refused
+  # to start unless a live CONNECT to the model API succeeded -- a hard boot
+  # dependency on one vendor's reachability, for operators who may well be
+  # running another provider or none.
   agent-preflight:
     image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
     restart: "no"
@@ -162,6 +167,7 @@ services:
     security_opt:
       - no-new-privileges:true
     command: ["review-compartment-preflight"]
+    profiles: ["agent"]
     healthcheck:
       disable: true
     depends_on:
@@ -173,6 +179,9 @@ services:
       HTTP_PROXY: http://egress-proxy:3128
       HTTPS_PROXY: http://egress-proxy:3128
       NO_PROXY: app,egress-proxy,localhost,127.0.0.1
+      # The allowlist follows whichever provider the operator configured;
+      # hardcoding one vendor made the check meaningless for the others.
+      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_AGENT_MODEL_HOST:-api.anthropic.com}
     tmpfs:
       - /tmp:size=64m,mode=1777
       # DEV-333 replaces this ephemeral mount with its managed credential-home
@@ -199,6 +208,9 @@ services:
     security_opt:
       - no-new-privileges:true
     command: ["egress-proxy"]
+    profiles: ["agent"]
+    environment:
+      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_AGENT_MODEL_HOST:-api.anthropic.com}
     healthcheck:
       test: ["CMD", "diffuse", "egress-proxy-healthcheck"]
       interval: 2s
