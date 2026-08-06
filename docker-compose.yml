@@ -36,6 +36,7 @@ services:
         max-size: "10m"
         max-file: "5"
     stop_grace_period: 1m
+    networks: [backend]
 
   migrate:
     # The ONLY service that declares `build:`. `app` and `worker` run the same
@@ -82,6 +83,7 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    networks: [backend]
 
   app:
     # No `build:` — see the comment on `migrate`. `depends_on` guarantees
@@ -121,6 +123,7 @@ services:
         max-size: "10m"
         max-file: "5"
     stop_grace_period: 30s
+    networks: [backend, agent_mcp, control_egress]
 
   worker:
     # No `build:` — see the comment on `migrate`. `depends_on` guarantees
@@ -163,8 +166,97 @@ services:
         max-size: "10m"
         max-file: "5"
     stop_grace_period: 30s
+    networks: [backend, control_egress]
+
+  # Mirrors deploy/compose.yaml. The preflight has an explicit, credential-free
+  # environment; do not add the worker's env_file here.
+  #
+  # Opt-in, via `docker compose --profile agent up`. No agent runtime is
+  # selectable yet, so nothing in the running stack needs this. It was briefly a
+  # `depends_on` of the worker, which meant the entire review pipeline refused
+  # to start unless a live CONNECT to the model API succeeded -- a hard boot
+  # dependency on one vendor's reachability, for operators who may well be
+  # running another provider or none.
+  agent-preflight:
+    image: ${DIFFUSE_IMAGE:-diffuse:local}
+    restart: "no"
+    init: true
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command: ["review-compartment-preflight"]
+    profiles: ["agent"]
+    healthcheck:
+      disable: true
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
+    environment:
+      HOME: /var/lib/diffuse/agent
+      DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent
+      HTTP_PROXY: http://egress-proxy:3128
+      HTTPS_PROXY: http://egress-proxy:3128
+      NO_PROXY: app,egress-proxy,localhost,127.0.0.1
+      # The allowlist follows whichever provider the operator configured;
+      # hardcoding one vendor made the check meaningless for the others.
+      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_AGENT_MODEL_HOST:-api.anthropic.com}
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /var/lib/diffuse/agent:size=64m,mode=0700,uid=10001,gid=10001
+    mem_limit: 256m
+    cpus: 0.50
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks: [agent_mcp, agent_egress]
+
+  egress-proxy:
+    image: ${DIFFUSE_IMAGE:-diffuse:local}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command: ["egress-proxy"]
+    profiles: ["agent"]
+    environment:
+      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_AGENT_MODEL_HOST:-api.anthropic.com}
+    healthcheck:
+      test: ["CMD", "diffuse", "egress-proxy-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 32
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks: [agent_egress, proxy_external]
 
 volumes:
   pgdata:
   repository_data:
   agent_data:
+
+networks:
+  backend:
+    internal: true
+  agent_mcp:
+    internal: true
+  agent_egress:
+    internal: true
+  proxy_external:
+    internal: false
+  control_egress:
+    internal: false
