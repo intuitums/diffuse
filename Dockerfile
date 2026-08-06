@@ -214,6 +214,13 @@ ENV DIFFUSE_SQL_DIR=/opt/diffuse/_internal/sql \
 # non-deterministic across releases. Docker copies the image-path metadata onto a
 # new empty named volume; a worker with cap_drop=ALL cannot repair the root-owned
 # 0755 default after the fact, so assert the mode in the build.
+#
+# `agent/home` is created here and not only by `agent_login_home()`. Compose
+# sets HOME to it for the whole worker service, but that helper only runs during
+# `agent login` / `agent logout`, so on a stack that has never signed in to an
+# agent the long-running worker would boot pointing at a directory that does not
+# exist. Both are on the volume path, so Docker seeds them onto a new named
+# volume together.
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -226,8 +233,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && adduser --system --uid 10001 --ingroup diffuse --home /home/diffuse diffuse \
     && mkdir -p /opt/diffuse /var/lib/diffuse/repositories \
     && install -d --owner=diffuse --group=diffuse --mode=700 /var/lib/diffuse/agent \
+    && install -d --owner=diffuse --group=diffuse --mode=700 /var/lib/diffuse/agent/home \
     && chown -R diffuse:diffuse /opt/diffuse /var/lib/diffuse/repositories \
-    && test "$(stat -c '%u:%g:%a' /var/lib/diffuse/agent)" = '10001:10001:700'
+    && test "$(stat -c '%u:%g:%a' /var/lib/diffuse/agent)" = '10001:10001:700' \
+    && test "$(stat -c '%u:%g:%a' /var/lib/diffuse/agent/home)" = '10001:10001:700'
 
 COPY --from=builder --chown=diffuse:diffuse /build/diffuse/ /opt/diffuse/
 COPY --chown=diffuse:diffuse LICENSE /opt/diffuse/LICENSE

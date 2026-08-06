@@ -395,17 +395,27 @@ def require_supported_platform() -> None:
 def require_real_home() -> Path:
     """Reject a home value that would turn the sandbox deny into ``/``.
 
-    A numeric Docker user without a passwd entry can produce the filesystem root
-    (or a similarly shallow fallback), and rendering that into ``denyRead``
-    prevents the agent from reading its worktree. Refuse before writing or using
-    a policy rather than making that look like an opaque vendor-CLI failure.
+    A numeric Docker user without a passwd entry can produce the filesystem
+    root, and ``denyRead: ["/"]`` denies the worktree along with everything
+    else. Refuse before writing or using a policy rather than making that look
+    like an opaque vendor-CLI failure.
+
+    The test is what it says and no more. An earlier version also refused any
+    home with fewer than three path components, which rejects ``/root`` -- the
+    ordinary home of the ordinary user a container runs as, and a perfectly good
+    thing to deny reads under. Depth is not the hazard; being the root of the
+    filesystem is. A home nested under the worktree is not a hazard either:
+    ``sandbox_settings`` pairs the deny with an ``allowRead`` for the worktree,
+    which is how a developer reviewing a repository inside their own home has
+    always worked.
     """
 
     home = real_home()
-    if not home.is_absolute() or Path("/") == home or len(home.parts) < 3:
+    if not home.is_absolute() or home == Path("/"):
         raise AgentHostError(
             "the agent sandbox needs a real user home, but HOME resolved to "
-            f"{str(home)!r}; configure an absolute multi-component home directory"
+            f"{str(home)!r}; a deny rule for that path would also deny the "
+            "worktree. Set HOME to an absolute path below the filesystem root."
         )
     return home
 
@@ -871,20 +881,31 @@ def resolve_cli(name: str) -> AgentCli:
     return known[name]
 
 
-def refuse_policy_overrides(cli: AgentCli, vendor_arguments: Sequence[str]) -> None:
+def refuse_policy_overrides(
+    cli: AgentCli,
+    vendor_arguments: Sequence[str],
+    *,
+    vendor_command: tuple[str, ...] | None = None,
+) -> None:
     """Reject the forwarded flags that would undo the policy just written.
 
     Each argument is compared by name only: `-c`, `-c=value`, and
     `--config=value` all resolve to a refused name, so the `=value` spelling
     cannot slip past a check that only looked for the bare flag.
+
+    `vendor_command` names the subcommand in the message. It defaults to login
+    because that is where these flags usually arrive, but `logout` forwards the
+    same arguments, and an error telling someone their `logout` flag was not
+    forwarded to `login` sends them looking in the wrong place.
     """
 
+    command = vendor_command or cli.login_arguments
     for argument in vendor_arguments:
         name = argument.split("=", 1)[0]
         if name in cli.refused_login_arguments:
             raise AgentHostError(
                 f"`{argument}` is not forwarded to `{cli.executable} "
-                f"{' '.join(cli.login_arguments)}`: it can rewrite the same "
+                f"{' '.join(command)}`: it can rewrite the same "
                 f"{cli.settings_filename} keys Diffuse just wrote, including the "
                 "setting that keeps the credential in Diffuse's own directory, and "
                 "the login would still report success. Change the persisted policy "
@@ -897,11 +918,21 @@ def login(cli: AgentCli, vendor_arguments: Sequence[str] = ()) -> int:
 
     Deliberately *not* run under `agent_environment`: this is an interactive
     flow the developer is watching (browser OAuth, API-key paste, or whatever
-    menu the vendor CLI presents), so it needs their real `HOME`, `PATH`, and
-    terminal. Only the configuration directory is overridden, which is the
-    whole point -- the credential lands in Diffuse's directory and the
-    developer's own `~/.claude` / `~/.codex` is never read or written. Diffuse
-    never asks for an API key of its own; auth methods are entirely the
+    menu the vendor CLI presents), so it keeps their real `PATH` and terminal.
+    Stripping those the way a review does would break the vendor's own auth
+    menu, and there is no untrusted diff in the room -- the developer typed the
+    command.
+
+    Two things are overridden. The configuration directory, which is the whole
+    point: the credential lands in Diffuse's directory and the developer's own
+    `~/.claude` / `~/.codex` is never read or written. And `HOME`, because some
+    CLIs write fallback state outside their explicit config variable -- Claude's
+    legacy `~/.claude.json` -- and the packaged worker runs on a read-only
+    rootfs where inheriting `/home/diffuse` fails the first login outright.
+    `agent_login_home` puts that state on the credential volume instead, where
+    it shares the credential's lifecycle.
+
+    Diffuse never asks for an API key of its own; auth methods are entirely the
     vendor's. The sandbox / config policy is written *before* login so Codex
     sees `cli_auth_credentials_store = "file"` for the credential it creates.
 
@@ -933,7 +964,7 @@ def logout(cli: AgentCli, vendor_arguments: Sequence[str] = ()) -> int:
     """Drive the vendor's logout against the same owned credential directory."""
 
     require_supported_platform()
-    refuse_policy_overrides(cli, vendor_arguments)
+    refuse_policy_overrides(cli, vendor_arguments, vendor_command=cli.logout_arguments)
     executable = resolve_executable(cli)
     directory = ensure_agent_config_directory(cli)
     environment = dict(os.environ)

@@ -460,6 +460,10 @@ jobs:
               test "$(id -u):$(id -g)" = "10001:10001"
               test "$(stat -c "%u:%g:%a" /var/lib/diffuse/agent)" = "10001:10001:700"
               test -w /var/lib/diffuse/agent
+              # Compose points HOME here for the whole service, so it has to
+              # exist before anyone runs an agent login -- not only after.
+              test "$HOME" = /var/lib/diffuse/agent/home
+              test -d "$HOME" && test -w "$HOME"
             '
 
       - name: Collect stack logs

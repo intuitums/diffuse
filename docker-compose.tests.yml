@@ -62,12 +62,6 @@ services:
     # dev `DIFFUSE_MCP_ALLOWED_HOSTS` alone fails the MCP tests with a 421 that
     # reads like a code bug. AGENTS.md documents the same trap for local runs.
     environment:
-      # The agent-host preflight rejects root or a one-component HOME so its
-      # sandbox policy can never render denyRead=/ in production. This test
-      # runner intentionally runs as root to install dependencies, but it is
-      # not exercising a numeric-user production launch; give its host-plumbing
-      # tests a realistic absolute home on the existing tmpfs.
-      HOME: /tmp/diffuse-test-home
       POSTGRES_TEST_DATABASE_URL: postgresql://diffuse:diffuse-test@testdb:5432/diffuse_test
       # Turns a green run that silently skipped every integration test into a
       # failure. Without it, a typo in the URL above reports success having

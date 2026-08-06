@@ -430,13 +430,29 @@ def test_agent_home_refuses_a_relative_override(monkeypatch):
         agent_home()
 
 
-@pytest.mark.parametrize("invalid_home", [Path("/"), Path("/home"), Path("relative")])
-def test_sandbox_refuses_a_root_or_shallow_real_home(monkeypatch, invalid_home):
+@pytest.mark.parametrize("invalid_home", [Path("/"), Path("relative")])
+def test_sandbox_refuses_a_home_that_would_deny_the_whole_filesystem(
+    monkeypatch, invalid_home
+):
     """A deny rule for `/` would mask the worktree and look like a CLI error."""
 
     monkeypatch.setattr(agent_host, "real_home", lambda: invalid_home)
     with pytest.raises(AgentHostError, match="real user home"):
         sandbox_settings()
+
+
+@pytest.mark.parametrize("valid_home", [Path("/root"), Path("/home/diffuse"), Path("/data")])
+def test_sandbox_accepts_a_shallow_but_real_home(monkeypatch, valid_home):
+    """`/root` is a real home, and denying reads under it is exactly right.
+
+    Rejecting it on path depth blocked `diffuse agent login` for every operator
+    running as root -- which the packaged test container hit immediately, and
+    worked around by inventing a deeper HOME.
+    """
+
+    monkeypatch.setattr(agent_host, "real_home", lambda: valid_home)
+
+    assert sandbox_settings()["sandbox"]["filesystem"]["denyRead"][0] == f"{valid_home}/"
 
 
 def test_real_home_is_resolved_when_the_policy_is_rendered(monkeypatch):

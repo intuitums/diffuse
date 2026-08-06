@@ -274,10 +274,11 @@ docker compose run --rm worker agent login codex --device-auth
 docker compose run --rm worker agent status
 ```
 
-The login command sets `HOME` to a private subdirectory of the credential
-volume as well as setting the vendor's explicit config variable. This keeps
-vendor fallback state such as a legacy home-directory auth file off the
-read-only image. To rotate or decommission the credential, use the matching
+The worker service sets `HOME` to a private subdirectory of the credential
+volume, and the login command sets the vendor's explicit config variable on top
+of it. This keeps vendor fallback state such as a legacy home-directory auth
+file off the read-only image. That subdirectory is created in the image, so it
+exists on a stack that has never signed in to an agent. To rotate or decommission the credential, use the matching
 vendor logout in the same context, then sign in again if needed:
 
 ```bash
