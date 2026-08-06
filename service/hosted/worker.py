@@ -152,11 +152,14 @@ from service.storage.approval import (
     mark_auto_approval_published,
 )
 from service.storage.check import (
+    MAX_COMPLETION_ATTEMPTS,
     CheckRunHandle,
     begin_check_run,
+    begin_check_run_completion,
     get_check_run_for_workflow_job,
     mark_check_run_completed,
     mark_check_run_completing,
+    mark_check_run_completion_exhausted,
     mark_check_run_failed,
     mark_check_run_started,
 )
@@ -1286,6 +1289,16 @@ def _mark_native_check_failed(check_run_id: int) -> None:
         mark_check_run_failed(conn, check_run_id)
 
 
+def _begin_native_check_completion(check_run_id: int) -> int | None:
+    with closing(get_conn()) as conn, conn:
+        return begin_check_run_completion(conn, check_run_id)
+
+
+def _mark_native_check_completion_exhausted(check_run_id: int) -> None:
+    with closing(get_conn()) as conn, conn:
+        mark_check_run_completion_exhausted(conn, check_run_id)
+
+
 async def _ensure_native_check(
     event: PullRequestEvent,
     review_run_id: int,
@@ -1384,10 +1397,29 @@ async def _complete_native_check(
 ) -> None:
     if handle is None or handle.is_completed:
         return
+    attempts = await anyio.to_thread.run_sync(
+        partial(_begin_native_check_completion, handle.id)
+    )
+    if attempts is None:
+        # Completed by another worker between the read and here.
+        return
+    if attempts > MAX_COMPLETION_ATTEMPTS:
+        # Every retry from here would take the same oldest-first slot in the
+        # stranded sweep and keep newer jobs waiting behind it, so stop and say
+        # so durably rather than retrying forever (DEV-313).
+        await anyio.to_thread.run_sync(
+            partial(_mark_native_check_completion_exhausted, handle.id)
+        )
+        raise NonRetryableError(
+            f"Gave up completing check run {handle.id} after "
+            f"{MAX_COMPLETION_ATTEMPTS} attempts; resolve it in the SCM directly"
+        )
     if handle.external_id is None:
         try:
             handle = await _resolve_native_check_external_id(event, handle)
         except Exception:
+            # Recorded, not terminal. Rediscovery is a network call, so this
+            # fails transiently too; the attempt counter above is what bounds it.
             await anyio.to_thread.run_sync(
                 partial(_mark_native_check_failed, handle.id)
             )
@@ -1409,10 +1441,13 @@ async def _complete_native_check(
         else:
             raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
     except Exception:
-        # Do not mark durable `failed` here. A known external_id means GitHub
-        # already has the check; durable failed was excluded from stranded
-        # reconcile and left the remote check `in_progress` forever (DEV-313).
-        # Status stays `completing` (set above) so the next pass can retry.
+        # `failed` records why this attempt did not land, and is no longer the
+        # thing that makes a row unreclaimable -- `completion_attempts` is. That
+        # separation is the DEV-313 fix: the sweep retries this row on its next
+        # pass, and the error code still tells an operator what happened.
+        await anyio.to_thread.run_sync(
+            partial(_mark_native_check_failed, handle.id)
+        )
         raise
     await anyio.to_thread.run_sync(
         partial(_mark_native_check_completed, handle.id, conclusion)

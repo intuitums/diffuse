@@ -1,7 +1,9 @@
-"""PostgreSQL coverage for stranded reclaim of failed checks with a remote id.
+"""PostgreSQL coverage for which check rows the stranded sweep reclaims.
 
-DEV-313: a check that failed the provider PATCH after persisting `external_id`
-must still be selected by `claim_stranded_review_jobs`.
+DEV-313: a check whose provider PATCH failed must still be selected by
+`claim_stranded_review_jobs`, whatever `status` that failure left behind --
+and a check that can never be completed must eventually stop being selected,
+because the sweep is ordered oldest-first and limited.
 """
 
 from __future__ import annotations
@@ -20,7 +22,9 @@ from service.models.review import ReviewReport
 from service.repositories import register_repository
 from service.scm import PullRequestEvent
 from service.storage.check import (
+    MAX_COMPLETION_ATTEMPTS,
     begin_check_run,
+    begin_check_run_completion,
     mark_check_run_failed,
     mark_check_run_started,
 )
@@ -145,8 +149,15 @@ def test_claim_stranded_includes_failed_check_with_external_id():
     assert any(job.id == job_id for job in claimed)
 
 
-def test_claim_stranded_excludes_failed_check_without_external_id():
-    """Null-id failed rows are a permanent dead end after DEV-289 recovery fails."""
+def test_claim_stranded_includes_failed_check_without_external_id():
+    """A null-id failed row is where DEV-289 recovery has to run, not a dead end.
+
+    `mark_check_run_started` deliberately accepts `failed` + null id so a check
+    that GitHub created but Diffuse never recorded can be rediscovered. If the
+    sweep skipped this shape, that recovery would have no caller and the remote
+    check would stay `in_progress` forever -- DEV-313, one step earlier.
+    """
+
     event = _event(number=314, delivery="stranded-failed-without-id")
     with closing(psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])) as connection:
         connection.autocommit = False
@@ -160,4 +171,71 @@ def test_claim_stranded_excludes_failed_check_without_external_id():
         claimed = claim_stranded_review_jobs(connection, grace_seconds=0, limit=20)
         connection.rollback()
 
+    assert any(job.id == job_id for job in claimed)
+
+
+def test_claim_stranded_excludes_a_check_out_of_completion_attempts():
+    """The bound has to be the count, because nothing else drains this queue.
+
+    `claim_stranded_review_jobs` is ordered oldest-first and limited, so a row
+    that can never be completed is also permanently at the front of it. Without
+    this exclusion a repo whose GitHub App was uninstalled would starve every
+    other repository's stranded reconcile.
+    """
+
+    event = _event(number=315, delivery="stranded-attempts-exhausted")
+    with closing(psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])) as connection:
+        connection.autocommit = False
+        job_id = _dead_job_with_check(
+            connection,
+            event=event,
+            payload_sha256="3" * 64,
+            worker_id="stranded-exhausted",
+            persist_external_id=True,
+        )
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE review_check_runs AS check_run
+                SET completion_attempts = %s
+                FROM review_runs AS review
+                WHERE review.id = check_run.review_run_id
+                  AND review.workflow_job_id = %s
+                """,
+                (MAX_COMPLETION_ATTEMPTS, job_id),
+            )
+            assert cursor.rowcount == 1
+        claimed = claim_stranded_review_jobs(connection, grace_seconds=0, limit=20)
+        connection.rollback()
+
     assert all(job.id != job_id for job in claimed)
+
+
+def test_completion_attempts_accumulate_across_passes():
+    """Each attempt counts once, so the cap is reached in bounded time."""
+    event = _event(number=316, delivery="stranded-attempts-accumulate")
+    with closing(psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])) as connection:
+        connection.autocommit = False
+        job_id = _dead_job_with_check(
+            connection,
+            event=event,
+            payload_sha256="4" * 64,
+            worker_id="stranded-accumulate",
+            persist_external_id=True,
+        )
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT check_run.id
+                FROM review_check_runs AS check_run
+                JOIN review_runs AS review ON review.id = check_run.review_run_id
+                WHERE review.workflow_job_id = %s
+                """,
+                (job_id,),
+            )
+            check_run_id = int(cursor.fetchone()[0])
+
+        counts = [begin_check_run_completion(connection, check_run_id) for _ in range(3)]
+        connection.rollback()
+
+    assert counts == [1, 2, 3]

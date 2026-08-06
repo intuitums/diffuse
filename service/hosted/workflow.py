@@ -18,6 +18,7 @@ from service.scm import (
     ReviewConversationEvent,
     normalize_base_url,
 )
+from service.storage.check import MAX_COMPLETION_ATTEMPTS
 
 ERROR_CODE_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
 
@@ -1363,9 +1364,15 @@ def claim_stranded_review_jobs(
     same review run. The grace period keeps the sweep clear of `run_once`, which
     finalizes its own failures moments after a job reaches a terminal status.
 
-    A check row marked durable `failed` is still reclaimable when `external_id`
-    is known: the provider PATCH failed after GitHub already had the check, and
-    the store permits failed→completing so a later pass can terminalize it.
+    A check row is reclaimable until it is `completed` or out of completion
+    attempts, and its `status` deliberately does not gate that. `failed` used to
+    be the exit, which is what made DEV-313 possible: the PATCH raised once, the
+    row went `failed`, the sweep skipped it from then on, and GitHub was left
+    holding an `in_progress` required check forever. `completion_attempts` is
+    the exit instead, so a transient provider failure is retried and an
+    unrecoverable check still leaves the queue -- which matters because this
+    query is ordered oldest-first and limited, so a row that never drains starves
+    every newer stranded job behind it.
     """
     if grace_seconds < 0:
         raise ValueError("grace_seconds cannot be negative")
@@ -1391,21 +1398,14 @@ def claim_stranded_review_jobs(
                       FROM review_check_runs AS check_run
                       WHERE check_run.review_run_id = review.id
                         AND check_run.status <> 'completed'
-                        -- failed + known remote id is reclaimable: the store
-                        -- already allows failed→completing, but we used to
-                        -- exclude failed here so a single PATCH timeout left
-                        -- GitHub in_progress forever (DEV-313).
-                        AND (
-                            check_run.status <> 'failed'
-                            OR check_run.external_id IS NOT NULL
-                        )
+                        AND check_run.completion_attempts < %s
                   )
               )
             ORDER BY job.completed_at, job.id
             FOR UPDATE OF job, review SKIP LOCKED
             LIMIT %s
             """,
-            (grace_seconds, limit),
+            (grace_seconds, MAX_COMPLETION_ATTEMPTS, limit),
         )
         rows = cursor.fetchall()
     return tuple(
