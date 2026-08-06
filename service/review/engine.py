@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -41,6 +40,23 @@ from service.models.review import (
     Severity,
     VerificationBatch,
 )
+from service.review.report_assembly import (
+    SEVERITY_ORDER,
+    minimum_review_confidence,
+    review_confidence_score,
+)
+from service.review.report_assembly import (
+    diagram_would_help as _diagram_would_help,
+)
+from service.review.report_assembly import (
+    fingerprint as _fingerprint,
+)
+from service.review.report_assembly import (
+    review_presentation as _review_presentation,
+)
+from service.review.report_assembly import (
+    risk_floor as _risk_floor,
+)
 from service.review.request import ReviewRequest
 from service.review.runtimes import (
     LITELLM_RUNTIME,
@@ -77,20 +93,6 @@ PASS_INSTRUCTIONS = {
         "boundaries, and architecture contracts. Report only defects with concrete impact."
     ),
 }
-SEVERITY_ORDER = {
-    Severity.CRITICAL: 0,
-    Severity.HIGH: 1,
-    Severity.MEDIUM: 2,
-    Severity.LOW: 3,
-}
-SEVERITY_RISK_FLOOR = {
-    Severity.CRITICAL: 9.0,
-    Severity.HIGH: 7.0,
-    Severity.MEDIUM: 4.0,
-    Severity.LOW: 2.0,
-}
-MIN_DIAGRAM_CHANGED_LINES = 40
-MIN_MULTI_FILE_DIAGRAM_CHANGED_LINES = 12
 
 
 class StructuredOutputValidationError(RuntimeError):
@@ -208,13 +210,6 @@ def review_max_output_tokens() -> int:
     """
 
     return _positive_int("REVIEW_MAX_OUTPUT_TOKENS", 16000)
-
-
-def minimum_review_confidence() -> float:
-    value = float(os.environ.get("MIN_REVIEW_CONFIDENCE", "0.75"))
-    if not 0 <= value <= 1:
-        raise ValueError("MIN_REVIEW_CONFIDENCE must be between 0 and 1")
-    return value
 
 
 def _model_api_key(model: str) -> str | None:
@@ -882,43 +877,6 @@ def _verification_prompt(
     )
 
 
-def _fingerprint(candidate: CandidateFinding, title: str) -> str:
-    identity = "\0".join(
-        (
-            candidate.file_path,
-            candidate.side,
-            str(candidate.line),
-            candidate.category.value,
-            (
-                candidate.security_classification.value
-                if candidate.security_classification is not None
-                else "none"
-            ),
-            title.casefold(),
-        )
-    )
-    return hashlib.sha256(identity.encode()).hexdigest()
-
-
-def _risk_floor(findings: list[ReviewFinding]) -> float:
-    return max(
-        (SEVERITY_RISK_FLOOR[finding.severity] for finding in findings),
-        default=0.0,
-    )
-
-
-def _diagram_would_help(parsed_diff: ParsedDiff) -> bool:
-    changed_lines = sum(
-        entry.marker in {"+", "-"}
-        for file in parsed_diff.files
-        for entry in file.entries
-    )
-    return changed_lines >= MIN_DIAGRAM_CHANGED_LINES or (
-        len(parsed_diff.files) >= 2
-        and changed_lines >= MIN_MULTI_FILE_DIAGRAM_CHANGED_LINES
-    )
-
-
 def _diagram_prompt(
     parsed_diff: ParsedDiff,
     diff_chunks: list[str],
@@ -991,78 +949,6 @@ def _generate_diagram(
         LOGGER.warning("Discarded an unsafe or malformed review diagram", exc_info=True)
         return None, error.prompt_tokens, error.completion_tokens
     return proposal.diagram, prompt_tokens, completion_tokens
-
-
-def review_confidence_score(
-    *,
-    risk_score: float,
-    finding_count: int,
-    diff_file_count: int,
-    reviewed_file_count: int,
-    ignored_file_count: int,
-) -> int:
-    """Map verified review evidence to an explainable 0-5 readiness score."""
-    if not 0 <= risk_score <= 10:
-        raise ValueError("Review risk score must be between 0 and 10")
-    if min(
-        finding_count,
-        diff_file_count,
-        reviewed_file_count,
-        ignored_file_count,
-    ) < 0:
-        raise ValueError("Review confidence inputs cannot be negative")
-    if risk_score == 0:
-        score = 5
-    elif risk_score <= 2.5:
-        score = 4
-    elif risk_score <= 5:
-        score = 3
-    elif risk_score <= 7.5:
-        score = 2
-    elif risk_score < 10:
-        score = 1
-    else:
-        score = 0
-    if finding_count >= 10:
-        score = min(score, 1)
-    elif finding_count >= 6:
-        score = min(score, 2)
-    elif finding_count >= 3:
-        score = min(score, 3)
-    if diff_file_count and reviewed_file_count + ignored_file_count < diff_file_count:
-        score = min(score, 2)
-    if ignored_file_count:
-        score = min(score, 4)
-    if diff_file_count and reviewed_file_count == 0:
-        score = 0
-    return score
-
-
-def _review_presentation(
-    policy: ResolvedReviewPolicy | None,
-) -> dict[str, bool]:
-    if policy is None:
-        return {}
-    summary = policy.summary_section
-    issues = policy.issues_table_section
-    confidence = policy.confidence_score_section
-    return {
-        "summary_section_included": summary.included,
-        "summary_section_collapsible": summary.collapsible,
-        "summary_section_default_open": summary.default_open,
-        "issues_table_section_included": issues.included,
-        "issues_table_section_collapsible": issues.collapsible,
-        "issues_table_section_default_open": issues.default_open,
-        "confidence_score_section_included": confidence.included,
-        "confidence_score_section_collapsible": confidence.collapsible,
-        "confidence_score_section_default_open": confidence.default_open,
-        "footer_included": policy.footer_included,
-        "update_description": policy.update_description,
-        "summary_comment_enabled": policy.summary_comment_enabled,
-        "fix_with_agent_enabled": policy.fix_with_agent_enabled,
-        "diagram_collapsible": policy.diagram_collapsible,
-        "diagram_default_open": policy.diagram_default_open,
-    }
 
 
 def _generate_review_litellm(
