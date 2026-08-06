@@ -109,6 +109,31 @@ def _run_healthcheck(arguments: Sequence[str]) -> None:
             raise RuntimeError(f"Diffuse readiness check returned HTTP {response.status}")
 
 
+def _run_review_compartment_preflight(arguments: Sequence[str]) -> None:
+    if arguments:
+        raise ValueError("The review-compartment-preflight command does not accept arguments")
+    from service.review.agent_compartment import run_preflight
+
+    run_preflight()
+
+
+def _run_egress_proxy(arguments: Sequence[str]) -> None:
+    if arguments:
+        raise ValueError("The egress-proxy command does not accept arguments")
+    from service.review.agent_compartment import run_egress_proxy
+
+    run_egress_proxy()
+
+
+def _run_egress_proxy_healthcheck(arguments: Sequence[str]) -> None:
+    if arguments:
+        raise ValueError("The egress-proxy-healthcheck command does not accept arguments")
+    import socket
+
+    with socket.create_connection(("127.0.0.1", 3128), timeout=2):
+        pass
+
+
 def _run_cli(arguments: Sequence[str]) -> None:
     from service.cli.review import main as cli_main
 
@@ -126,6 +151,12 @@ def main(arguments: Sequence[str] | None = None) -> None:
             _run_worker(selected)
         elif command == "healthcheck":
             _run_healthcheck(selected)
+        elif command == "review-compartment-preflight":
+            _run_review_compartment_preflight(selected)
+        elif command == "egress-proxy":
+            _run_egress_proxy(selected)
+        elif command == "egress-proxy-healthcheck":
+            _run_egress_proxy_healthcheck(selected)
         else:
             # The CLI owns its own exit codes and error formatting.
             _run_cli([command, *selected])
