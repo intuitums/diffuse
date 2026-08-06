@@ -54,6 +54,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from service.review.agent_environment import AGENT_HOME_VARIABLE, CREDENTIAL_ENVIRONMENT
 from service.review.runtimes import CLAUDE_CODE_RUNTIME, CODEX_RUNTIME
 
 #: Where Diffuse keeps the agent configuration it owns. Deliberately not
@@ -61,7 +62,6 @@ from service.review.runtimes import CLAUDE_CODE_RUNTIME, CODEX_RUNTIME
 #: CLI configuration, which makes "your terminal CLI is untouched" a guarantee
 #: rather than a flag dance. It also means Diffuse's process creates its own
 #: credential in its own directory and owns the macOS Keychain ACL for it.
-AGENT_HOME_VARIABLE = "DIFFUSE_AGENT_HOME"
 DEFAULT_AGENT_HOME = "~/.diffuse/agent"
 
 #: How a vendor auth-status command reports success.
@@ -350,30 +350,6 @@ PROBE_ENVIRONMENT = INHERITED_ENVIRONMENT | {"USER", "LOGNAME"}
 #: needs `security`, and inheriting `PATH` would put `gh` and `aws` back within
 #: reach by name for no gain.
 PROBE_PATH = "/usr/bin:/bin"
-
-#: Named here only so a test can assert their absence by name. The allowlist
-#: above already excludes them, and it excludes the ones nobody listed too.
-CREDENTIAL_ENVIRONMENT = (
-    "GH_TOKEN",
-    "GITHUB_TOKEN",
-    "SSH_AUTH_SOCK",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "AWS_PROFILE",
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-    "DATABASE_URL",
-    "DIFFUSE_GIT_TOKEN",
-    # The control plane's own secrets. `diffuse review` runs on a developer's
-    # machine and normally holds none of these, but the same host plumbing is
-    # what a server-side runtime would reuse, and that process holds all three.
-    "GITHUB_APP_PRIVATE_KEY",
-    "GITHUB_WEBHOOK_SECRET",
-    "DIFFUSE_API_TOKEN",
-    "POSTGRES_PASSWORD",
-)
-
 
 def require_supported_platform() -> None:
     """Refuse where the CLI sandbox does not exist, rather than run without one.

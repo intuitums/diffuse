@@ -20,12 +20,12 @@ from service.cli import agent as agent_cli
 from service.cli import review as review_cli
 from service.cli.agent import POLICY_COMMAND
 from service.review import agent_host
+from service.review.agent_environment import CREDENTIAL_ENVIRONMENT
 from service.review.agent_host import (
     AGENT_CLIS,
     CLAUDE_CODE,
     CODEX,
     CONTAINER_COMPARTMENT_PROFILE,
-    CREDENTIAL_ENVIRONMENT,
     LOCAL_CLI_SANDBOX_PROFILE,
     AgentHostError,
     agent_config_directory,
