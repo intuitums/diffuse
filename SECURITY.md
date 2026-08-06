@@ -87,13 +87,13 @@ The following are explicitly **in scope**:
 - **Database migration integrity** failures that allow unverified SQL to be
   applied.
 
-### Agent-CLI local review (destination)
+### Agent-CLI review boundary (destination)
 
 Local `diffuse review` is built to drive a developer-installed agent CLI behind
 Diffuse-owned configuration (`DIFFUSE_AGENT_HOME`, never `~/.claude` /
 `~/.codex`). Host plumbing for Claude and Codex exists today
-(`diffuse agent login claude|codex`); no agent runtime is selectable yet. When
-it is, the intended boundaries are:
+(`diffuse agent login claude|codex`); no agent runtime is selectable yet. For
+local review, the intended boundaries are:
 
 1. **Child environment allowlist** — credentials Diffuse does not name never
    reach the CLI process (`GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, `AWS_*`,
@@ -109,6 +109,53 @@ full host privileges. Diffuse must construct `--mcp-config` itself, always pass
 `--strict-mcp-config`, and keep its own MCP server to index queries only — never
 executing repository-supplied content. Reports that break any of those
 invariants are in scope.
+
+#### Self-hosted container decision
+
+The self-hosted server may later drive an agent CLI only from a dedicated review
+compartment. The invariant is not `sandbox.enabled == true`; it is: **the
+process that reads untrusted content holds no credential and reaches no resource
+whose compromise matters.** The worker and API container do not meet that
+invariant, so neither is an acceptable fallback boundary.
+
+This is measured rather than assumed. On 2026-08-05, on `intuitumserver-1`
+(Ubuntu 26.04), a `debian:trixie-slim` probe image with `bubblewrap` and
+`uidmap` ran `bwrap --unshare-user --unshare-pid --unshare-ipc --unshare-uts
+--ro-bind / / --proc /proc /bin/true` as uid 10001. `newuidmap` was setuid and
+`/etc/subuid` had ranges. Network unsharing was deliberately omitted after the
+initial `--unshare-all` probe failed while configuring loopback: the agent needs
+network access.
+
+| Container configuration | Result |
+| --- | --- |
+| `cap_drop: ALL` + `no-new-privileges` | FAIL — `No permissions to create new namespace` |
+| plus `apparmor=unconfined` | FAIL — same (seccomp blocks first) |
+| plus `seccomp=unconfined` | FAIL — `Failed to make / slave: Permission denied` (AppArmor denies mount) |
+| both unconfined | FAIL — `setting up uid map: Permission denied` |
+| both unconfined, without no-new-privileges | FAIL — same |
+| both unconfined plus `CAP_SYS_ADMIN` | FAIL — same |
+| `--privileged` | FAIL — same |
+
+The host reported `kernel.apparmor_restrict_unprivileged_userns = 1`, AppArmor
+enabled, and Docker security options `apparmor`, `seccomp/builtin`, and
+`cgroupns`. Loosening any of these controls did not produce a usable Bubblewrap
+boundary; disabling the host-wide user-namespace restriction would weaken every
+workload on the host. Diffuse will not ask operators to do that.
+
+Accordingly, `agent_host.sandbox_settings` has a distinct
+`CONTAINER_COMPARTMENT_PROFILE` that renders `sandbox.enabled: false` only as a
+declaration that the CLI sandbox is unavailable. Selecting it is not enough to
+use it: `sandbox_settings` refuses to render that profile unless it is given a
+`CompartmentAssertion` produced by `assert_compartment` from a preflight that
+passed, and an assertion minted for one profile is not accepted for another. An
+adapter that selects the profile and skips the preflight therefore gets an
+error rather than an unsandboxed review.
+
+That preflight must still be implemented. It must establish the container
+properties that make the invariant checkable, rather than replacing a
+Bubblewrap refusal with an unverified unsandboxed run. Until then, no
+`assert_compartment` caller exists, agent runtimes remain unselectable, and the
+existing local CLI policy still fails closed with `failIfUnavailable: true`.
 
 ### Out of scope
 

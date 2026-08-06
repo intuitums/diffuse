@@ -314,7 +314,7 @@ worker reviews pull requests from anyone who can open one, which is a different
 threat model. `ReviewReport` is unchanged across runtimes, so the same
 evaluation harness can score them on the same fixtures.
 
-When an agent CLI runs a review, it sits behind three independent boundaries,
+For a local agent-CLI review, it sits behind three independent boundaries,
 because none of them covers the others: its environment is built from an
 allowlist, so a credential Diffuse never names cannot reach it; the CLI's own
 OS sandbox denies Bash egress and reads outside the worktree; and Diffuse
@@ -325,6 +325,19 @@ run outside it with full host privileges — so `--strict-mcp-config` is a
 load-bearing control rather than defense in depth, and Diffuse's own MCP server
 serves queries over an index and never executes repository-supplied content.
 Native Windows is refused for agent-CLI runtimes (no OS sandbox).
+
+The self-hosted server has a different, measured constraint: on the supported
+Ubuntu/Docker profile Bubblewrap cannot create a user namespace even after the
+tested AppArmor, seccomp, capability, no-new-privileges, and privileged-mode
+variations. The server-side destination is therefore a separate review
+compartment, not a weakened worker container and not an opt-in host-wide
+user-namespace change. Before it can run an agent, that compartment must assert
+at runtime that the untrusted-content process is non-root, has no control-plane
+credential, cannot reach the database or other control-plane resources, and has
+only the intended egress. This is a target boundary, not a selectable runtime;
+the API and worker continue to accept only `litellm`. See
+[SECURITY.md](../SECURITY.md) for the measured matrix and
+[agent-runtimes.md](agent-runtimes.md) for the runtime split.
 
 Before any review-model call, the worker fetches a bounded list of commit
 metadata from the SCM and classifies authors, committers, verified bot

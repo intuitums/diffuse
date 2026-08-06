@@ -6,7 +6,8 @@ environment, the sandbox policy written into that directory, and the version
 floor that decides whether the policy is honoured at all. Building argv and
 driving a session belongs to the adapter; nothing here calls a model.
 
-Three boundaries stack here and none of them subsumes another:
+For local review, three boundaries stack here and none of them subsumes
+another:
 
 1. `agent_environment` builds the child environment from an allowlist, so a
    credential Diffuse never names cannot reach the CLI. This is
@@ -21,11 +22,22 @@ Three boundaries stack here and none of them subsumes another:
    policy on disk describes and nothing says so. The floor is the only way to
    know the policy was enforced. Codex's floor is empty until U4 empirics.
 
-The sandbox is a real OS boundary -- Seatbelt on macOS, bubblewrap on Linux --
-but not a complete one. Its documented scope is Bash subprocesses, and MCP
+The CLI sandbox is a real OS boundary -- Seatbelt on macOS, bubblewrap on Linux
+-- but not a complete one. Its documented scope is Bash subprocesses, and MCP
 servers run outside it entirely with full host privileges, which is why the
 adapter must always pass `--strict-mcp-config` and why Diffuse's own MCP server
 must never execute repository-supplied content.
+
+On the self-hosted Linux profile, Bubblewrap cannot create a user namespace in
+the review container (DEV-327). `CONTAINER_COMPARTMENT_PROFILE` therefore does
+not try to weaken Docker until Bubblewrap happens to work: it turns the CLI
+sandbox off and makes the later review-compartment preflight the boundary. That
+requirement is enforced rather than documented -- rendering the profile needs a
+`CompartmentAssertion`, and `assert_compartment` is the only thing that produces
+one -- because a boolean saying a check is required is not a check. The
+preflight itself is deliberately not implemented here; no agent runtime is
+selectable yet. See SECURITY.md for the measured matrix and the invariant the
+preflight must assert.
 """
 
 from __future__ import annotations
@@ -37,7 +49,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,6 +84,74 @@ VERSION_PROBE_TIMEOUT_SECONDS = 30
 
 class AgentHostError(RuntimeError):
     """The host cannot run an agent CLI review, and says which requirement failed."""
+
+
+@dataclass(frozen=True)
+class SandboxProfile:
+    """A boundary that owns the isolation around a Claude Code session.
+
+    The local profile relies on the CLI's Seatbelt/Bubblewrap sandbox. The
+    container profile is intentionally unusable until the caller has run the
+    review-compartment preflight: it is a declaration of which boundary must
+    be asserted, not an escape hatch from the local policy.
+    """
+
+    name: str
+    cli_sandbox_enabled: bool
+    requires_compartment_preflight: bool
+
+
+@dataclass(frozen=True)
+class CompartmentAssertion:
+    """Evidence that the compartment preflight ran and passed for one profile.
+
+    A boolean on the profile could only ever *describe* the requirement. This
+    is the requirement: `sandbox_settings` will not render a profile that turns
+    the CLI sandbox off unless it is handed one of these, and the only way to
+    obtain one is `assert_compartment`, which produces it from a preflight that
+    returned rather than raised. A future adapter that forgets the ordering gets
+    an `AgentHostError`, not an unsandboxed review.
+    """
+
+    profile_name: str
+
+
+def assert_compartment(
+    profile: SandboxProfile,
+    preflight: Callable[[], object],
+) -> CompartmentAssertion:
+    """Run `preflight` and mint the assertion `sandbox_settings` demands.
+
+    Deliberately takes the check as an argument rather than importing it: this
+    module is the local agent host, and the compartment it is asserting is a
+    server-side deployment concern with its own service and its own failures.
+    Any exception the preflight raises propagates untouched -- it names the
+    control that failed, which is more useful than anything this could add.
+    """
+
+    if not profile.requires_compartment_preflight:
+        raise AgentHostError(
+            f"{profile.name} does not use a compartment boundary, so asserting one "
+            "would record a guarantee nothing checked"
+        )
+    preflight()
+    return CompartmentAssertion(profile_name=profile.name)
+
+
+LOCAL_CLI_SANDBOX_PROFILE = SandboxProfile(
+    name="local-cli-sandbox",
+    cli_sandbox_enabled=True,
+    requires_compartment_preflight=False,
+)
+
+#: Bubblewrap cannot create a user namespace inside the measured self-hosted
+#: container profile. The agent compartment owns the replacement boundary; its
+#: preflight must pass before an adapter selects this profile (DEV-327/DEV-331).
+CONTAINER_COMPARTMENT_PROFILE = SandboxProfile(
+    name="container-compartment",
+    cli_sandbox_enabled=False,
+    requires_compartment_preflight=True,
+)
 
 
 @dataclass(frozen=True)
@@ -342,11 +422,16 @@ def ensure_agent_config_directory(cli: AgentCli) -> Path:
     return path
 
 
-def sandbox_settings(worktree: Path | str | None = None) -> dict[str, object]:
+def sandbox_settings(
+    worktree: Path | str | None = None,
+    *,
+    profile: SandboxProfile = LOCAL_CLI_SANDBOX_PROFILE,
+    compartment: CompartmentAssertion | None = None,
+) -> dict[str, object]:
     """The Claude Code sandbox policy Diffuse persists under CLAUDE_CONFIG_DIR.
 
-    Four keys are load-bearing, and each closes a failure that is silent rather
-    than loud:
+    In the local CLI-sandbox profile, four keys are load-bearing, and each
+    closes a failure that is silent rather than loud:
 
     - `failIfUnavailable` -- without it a missing bubblewrap makes the CLI warn
       and then run *unsandboxed*. A review tool must not downgrade itself to no
@@ -368,7 +453,28 @@ def sandbox_settings(worktree: Path | str | None = None) -> dict[str, object]:
     `--settings` sources. Since the repository under review is the untrusted
     input, that is what makes writing this to a Diffuse-owned user directory
     safe.
+
+    The container-compartment profile explicitly disables Claude's Bubblewrap
+    sandbox because the supported container posture cannot create its user
+    namespace. `sandbox.enabled: false` is never safe on its own, so this
+    refuses to render it without a `CompartmentAssertion` for the same profile:
+    the replacement boundary has to have been checked, not merely intended. The
+    only current caller uses the local profile.
     """
+
+    if not profile.cli_sandbox_enabled:
+        if compartment is None or compartment.profile_name != profile.name:
+            raise AgentHostError(
+                f"{profile.name} turns the CLI sandbox off, so it may only be rendered "
+                "with a CompartmentAssertion from a passing preflight for that same "
+                "profile; see assert_compartment"
+            )
+        return {"sandbox": {"enabled": False}}
+    if compartment is not None:
+        raise AgentHostError(
+            f"{profile.name} keeps the CLI sandbox on and does not use a compartment "
+            "boundary; passing an assertion here hides which boundary is load-bearing"
+        )
 
     filesystem: dict[str, object] = {"denyRead": [f"{REAL_HOME}/"]}
     if worktree is not None:
