@@ -42,6 +42,19 @@ def _creating_handle(*, status: str = "creating") -> CheckRunHandle:
     )
 
 
+@pytest.fixture(autouse=True)
+def _count_completion_attempts(monkeypatch):
+    """Keep the DEV-289 recovery tests off a database.
+
+    `_complete_native_check` records an attempt before it resolves a missing
+    remote id, because rediscovery is itself a network call that can fail
+    forever. These tests care about the resolution, not the bound, so the
+    counter always reports the first attempt.
+    """
+
+    monkeypatch.setattr(worker, "_begin_native_check_completion", lambda _check_run_id: 1)
+
+
 def _stub_check_marks(monkeypatch, *, started, completing, completed, failed):
     monkeypatch.setattr(
         worker,
