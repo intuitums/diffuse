@@ -150,11 +150,13 @@ COPY tests ./tests
 # for a test that fails without it, and each was absent while nothing built this
 # stage: evals/ for the harness fixtures (test_eval_harness), .env.example and
 # deploy/env.example for the documented-configuration checks
-# (test_env_documentation, test_deploy_env_example), and the workflow definitions
-# for the release-provenance assertions.
+# (test_env_documentation, test_deploy_env_example), both Compose profiles for
+# the agent-volume assertion, and the workflow definitions for release-provenance
+# assertions.
 COPY evals ./evals
 COPY deploy ./deploy
 COPY .env.example ./.env.example
+COPY docker-compose.yml ./docker-compose.yml
 COPY .github ./.github
 # CI helper imported by tests/test_check_lock_freeze.py (and invoked from the
 # host in verify.yml). Without it the container suite fails at collection with
@@ -206,6 +208,20 @@ ENV DIFFUSE_SQL_DIR=/opt/diffuse/_internal/sql \
     PATH=/opt/diffuse:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     PYTHONUNBUFFERED=1
 
+# The uid/gid is part of the volume contract: an operator must be able to inspect
+# or repair the durable agent credential directory from the host. `adduser
+# --system` otherwise allocates the next free ID, which makes that operation
+# non-deterministic across releases. Docker copies the image-path metadata onto a
+# new empty named volume; a worker with cap_drop=ALL cannot repair the root-owned
+# 0755 default after the fact, so assert the mode in the build.
+#
+# `agent/home` is created here and not only by `agent_login_home()`. Compose
+# sets HOME to it for the whole worker service, but that helper only runs during
+# `agent login` / `agent logout`, so on a stack that has never signed in to an
+# agent the long-running worker would boot pointing at a directory that does not
+# exist. Both are on the volume path, so Docker seeds them onto a new named
+# volume together.
+
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
@@ -213,10 +229,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         > /etc/apt/apt.conf.d/keep-cache \
     && apt-get update \
     && apt-get install -y --no-install-recommends adduser ca-certificates git \
-    && addgroup --system diffuse \
-    && adduser --system --ingroup diffuse --home /home/diffuse diffuse \
+    && addgroup --system --gid 10001 diffuse \
+    && adduser --system --uid 10001 --ingroup diffuse --home /home/diffuse diffuse \
     && mkdir -p /opt/diffuse /var/lib/diffuse/repositories \
-    && chown -R diffuse:diffuse /opt/diffuse /var/lib/diffuse
+    && install -d --owner=diffuse --group=diffuse --mode=700 /var/lib/diffuse/agent \
+    && install -d --owner=diffuse --group=diffuse --mode=700 /var/lib/diffuse/agent/home \
+    && chown -R diffuse:diffuse /opt/diffuse /var/lib/diffuse/repositories \
+    && test "$(stat -c '%u:%g:%a' /var/lib/diffuse/agent)" = '10001:10001:700' \
+    && test "$(stat -c '%u:%g:%a' /var/lib/diffuse/agent/home)" = '10001:10001:700'
 
 COPY --from=builder --chown=diffuse:diffuse /build/diffuse/ /opt/diffuse/
 COPY --chown=diffuse:diffuse LICENSE /opt/diffuse/LICENSE

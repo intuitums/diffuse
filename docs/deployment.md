@@ -251,6 +251,44 @@ types and no others:
 Verify a signed `ping` or harmless test delivery before onboarding production
 repositories.
 
+## Agent CLI credentials
+
+The agent credential is a vendor-managed OAuth credential, not a Diffuse API
+key. The release profile stores it in the `agent_data` named volume at
+`/var/lib/diffuse/agent`, owned by uid/gid **10001** with mode **0700**. The
+root filesystem is read-only and `/tmp` is ephemeral, so do not redirect
+`DIFFUSE_AGENT_HOME` to either location.
+
+Only `worker` mounts this volume. This is intentional: vendor CLIs refresh an
+OAuth credential in place, and two containers trying to refresh one token can
+invalidate each other. `app` does not receive the credential.
+
+Sign in through a disposable worker process so it has the exact same
+read-only-rootfs and capability constraints as the long-running worker, without
+interrupting active jobs:
+
+```bash
+docker compose run --rm worker agent login claude --console
+# or, for a headless Codex login:
+docker compose run --rm worker agent login codex --device-auth
+docker compose run --rm worker agent status
+```
+
+The worker service sets `HOME` to a private subdirectory of the credential
+volume, and the login command sets the vendor's explicit config variable on top
+of it. This keeps vendor fallback state such as a legacy home-directory auth
+file off the read-only image. That subdirectory is created in the image, so it
+exists on a stack that has never signed in to an agent. To rotate or decommission the credential, use the matching
+vendor logout in the same context, then sign in again if needed:
+
+```bash
+docker compose run --rm worker agent logout claude
+```
+
+Do **not** back up `agent_data`. It is a live, revocable vendor credential, not
+authoritative Diffuse state; including it in a backup multiplies a long-lived
+refresh token. Recreate it by running the login command again after a restore.
+
 ## Onboard a repository
 
 Nothing is reviewed until the repository is registered. Diffuse does not
@@ -381,6 +419,23 @@ For every upgrade:
    jobs; and
 8. if the release notes say the index format changed, reindex every repository
    (see below).
+
+### Agent-volume ownership change
+
+This release pins the container `diffuse` account to uid/gid 10001 so the
+credential volume has a stable host-visible owner. Existing
+`repository_data` volumes created by older images can retain the old numeric
+owner. Before starting this release, run this one-time repair while the stack
+is stopped (replace `diffuse_repository_data` with your Compose project's actual
+volume name):
+
+```bash
+docker run --rm -v diffuse_repository_data:/data alpine:3.22 \
+  chown -R 10001:10001 /data
+```
+
+Do not apply this command to `agent_data`; a new empty agent volume receives
+the image directory's uid, gid, and mode automatically.
 
 Applied migration files are immutable. If verification reports checksum drift
 or an unversioned schema, stop and investigate rather than bypassing the gate.
