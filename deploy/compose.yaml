@@ -34,8 +34,12 @@ services:
       retries: 10
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Loopback-only, and overridable. The default is unchanged: one instance on one
+    # machine gets 5432 where an operator expects it. DIFFUSE_DB_HOST_PORT exists for
+    # hosts that already have something there - CI boots this stack on a box that also
+    # runs Diffuse - where 0 asks the kernel for any free port.
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${DIFFUSE_DB_HOST_PORT:-5432}:5432"
     logging:
       driver: json-file
       options:

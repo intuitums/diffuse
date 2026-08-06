@@ -191,15 +191,21 @@ jobs:
           POSTGRES_USER: diffuse
           POSTGRES_PASSWORD: integration-test
           POSTGRES_DB: diffuse_test
+        # An EPHEMERAL host port, not a fixed 5432. The runners are self-hosted and share
+        # one host, so a fixed publish is a singleton: the box already runs a Diffuse
+        # instance whose own db publishes 127.0.0.1:5432, and this job failed outright
+        # with `bind: address already in use` before this line changed. Two concurrent
+        # runs of this job would have collided with each other for the same reason - a
+        # hosted runner hid both, because it is a fresh VM per job.
+        # The mapped port is read back from the `job.services` context below.
         ports:
-          - 5432:5432
+          - 5432/tcp
         options: >-
           --health-cmd "pg_isready -U diffuse -d diffuse_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      POSTGRES_TEST_DATABASE_URL: postgresql://diffuse:integration-test@127.0.0.1:5432/diffuse_test
       # Without this the job is decorative. `pytest -m integration` with
       # POSTGRES_TEST_DATABASE_URL unset reported "40 skipped, 680 deselected" and
       # exit 0 - a rename of the variable above, or a service container that never
@@ -217,6 +223,14 @@ jobs:
             requirements.txt
             requirements-dev.txt
             requirements.lock
+      # POSTGRES_TEST_DATABASE_URL cannot live in the job's `env:` any more: it has to
+      # name the port the service container actually got, and the `job` context is only
+      # available to steps. DIFFUSE_REQUIRE_INTEGRATION_TESTS still guards the case this
+      # is most likely to break - if the variable is wrong the integration tests error
+      # instead of skipping quietly to a green check.
+      - name: Point the tests at the service container
+        run: |
+          echo "POSTGRES_TEST_DATABASE_URL=postgresql://diffuse:integration-test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/diffuse_test" >> "$GITHUB_ENV"
       # Same ordering as lint-and-unit: the shipped, locked set first.
       - name: Install the locked runtime dependencies
         run: python -m pip install --require-hashes -r requirements.lock
@@ -271,7 +285,10 @@ jobs:
       - name: Confirm the image tests the shipped dependency set
         run: |
           docker run --rm --entrypoint pip diffuse-tests:ci freeze > /tmp/installed.txt
-          python scripts/check_lock_freeze.py /tmp/installed.txt requirements.lock
+          # python3, not python. This job does not use setup-python, and unlike a hosted
+          # ubuntu-2404 image a plain Ubuntu 26.04 host ships no unversioned `python`
+          # on PATH - the step died with `python: command not found`.
+          python3 scripts/check_lock_freeze.py /tmp/installed.txt requirements.lock
 
       # Unit and integration in one run, against the disposable PostgreSQL in
       # docker-compose.tests.yml. DIFFUSE_REQUIRE_INTEGRATION_TESTS is set there,
@@ -412,6 +429,15 @@ jobs:
             exit 1
           fi
           echo "REVIEW_MODEL=${REVIEW_MODEL}" >> ci.env
+
+          # Publish the database on an ephemeral host port for this boot only.
+          # compose.yaml ships 127.0.0.1:5432 because that is the right default for a
+          # customer running one instance on one machine. It is the wrong default for a
+          # CI host that already runs an instance - the boot failed here with
+          # `bind: address already in use` - and for a box with several runners that
+          # could boot this stack concurrently. Nothing in this job reaches the database
+          # from the host; only the compose network needs to.
+          echo "DIFFUSE_DB_HOST_PORT=0" >> ci.env
 
           # --wait blocks on the healthchecks. migrate is gated on db, and app on
           # migrate completing successfully, so a failure here means the release
