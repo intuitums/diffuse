@@ -438,6 +438,7 @@ jobs:
           # could boot this stack concurrently. Nothing in this job reaches the database
           # from the host; only the compose network needs to.
           echo "DIFFUSE_DB_HOST_PORT=0" >> ci.env
+          echo "DIFFUSE_APP_HOST_PORT=0" >> ci.env
 
           # --wait blocks on the healthchecks. migrate is gated on db, and app on
           # migrate completing successfully, so a failure here means the release
@@ -464,8 +465,18 @@ jobs:
             exit 1
           fi
 
-          # The exact check deploy/README.md tells a customer to run after `up -d`.
-          curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8000/ready
+          # The exact check deploy/README.md tells a customer to run after `up -d`, against
+          # the port this boot actually got. The stack publishes on ephemeral ports here
+          # (see DIFFUSE_APP_HOST_PORT above), because a fixed 8000 collided with the
+          # Diffuse instance this box already runs - the boot died with
+          # `bind: address already in use` before the app container ever started.
+          app_port="$(docker compose --env-file ci.env --file compose.yaml \
+            --project-name diffuse-ci port app 8000 | sed 's/.*://')"
+          if [ -z "$app_port" ]; then
+            echo "::error::could not resolve the published port for app:8000" >&2
+            exit 1
+          fi
+          curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:${app_port}/ready"
 
           # docs/deployment.md requires this on every upgrade. It compares the applied
           # migration history against the SQL packaged in the image, which is the path

@@ -92,8 +92,10 @@ services:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
       DIFFUSE_API_TOKEN: ${DIFFUSE_API_TOKEN:?Set DIFFUSE_API_TOKEN in .env}
       DIFFUSE_PUBLIC_URL: ${DIFFUSE_PUBLIC_URL:?Set DIFFUSE_PUBLIC_URL in .env}
+    # Overridable for the same reason as the database's, and with the same default:
+    # a customer running one instance gets 8000 where deploy/README.md says it will be.
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${DIFFUSE_APP_HOST_PORT:-8000}:8000"
     # REMOVED: a read-only bind mount of ${DIFFUSE_SECRETS_DIR:-/srv/diffuse/secrets}.
     # It existed for the browser sign-in client secret, and nothing reads a secret
     # from there: there is no `diffuse login` subcommand, so the flow cannot be
