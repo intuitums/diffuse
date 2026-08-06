@@ -88,6 +88,13 @@ mean nothing to `claude auth login`, so Claude forwards them.
 What has **not** landed: an adapter that spawns either CLI for a review, or lets
 `diffuse review` run without `REVIEW_MODEL`.
 
+The reusable session primitive is available in `service.agents` with no
+production callers. It constructs Claude Code's print/JSON invocation, gives it
+only a per-session MCP declaration and the `agent_environment` allowlist, and
+can record or replay its subprocess transcript in offline unit tests. Adapters
+remain responsible for their credential, evaluation, and runtime-selection
+gates; this primitive does not make an agent runtime selectable.
+
 **What the adapter still needs.** In place:
 
 | Item | State |
