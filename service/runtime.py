@@ -109,6 +109,43 @@ def _run_healthcheck(arguments: Sequence[str]) -> None:
             raise RuntimeError(f"Diffuse readiness check returned HTTP {response.status}")
 
 
+def _run_review_compartment_preflight(arguments: Sequence[str]) -> None:
+    if arguments:
+        raise ValueError("The review-compartment-preflight command does not accept arguments")
+    from service.review.agent_compartment import run_preflight
+
+    run_preflight()
+
+
+def _run_egress_proxy(arguments: Sequence[str]) -> None:
+    if arguments:
+        raise ValueError("The egress-proxy command does not accept arguments")
+    from service.review.agent_compartment import run_egress_proxy
+
+    run_egress_proxy()
+
+
+def _run_egress_proxy_healthcheck(arguments: Sequence[str]) -> None:
+    if arguments:
+        raise ValueError("The egress-proxy-healthcheck command does not accept arguments")
+    import socket
+
+    # A bare connect proves nothing: the kernel completes it from the listen
+    # backlog whether or not anything is accepting. Send a request the proxy is
+    # required to refuse and require the refusal, which exercises accept, parse,
+    # and reply.
+    with socket.create_connection(("127.0.0.1", 3128), timeout=2) as probe:
+        probe.sendall(
+            b"CONNECT healthcheck.invalid:443 HTTP/1.1\r\n"
+            b"Host: healthcheck.invalid:443\r\n\r\n"
+        )
+        response = probe.recv(64)
+    if not response.startswith(b"HTTP/1.1 403"):
+        raise RuntimeError(
+            f"Egress proxy did not refuse a disallowed authority: {response[:32]!r}"
+        )
+
+
 def _run_cli(arguments: Sequence[str]) -> None:
     from service.cli.review import main as cli_main
 
@@ -126,6 +163,12 @@ def main(arguments: Sequence[str] | None = None) -> None:
             _run_worker(selected)
         elif command == "healthcheck":
             _run_healthcheck(selected)
+        elif command == "review-compartment-preflight":
+            _run_review_compartment_preflight(selected)
+        elif command == "egress-proxy":
+            _run_egress_proxy(selected)
+        elif command == "egress-proxy-healthcheck":
+            _run_egress_proxy_healthcheck(selected)
         else:
             # The CLI owns its own exit codes and error formatting.
             _run_cli([command, *selected])
