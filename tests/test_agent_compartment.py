@@ -50,11 +50,33 @@ class _Connection:
         return self.response
 
 
+#: A stand-in for the compartment's pinned uid. Deliberately not `os.geteuid()`:
+#: the container suite runs as root, and pinning the expected uid to whoever
+#: happens to run the tests made a passing preflight impossible there --
+#: `_check_identity` refuses euid 0 before it ever compares to the pin, so this
+#: fixture asserted a state it had just made unreachable. The uid the process
+#: reports and the uid owning the home are both faked, so the test describes the
+#: compartment rather than the machine it runs on.
+NON_ROOT_UID = 10001
+
+
 def _configure_passing_preflight(monkeypatch, tmp_path: Path) -> _Connection:
     home = tmp_path / "agent-home"
     home.mkdir(mode=0o700)
     home.chmod(0o700)
-    monkeypatch.setattr(agent_compartment, "COMPARTMENT_UID", os.geteuid())
+    monkeypatch.setattr(agent_compartment.os, "geteuid", lambda: NON_ROOT_UID)
+    real_lstat = Path.lstat
+
+    def lstat_owned_by_the_compartment(self: Path):
+        metadata = real_lstat(self)
+        if self != home:
+            return metadata
+        fields = list(metadata)
+        fields[4] = NON_ROOT_UID  # st_uid
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(Path, "lstat", lstat_owned_by_the_compartment)
+    monkeypatch.setattr(agent_compartment, "COMPARTMENT_UID", NON_ROOT_UID)
     monkeypatch.setattr(agent_compartment, "COMPARTMENT_HOME", home)
     monkeypatch.setattr(agent_compartment, "REAL_HOME", Path("/home/diffuse"))
     monkeypatch.setenv("DIFFUSE_AGENT_HOME", str(home))
@@ -74,6 +96,23 @@ def _configure_passing_preflight(monkeypatch, tmp_path: Path) -> _Connection:
 
     monkeypatch.setattr(agent_compartment, "_connect", connect)
     return proxy
+
+
+def test_preflight_passes_even_when_the_suite_itself_runs_as_root(monkeypatch, tmp_path):
+    """The container job runs the suite as root, and CI is where that showed up.
+
+    Pinning the expected uid to `os.geteuid()` made a passing preflight
+    impossible there: `_check_identity` refuses euid 0 outright, before it ever
+    compares against the pin. The fixture describes a compartment, so it has to
+    override the ambient identity rather than adopt it.
+    """
+
+    monkeypatch.setattr(agent_compartment.os, "geteuid", lambda: 0)
+    proxy = _configure_passing_preflight(monkeypatch, tmp_path)
+
+    agent_compartment.preflight()
+
+    assert proxy.sent.startswith(b"CONNECT ")
 
 
 def test_preflight_asserts_the_runtime_compartment(monkeypatch, tmp_path):
