@@ -100,6 +100,10 @@ def all_files_disabled_report(
         context_chunk_count=0,
         prompt_tokens=0,
         completion_tokens=0,
+        # Reported, not merely absent: policy stopped this review before any
+        # model call, so zero verifier spend is a measurement rather than a gap.
+        verifier_prompt_tokens=0,
+        verifier_completion_tokens=0,
         **review_presentation(policy),
     )
 

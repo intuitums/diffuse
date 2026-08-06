@@ -213,8 +213,16 @@ class ReviewReport(StrictModel):
     # Candidate and verifier stages can use different models. Keep their usage
     # separate so evaluation can price a cross-family review correctly without
     # inspecting a runtime's private call path.
-    verifier_prompt_tokens: int = Field(default=0, ge=0)
-    verifier_completion_tokens: int = Field(default=0, ge=0)
+    #
+    # `None` means "this runtime did not report a split", which is not the same
+    # claim as zero and must not be quietly rounded into one. A consumer that
+    # subtracts the verifier share from the total would otherwise price a
+    # cross-family review entirely on the candidate's rate card and produce a
+    # number that looks authoritative and is wrong -- the exact failure the
+    # harness used to avoid by observing each call. A runtime that genuinely ran
+    # no verification stage reports 0 and says so.
+    verifier_prompt_tokens: int | None = Field(default=None, ge=0)
+    verifier_completion_tokens: int | None = Field(default=None, ge=0)
     # A breakdown of `prompt_tokens`, never an addition to it. LiteLLM folds both
     # cache counters into `prompt_tokens` on the Anthropic route, unlike
     # Anthropic's own `input_tokens`, which reports the uncached remainder alone;
@@ -225,11 +233,25 @@ class ReviewReport(StrictModel):
     cache_read_tokens: int = Field(default=0, ge=0)
     cache_write_tokens: int = Field(default=0, ge=0)
 
+    @property
+    def reports_verifier_usage(self) -> bool:
+        """Whether this report can be priced per stage at all."""
+
+        return (
+            self.verifier_prompt_tokens is not None
+            and self.verifier_completion_tokens is not None
+        )
+
     @model_validator(mode="after")
     def verifier_usage_is_part_of_total_usage(self) -> ReviewReport:
-        if (
-            self.verifier_prompt_tokens > self.prompt_tokens
-            or self.verifier_completion_tokens > self.completion_tokens
+        if (self.verifier_prompt_tokens is None) != (
+            self.verifier_completion_tokens is None
         ):
+            raise ValueError(
+                "Verifier prompt and completion usage must both be reported or both be absent"
+            )
+        if (self.verifier_prompt_tokens or 0) > self.prompt_tokens or (
+            self.verifier_completion_tokens or 0
+        ) > self.completion_tokens:
             raise ValueError("Verifier token usage cannot exceed total review usage")
         return self

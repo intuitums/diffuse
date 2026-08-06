@@ -330,6 +330,15 @@ def run_fixture(
         verifier_model=verifier_model,
     )
     latency_ms = max(0, round((time.monotonic() - started) * 1000))
+    if not report.reports_verifier_usage:
+        # Refuse rather than attribute. The suite prices candidate and verifier
+        # separately because a cross-family pair does not share a rate card, so
+        # folding an unreported split into the candidate's side produces a cost
+        # figure that reads as measured and is not.
+        raise FixtureError(
+            f"{loaded.fixture.case_id}: the review runtime did not report its "
+            "candidate/verifier token split, so this case cannot be priced"
+        )
     observed = [
         ObservedFinding(
             title=finding.title,

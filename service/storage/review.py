@@ -40,6 +40,10 @@ class PublicationHandle:
     review_number: int = 1
 
 
+def _optional_int(value: object) -> int | None:
+    return None if value is None else int(value)
+
+
 def _replace_review_run_learned_rules(
     cursor,
     review_run_id: int,
@@ -502,6 +506,8 @@ def persist_review_report(
                 skip_reason = %s,
                 prompt_tokens = %s,
                 completion_tokens = %s,
+                verifier_prompt_tokens = %s,
+                verifier_completion_tokens = %s,
                 cache_read_tokens = %s,
                 cache_write_tokens = %s,
                 failure_code = NULL,
@@ -543,6 +549,8 @@ def persist_review_report(
                 report.skip_reason,
                 report.prompt_tokens,
                 report.completion_tokens,
+                report.verifier_prompt_tokens,
+                report.verifier_completion_tokens,
                 report.cache_read_tokens,
                 report.cache_write_tokens,
                 review_run_id,
@@ -619,6 +627,8 @@ def load_review_report(conn, review_run_id: int) -> ReviewReport:
                 context_chunk_count,
                 prompt_tokens,
                 completion_tokens,
+                verifier_prompt_tokens,
+                verifier_completion_tokens,
                 cache_read_tokens,
                 cache_write_tokens
             FROM review_runs
@@ -702,6 +712,10 @@ def load_review_report(conn, review_run_id: int) -> ReviewReport:
         context_chunk_count=int(run["context_chunk_count"]),
         prompt_tokens=int(run["prompt_tokens"]),
         completion_tokens=int(run["completion_tokens"]),
+        # NULL is "this runtime did not report a split", which rows written
+        # before the split existed genuinely did not. Keep it distinct from 0.
+        verifier_prompt_tokens=_optional_int(run["verifier_prompt_tokens"]),
+        verifier_completion_tokens=_optional_int(run["verifier_completion_tokens"]),
         cache_read_tokens=int(run["cache_read_tokens"]),
         cache_write_tokens=int(run["cache_write_tokens"]),
     )

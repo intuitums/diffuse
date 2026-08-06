@@ -1005,6 +1005,10 @@ def _generate_review_litellm(
             context_chunk_count=len(contexts),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            # No candidate survived deduplication, so the verification stage was
+            # never called. That is a measured zero, not an unreported split.
+            verifier_prompt_tokens=0,
+            verifier_completion_tokens=0,
             cache_read_tokens=cache_usage.read_tokens,
             cache_write_tokens=cache_usage.written_tokens,
             **presentation,

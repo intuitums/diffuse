@@ -35,6 +35,7 @@ from service.models.review import (
     CandidateBatch,
     CandidateFinding,
     Category,
+    ReviewReport,
     SecurityClassification,
     Severity,
     VerificationBatch,
@@ -414,6 +415,40 @@ def test_run_fixture_uses_the_reported_candidate_and_verifier_tokens(
     # Two candidate passes at (11, 5), one verification at (7, 3).
     assert (case.prompt_tokens, case.completion_tokens) == (22, 10)
     assert (case.verifier_prompt_tokens, case.verifier_completion_tokens) == (7, 3)
+
+
+def test_run_fixture_refuses_a_report_with_no_reported_split(tmp_path, monkeypatch):
+    """A runtime that reports no split must not be priced as if it reported zero.
+
+    The candidate and verifier can be different families with different rate
+    cards, so attributing an unmeasured split to the candidate produces a cost
+    the suite would present as measured. Refusing is the only honest option.
+    """
+
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
+    _write_fixture(tmp_path, "unreported-split")
+    loaded = eval_harness.load_fixtures(tmp_path)[0]
+
+    def silent_runtime(*_args, **_kwargs):
+        return ReviewReport(
+            summary="A runtime that does not report its stages.",
+            risk_score=0,
+            findings=[],
+            diff_file_count=1,
+            reviewed_file_count=1,
+            context_chunk_count=0,
+            prompt_tokens=40,
+            completion_tokens=12,
+        )
+
+    monkeypatch.setattr(review_engine, "generate_review", silent_runtime)
+
+    with pytest.raises(eval_harness.FixtureError, match="did not report"):
+        eval_harness.run_fixture(
+            loaded,
+            candidate_model="openai/gpt-4.1-mini",
+            verifier_model="anthropic/claude-haiku-4-5",
+        )
 
 
 def test_run_fixture_preserves_the_review_exception(tmp_path, monkeypatch):
