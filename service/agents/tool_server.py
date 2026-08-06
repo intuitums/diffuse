@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from urllib.request import Request, urlopen
 
 from mcp.server.fastmcp import FastMCP
 
+from service.agents.mcp_bridge import BRIDGE_URL_VARIABLE, MAX_SEARCH_LIMIT
 from service.review.tools import ReviewToolProvider
 
 
@@ -42,7 +44,16 @@ def create_bridge_tool_server(bridge_url: str) -> FastMCP:
     ) -> dict[str, object]:
         """Search only the parent review's pinned immutable index snapshots."""
 
-        payload = json.dumps({"query": query, "path_prefix": path_prefix, "limit": limit}).encode()
+        # Clamped here as well as in the bridge. This side keeps the agent's own
+        # error message useful; the bridge's copy is the one that is load-bearing,
+        # because this process is the one reading untrusted content.
+        payload = json.dumps(
+            {
+                "query": query,
+                "path_prefix": path_prefix,
+                "limit": min(max(limit, 1), MAX_SEARCH_LIMIT),
+            }
+        ).encode()
         request = Request(
             f"{bridge_url}/search_code",
             data=payload,
@@ -59,10 +70,16 @@ def create_bridge_tool_server(bridge_url: str) -> FastMCP:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Diffuse review-tool MCP bridge")
-    parser.add_argument("--bridge-url", required=True)
-    arguments = parser.parse_args()
-    create_bridge_tool_server(arguments.bridge_url).run(transport="stdio")
+    argparse.ArgumentParser(description="Diffuse review-tool MCP bridge").parse_args()
+    # Read from the environment, not a flag: the URL embeds the session's bearer
+    # token, and a flag would put that token in `ps` output for every local user.
+    bridge_url = os.environ.get(BRIDGE_URL_VARIABLE)
+    if not bridge_url:
+        raise SystemExit(
+            f"{BRIDGE_URL_VARIABLE} is not set; this server is spawned by a "
+            "Diffuse agent session and is not usable on its own"
+        )
+    create_bridge_tool_server(bridge_url).run(transport="stdio")
 
 
 if __name__ == "__main__":

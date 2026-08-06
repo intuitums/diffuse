@@ -14,6 +14,7 @@ from service.agents import session
 from service.agents.claude_session import build_argv, parse_envelope
 from service.agents.errors import (
     AgentSessionCoverageCaveat,
+    AgentSessionError,
     AgentSessionExecutionError,
     AgentSessionMcpError,
     AgentSessionOutputError,
@@ -21,10 +22,14 @@ from service.agents.errors import (
     AgentSessionTerminalError,
     AgentSessionTimeout,
 )
-from service.agents.mcp_bridge import McpBridge, write_mcp_config
+from service.agents.mcp_bridge import MAX_SEARCH_LIMIT, McpBridge, write_mcp_config
 from service.agents.profiles import REVIEW, SessionProfile
 from service.agents.replay import SessionTranscript, record, replay
-from service.review.agent_host import CLAUDE_CODE, CREDENTIAL_ENVIRONMENT
+from service.review.agent_host import (
+    CLAUDE_CODE,
+    CREDENTIAL_ENVIRONMENT,
+    write_sandbox_settings,
+)
 
 
 class Answer(BaseModel):
@@ -36,11 +41,66 @@ def _envelope(result: object, **extra: object) -> str:
 
 
 @pytest.fixture
-def executable(monkeypatch, tmp_path) -> Path:
+def owned_policy(monkeypatch, tmp_path) -> Path:
+    """A Diffuse-owned agent home with the current sandbox policy written.
+
+    `run_structured` refuses to start without one, so every session test needs
+    this. Pointing `DIFFUSE_AGENT_HOME` at a disposable directory also keeps the
+    suite from rewriting the policy a developer's own reviews run under.
+    """
+
+    home = tmp_path / "agent-home"
+    monkeypatch.setenv("DIFFUSE_AGENT_HOME", str(home))
+    write_sandbox_settings(CLAUDE_CODE)
+    return home
+
+
+@pytest.fixture
+def executable(monkeypatch, tmp_path, owned_policy) -> Path:
     path = tmp_path / "claude"
     path.write_text("")
     monkeypatch.setattr(session, "resolve_executable", lambda _cli: path)
     return path
+
+
+def test_a_session_refuses_to_run_without_the_owned_sandbox_policy(
+    monkeypatch, tmp_path
+):
+    """No policy on disk means no `failIfUnavailable`, which means no sandbox."""
+
+    monkeypatch.setenv("DIFFUSE_AGENT_HOME", str(tmp_path / "never-logged-in"))
+    monkeypatch.setattr(session, "resolve_executable", lambda _cli: tmp_path / "claude")
+
+    def runner(*_args):  # pragma: no cover - must not be reached
+        raise AssertionError("a session must not spawn without its sandbox policy")
+
+    with pytest.raises(AgentSessionTerminalError, match="write-policy"):
+        session.run_structured(
+            CLAUDE_CODE,
+            Answer,
+            system_prompt="s",
+            user_prompt="u",
+            workspace=tmp_path,
+            tools=None,
+            profile=REVIEW,
+            runner=runner,
+        )
+
+
+def test_the_session_settings_narrow_reads_to_the_worktree(tmp_path, owned_policy):
+    """The per-review `allowRead` is the part that cannot live in the config dir."""
+
+    worktree = tmp_path / "worktree"
+    path = session.write_session_settings(
+        tmp_path / "settings.json",
+        cli=CLAUDE_CODE,
+        worktree=worktree,
+    )
+    sandbox = json.loads(path.read_text())["sandbox"]
+
+    assert sandbox["filesystem"]["allowRead"] == [str(worktree)]
+    assert sandbox["failIfUnavailable"] is True
+    assert sandbox["allowUnsandboxedCommands"] is False
 
 
 def test_argv_is_a_pure_function_of_profile_workspace_and_schema(tmp_path):
@@ -51,6 +111,7 @@ def test_argv_is_a_pure_function_of_profile_workspace_and_schema(tmp_path):
         schema={"type": "object", "properties": {"answer": {"type": "string"}}},
         system_prompt="system",
         user_prompt="user",
+        settings=tmp_path / "settings.json",
         mcp_config=tmp_path / "mcp.json",
     )
 
@@ -66,13 +127,73 @@ def test_argv_is_a_pure_function_of_profile_workspace_and_schema(tmp_path):
         "--max-turns",
         "3",
         "--no-session-persistence",
-        "--add-dir",
-        str(tmp_path / "workspace"),
+        "--settings",
+        str(tmp_path / "settings.json"),
         "--strict-mcp-config",
         "--mcp-config",
         str(tmp_path / "mcp.json"),
+        "--allowed-tools",
+        "search_code",
+        "--add-dir",
+        str(tmp_path / "workspace"),
         "user",
     ]
+
+
+def test_the_session_boundary_flags_are_never_conditional(tmp_path):
+    """A no-tools profile is the case that used to drop all three.
+
+    Without `--strict-mcp-config` Claude reads the `.mcp.json` of the repository
+    under review; without `--settings` it runs with no `failIfUnavailable` and
+    silently degrades to no sandbox; without `--allowed-tools` a profile that
+    names no tools still gets Claude's defaults, which include Bash.
+    """
+
+    argv = build_argv(
+        tmp_path / "claude",
+        profile=SessionProfile(
+            "toolless",
+            turn_budget=1,
+            timeout_seconds=5,
+            tool_allowlist=(),
+            needs_workspace=False,
+        ),
+        workspace=tmp_path / "workspace",
+        schema={"type": "object"},
+        system_prompt="system",
+        user_prompt="user",
+        settings=tmp_path / "settings.json",
+        mcp_config=tmp_path / "mcp.json",
+    )
+
+    assert "--strict-mcp-config" in argv
+    assert argv[argv.index("--settings") + 1] == str(tmp_path / "settings.json")
+    assert argv[argv.index("--mcp-config") + 1] == str(tmp_path / "mcp.json")
+    assert argv[argv.index("--allowed-tools") + 1] == ""
+
+
+def test_a_toolless_session_still_declares_an_empty_server_map(tmp_path):
+    """"No tools" has to be stated, or the repository's own file supplies it."""
+
+    path = write_mcp_config(tmp_path / "mcp.json", bridge_url=None)
+
+    assert json.loads(path.read_text()) == {"mcpServers": {}}
+
+
+def test_the_bridge_token_never_reaches_the_mcp_config_or_argv(tmp_path):
+    """The URL carries a bearer token, so argv would publish it to `ps`."""
+
+    class Provider:
+        def search_code(self, query, *, path_prefix=None, limit=8):
+            return {"matches": []}
+
+    with McpBridge(Provider()) as bridge:
+        path = write_mcp_config(tmp_path / "mcp.json", bridge_url=bridge.url)
+        document = json.loads(path.read_text())
+        server = document["mcpServers"]["diffuse-review-tools"]
+
+        assert bridge.url not in json.dumps(document)
+        assert server["args"] == ["-m", "service.agents.tool_server"]
 
 
 def test_session_uses_exact_agent_environment_and_validates_a_string_result(
@@ -137,12 +258,47 @@ def test_session_accepts_an_object_result(executable, tmp_path):
             _envelope("rate limit", is_error=True, subtype="error_during_execution"),
             AgentSessionRateLimited,
         ),
-        (_envelope("", mcp_servers={"diffuse-review-tools": "failed"}), AgentSessionMcpError),
+        (
+            _envelope(
+                "",
+                mcp_servers=[{"name": "diffuse-review-tools", "status": "failed"}],
+            ),
+            AgentSessionMcpError,
+        ),
     ],
 )
 def test_envelope_taxonomy(stdout, error):
     with pytest.raises(error):
         parse_envelope(stdout)
+
+
+def test_a_healthy_mcp_server_is_not_a_failure_because_of_its_name():
+    """The old check scanned the serialized blob for "fail" and "error"."""
+
+    envelope = parse_envelope(
+        _envelope(
+            '{"answer":"ok"}',
+            mcp_servers=[
+                {"name": "error-budget-tools", "status": "connected"},
+                {"name": "failover-inspector", "status": "connected"},
+            ],
+        )
+    )
+
+    assert envelope.result == '{"answer":"ok"}'
+
+
+def test_an_author_in_the_message_is_not_a_credential_failure():
+    """`AgentSessionTerminalError` is non-retryable, so `auth` in `author` kills a job."""
+
+    with pytest.raises(AgentSessionExecutionError):
+        parse_envelope(
+            _envelope(
+                "could not classify the commit author",
+                is_error=True,
+                subtype="error_during_execution",
+            )
+        )
 
 
 def test_schema_mismatch_is_a_retryable_output_error(executable, tmp_path):
@@ -180,17 +336,24 @@ def test_auth_exit_is_terminal_with_login_remedy(executable, tmp_path):
 
 
 def test_max_turns_retries_once_with_raised_budget(executable, tmp_path):
+    """Note the non-zero exit: Claude exits 1 whenever it sets `is_error`.
+
+    Classifying on the exit code first would collapse `error_max_turns` into a
+    generic failure carrying the whole JSON document, and this retry would never
+    happen. The envelope is read first for exactly that reason.
+    """
+
     budgets: list[str] = []
 
     def runner(argv, *_args):
         budgets.append(argv[argv.index("--max-turns") + 1])
         if len(budgets) == 1:
             return session.SessionRun(
-                0, _envelope("", is_error=True, subtype="error_max_turns"), ""
+                1, _envelope("", is_error=True, subtype="error_max_turns"), ""
             )
         return session.SessionRun(0, _envelope({"answer": "covered"}), "")
 
-    value, _, _ = session.run_structured(
+    value, prompt_tokens, completion_tokens = session.run_structured(
         CLAUDE_CODE,
         Answer,
         system_prompt="s",
@@ -202,13 +365,60 @@ def test_max_turns_retries_once_with_raised_budget(executable, tmp_path):
     )
     assert value.answer == "covered"
     assert budgets == ["24", "48"]
+    # Both attempts, because the vendor billed for both: 3 + 3 and 5 + 5.
+    assert (prompt_tokens, completion_tokens) == (6, 10)
+
+
+def test_a_rate_limit_survives_a_non_zero_exit(executable, tmp_path):
+    """The envelope names the failure; the exit code only says there was one."""
+
+    def runner(*_args):
+        return session.SessionRun(
+            1,
+            _envelope("rate limit reached", is_error=True, subtype="error_during_execution"),
+            "",
+        )
+
+    with pytest.raises(AgentSessionRateLimited, match="rate limit"):
+        session.run_structured(
+            CLAUDE_CODE,
+            Answer,
+            system_prompt="s",
+            user_prompt="u",
+            workspace=tmp_path,
+            tools=None,
+            profile=REVIEW,
+            runner=runner,
+        )
 
 
 def test_second_max_turns_is_an_explicit_coverage_caveat(executable, tmp_path):
     def runner(*_args):
-        return session.SessionRun(0, _envelope("", is_error=True, subtype="error_max_turns"), "")
+        return session.SessionRun(1, _envelope("", is_error=True, subtype="error_max_turns"), "")
 
-    with pytest.raises(AgentSessionCoverageCaveat, match="coverage caveat"):
+    with pytest.raises(AgentSessionCoverageCaveat, match="coverage caveat") as raised:
+        session.run_structured(
+            CLAUDE_CODE,
+            Answer,
+            system_prompt="s",
+            user_prompt="u",
+            workspace=tmp_path,
+            tools=None,
+            profile=REVIEW,
+            runner=runner,
+        )
+
+    # An adapter turning this into a report caveat still has to bill both runs.
+    assert raised.value.usage == (6, 10)
+
+
+def test_a_crash_with_no_envelope_falls_back_to_the_exit_code(executable, tmp_path):
+    """The exit code is the witness only when there is nothing better to read."""
+
+    def runner(*_args):
+        return session.SessionRun(137, "", "Killed")
+
+    with pytest.raises(AgentSessionError, match="Killed"):
         session.run_structured(
             CLAUDE_CODE,
             Answer,
@@ -263,10 +473,7 @@ def test_per_session_mcp_bridge_only_exposes_search_code(tmp_path):
             return {"matches": []}
 
     with McpBridge(Provider()) as bridge:
-        config_path = write_mcp_config(tmp_path / "mcp.json", bridge_url=bridge.url)
-        config = json.loads(config_path.read_text())
-        command = config["mcpServers"]["diffuse-review-tools"]
-        assert command["args"][-1] == bridge.url
+        write_mcp_config(tmp_path / "mcp.json", bridge_url=bridge.url)
         request = Request(
             f"{bridge.url}/search_code",
             data=json.dumps({"query": "needle", "path_prefix": "src", "limit": 2}).encode(),
@@ -276,3 +483,39 @@ def test_per_session_mcp_bridge_only_exposes_search_code(tmp_path):
         with urlopen(request) as response:  # noqa: S310 - ephemeral loopback URL
             assert json.loads(response.read()) == {"matches": []}
     assert calls == [("needle", "src", 2)]
+
+
+def test_the_bridge_clamps_the_limit_an_agent_asks_for(tmp_path):
+    """An untrusted diff steers the agent, so `limit` is the agent's, not ours."""
+
+    calls: list[int] = []
+
+    class Provider:
+        def search_code(self, query, *, path_prefix=None, limit=8):
+            calls.append(limit)
+            return {"matches": []}
+
+    with McpBridge(Provider()) as bridge:
+        request = Request(
+            f"{bridge.url}/search_code",
+            data=json.dumps({"query": "needle", "limit": 10_000}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request) as response:  # noqa: S310 - ephemeral loopback URL
+            response.read()
+
+    assert calls == [MAX_SEARCH_LIMIT]
+
+
+def test_a_stopped_bridge_does_not_hand_out_a_dead_address(tmp_path):
+    class Provider:
+        def search_code(self, query, *, path_prefix=None, limit=8):
+            return {"matches": []}
+
+    bridge = McpBridge(Provider())
+    with bridge:
+        assert bridge.url.startswith("http://127.0.0.1:")
+
+    with pytest.raises(RuntimeError, match="has not started"):
+        _ = bridge.url

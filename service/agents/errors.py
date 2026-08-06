@@ -36,9 +36,28 @@ class AgentSessionMcpError(AgentSessionError):
 
 
 class AgentSessionCoverageCaveat(AgentSessionError):
-    """The raised-budget retry also exhausted the agent's turn budget.
+    """The agent stopped at its turn budget rather than at an answer.
 
     An adapter can convert this into a report caveat rather than a failed
     review.  It remains distinct from a terminal error so it is never silently
     classified as a bad configuration.
+
+    Carries the usage the abandoned attempt spent, because the vendor bills for
+    it either way: a retry that reported only its own tokens would understate
+    the review's cost by however far the first attempt got.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+
+    @property
+    def usage(self) -> tuple[int, int]:
+        return self.prompt_tokens, self.completion_tokens
