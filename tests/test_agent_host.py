@@ -24,7 +24,9 @@ from service.review.agent_host import (
     AGENT_CLIS,
     CLAUDE_CODE,
     CODEX,
+    CONTAINER_COMPARTMENT_PROFILE,
     CREDENTIAL_ENVIRONMENT,
+    LOCAL_CLI_SANDBOX_PROFILE,
     AgentHostError,
     agent_config_directory,
     agent_environment,
@@ -256,6 +258,22 @@ def test_settings_carry_every_hard_gate_key():
     assert sandbox["network"]["strictAllowlist"] is True
     assert [entry["path"] for entry in sandbox["credentials"]["files"]]
     assert all(entry["mode"] == "deny" for entry in sandbox["credentials"]["files"])
+
+
+def test_container_profile_is_explicitly_preflight_gated_not_a_weaker_local_policy():
+    """Bubblewrap cannot create a user namespace in the supported container.
+
+    The replacement is the compartment, not an operator weakening Docker until
+    Bubblewrap starts. Keeping the preflight requirement alongside the policy
+    prevents a future adapter from mistaking ``enabled: false`` for a sufficient
+    boundary.
+    """
+
+    assert LOCAL_CLI_SANDBOX_PROFILE.requires_compartment_preflight is False
+    assert CONTAINER_COMPARTMENT_PROFILE.requires_compartment_preflight is True
+    assert sandbox_settings(profile=CONTAINER_COMPARTMENT_PROFILE) == {
+        "sandbox": {"enabled": False}
+    }
 
 
 def test_allowed_domains_is_empty_rather_than_curated():

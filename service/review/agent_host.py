@@ -6,7 +6,8 @@ environment, the sandbox policy written into that directory, and the version
 floor that decides whether the policy is honoured at all. Building argv and
 driving a session belongs to the adapter; nothing here calls a model.
 
-Three boundaries stack here and none of them subsumes another:
+For local review, three boundaries stack here and none of them subsumes
+another:
 
 1. `agent_environment` builds the child environment from an allowlist, so a
    credential Diffuse never names cannot reach the CLI. This is
@@ -21,11 +22,19 @@ Three boundaries stack here and none of them subsumes another:
    policy on disk describes and nothing says so. The floor is the only way to
    know the policy was enforced. Codex's floor is empty until U4 empirics.
 
-The sandbox is a real OS boundary -- Seatbelt on macOS, bubblewrap on Linux --
-but not a complete one. Its documented scope is Bash subprocesses, and MCP
+The CLI sandbox is a real OS boundary -- Seatbelt on macOS, bubblewrap on Linux
+-- but not a complete one. Its documented scope is Bash subprocesses, and MCP
 servers run outside it entirely with full host privileges, which is why the
 adapter must always pass `--strict-mcp-config` and why Diffuse's own MCP server
 must never execute repository-supplied content.
+
+On the self-hosted Linux profile, Bubblewrap cannot create a user namespace in
+the review container (DEV-327). `CONTAINER_COMPARTMENT_PROFILE` therefore does
+not try to weaken Docker until Bubblewrap happens to work: it turns the CLI
+sandbox off and requires the later review-compartment preflight to be the
+boundary. That preflight and its service are deliberately not implemented here;
+no agent runtime is selectable yet. See SECURITY.md for the measured matrix and
+the invariant the preflight must assert.
 """
 
 from __future__ import annotations
@@ -72,6 +81,37 @@ VERSION_PROBE_TIMEOUT_SECONDS = 30
 
 class AgentHostError(RuntimeError):
     """The host cannot run an agent CLI review, and says which requirement failed."""
+
+
+@dataclass(frozen=True)
+class SandboxProfile:
+    """A boundary that owns the isolation around a Claude Code session.
+
+    The local profile relies on the CLI's Seatbelt/Bubblewrap sandbox. The
+    container profile is intentionally unusable until the caller has run the
+    review-compartment preflight: it is a declaration of which boundary must
+    be asserted, not an escape hatch from the local policy.
+    """
+
+    name: str
+    cli_sandbox_enabled: bool
+    requires_compartment_preflight: bool
+
+
+LOCAL_CLI_SANDBOX_PROFILE = SandboxProfile(
+    name="local-cli-sandbox",
+    cli_sandbox_enabled=True,
+    requires_compartment_preflight=False,
+)
+
+#: Bubblewrap cannot create a user namespace inside the measured self-hosted
+#: container profile. The agent compartment owns the replacement boundary; its
+#: preflight must pass before an adapter selects this profile (DEV-327/DEV-331).
+CONTAINER_COMPARTMENT_PROFILE = SandboxProfile(
+    name="container-compartment",
+    cli_sandbox_enabled=False,
+    requires_compartment_preflight=True,
+)
 
 
 @dataclass(frozen=True)
@@ -342,11 +382,15 @@ def ensure_agent_config_directory(cli: AgentCli) -> Path:
     return path
 
 
-def sandbox_settings(worktree: Path | str | None = None) -> dict[str, object]:
+def sandbox_settings(
+    worktree: Path | str | None = None,
+    *,
+    profile: SandboxProfile = LOCAL_CLI_SANDBOX_PROFILE,
+) -> dict[str, object]:
     """The Claude Code sandbox policy Diffuse persists under CLAUDE_CONFIG_DIR.
 
-    Four keys are load-bearing, and each closes a failure that is silent rather
-    than loud:
+    In the local CLI-sandbox profile, four keys are load-bearing, and each
+    closes a failure that is silent rather than loud:
 
     - `failIfUnavailable` -- without it a missing bubblewrap makes the CLI warn
       and then run *unsandboxed*. A review tool must not downgrade itself to no
@@ -368,7 +412,17 @@ def sandbox_settings(worktree: Path | str | None = None) -> dict[str, object]:
     `--settings` sources. Since the repository under review is the untrusted
     input, that is what makes writing this to a Diffuse-owned user directory
     safe.
+
+    The container-compartment profile explicitly disables Claude's Bubblewrap
+    sandbox because the supported container posture cannot create its user
+    namespace. It is valid only after `agent_compartment` has asserted the
+    container replacement boundary; this function records that requirement on
+    the profile rather than pretending that `sandbox.enabled: false` is safe on
+    its own. The only current caller uses the local profile.
     """
+
+    if not profile.cli_sandbox_enabled:
+        return {"sandbox": {"enabled": False}}
 
     filesystem: dict[str, object] = {"denyRead": [f"{REAL_HOME}/"]}
     if worktree is not None:

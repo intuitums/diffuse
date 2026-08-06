@@ -8,11 +8,30 @@ into that report. The seam is the whole report, not a single model call.
 
 | Path | Who runs it | Runtime today | Destination |
 | --- | --- | --- | --- |
-| Self-hosted server | API + worker on your infrastructure | `litellm` (one-shot structured passes via a model API) | Stays on an API completion runtime. Refuses agent-CLI runtimes at startup. |
+| Self-hosted server | API + worker on your infrastructure | `litellm` (one-shot structured passes via a model API) | May drive an agent CLI only from a dedicated, preflight-asserted review compartment; the API and worker themselves still refuse agent-CLI runtimes. |
 | Local CLI | `diffuse review` on a developer machine | `litellm` (same one-shot path) | May select `claude` or `codex` once adapters exist — driving a locally installed, locally authenticated agent CLI behind Diffuse-owned config. |
 
 There is no Diffuse-hosted cloud control plane. “Hosted” in older comments means
 the **self-hosted server** process, not a SaaS tier.
+
+### Container review boundary (decision, not implementation)
+
+The supported Ubuntu/Docker posture cannot run Claude Code's Bubblewrap
+sandbox: the measured user-namespace probe failed under the default hardened
+container, every tested AppArmor/seccomp/capability variation, and privileged
+mode. `failIfUnavailable: true` therefore correctly prevents Claude from
+silently running without its local sandbox; weakening the container until that
+setting stops refusing is not an option.
+
+For a future self-hosted agent runtime, the container must be the boundary. Its
+dedicated compartment must prove at runtime that the process reading untrusted
+content is non-root, has no control-plane credentials, cannot reach the database
+or other sensitive services, and has only intended egress. The corresponding
+`CONTAINER_COMPARTMENT_PROFILE` in `agent_host.sandbox_settings` disables the
+unavailable CLI sandbox and records that a successful compartment preflight is
+required. It does not make an agent runtime selectable or relax the local
+profile. The complete evidence matrix and security rationale are in
+[SECURITY.md](../SECURITY.md).
 
 ## What `litellm` is
 
