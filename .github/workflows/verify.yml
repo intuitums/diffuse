@@ -450,6 +450,18 @@ jobs:
               fi
             '
 
+          # The agent credential volume is writable under the same read-only
+          # rootfs and dropped-capability constraints the login command uses.
+          # Docker copies the image directory's metadata to a fresh empty named
+          # volume; without the pinned uid/gid and 0700 mode this fails only on
+          # a customer's first agent sign-in.
+          docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
+            exec -T worker /bin/sh -c '
+              test "$(id -u):$(id -g)" = "10001:10001"
+              test "$(stat -c "%u:%g:%a" /var/lib/diffuse/agent)" = "10001:10001:700"
+              test -w /var/lib/diffuse/agent
+            '
+
       - name: Collect stack logs
         if: always()
         working-directory: deploy

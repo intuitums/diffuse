@@ -68,12 +68,16 @@ DEFAULT_AGENT_HOME = "~/.diffuse/agent"
 AUTH_STATUS_JSON = "json"
 AUTH_STATUS_EXIT = "exit_code"
 
-#: Read once, at the top of the process, before anything rewrites `HOME` for a
-#: child. The sandbox policy has to name the *developer's* home directory, and
-#: `agent_environment` points the child's `HOME` at a scratch directory -- so a
-#: literal `~/` inside the policy would expand to the scratch directory and deny
-#: nothing that matters.
-REAL_HOME = Path.home()
+def real_home() -> Path:
+    """Resolve the operator home at the point a host action needs it.
+
+    This cannot be a module-level value. Launchers may set HOME after imports,
+    while an agent child receives a deliberately different HOME later. Resolving
+    here observes the host process's current value; the child environment never
+    calls this function.
+    """
+
+    return Path.home()
 
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
@@ -380,11 +384,30 @@ def require_supported_platform() -> None:
     all, which is worse than not offering the runtime.
     """
 
+    require_real_home()
     if sys.platform.startswith("win"):
         raise AgentHostError(
             "The agent CLI review runtimes need an OS sandbox, and native Windows "
             "is not supported. Use WSL2, or set REVIEW_RUNTIME=litellm."
         )
+
+
+def require_real_home() -> Path:
+    """Reject a home value that would turn the sandbox deny into ``/``.
+
+    A numeric Docker user without a passwd entry can produce the filesystem root
+    (or a similarly shallow fallback), and rendering that into ``denyRead``
+    prevents the agent from reading its worktree. Refuse before writing or using
+    a policy rather than making that look like an opaque vendor-CLI failure.
+    """
+
+    home = real_home()
+    if not home.is_absolute() or Path("/") == home or len(home.parts) < 3:
+        raise AgentHostError(
+            "the agent sandbox needs a real user home, but HOME resolved to "
+            f"{str(home)!r}; configure an absolute multi-component home directory"
+        )
+    return home
 
 
 def agent_home() -> Path:
@@ -420,6 +443,26 @@ def ensure_agent_config_directory(cli: AgentCli) -> Path:
     path.mkdir(exist_ok=True)
     path.chmod(0o700)
     return path
+
+
+def agent_login_home() -> Path:
+    """Writable vendor-home fallback kept inside the Diffuse credential volume.
+
+    A few agent CLIs write state outside their explicit config-directory
+    variable. The packaged worker runs on a read-only rootfs, so inheriting its
+    `/home/diffuse` would fail the first login; `/tmp` would lose a credential at
+    restart. This private subdirectory has the same lifecycle as agent_home.
+    """
+
+    home = agent_home()
+    home.mkdir(parents=True, exist_ok=True)
+    home.chmod(0o700)
+    login_home = home / "home"
+    if login_home.is_symlink() or (login_home.exists() and not login_home.is_dir()):
+        raise AgentHostError(f"{login_home} must be a real directory")
+    login_home.mkdir(exist_ok=True)
+    login_home.chmod(0o700)
+    return login_home
 
 
 def sandbox_settings(
@@ -476,7 +519,11 @@ def sandbox_settings(
             "boundary; passing an assertion here hides which boundary is load-bearing"
         )
 
-    filesystem: dict[str, object] = {"denyRead": [f"{REAL_HOME}/"]}
+    real_home = require_real_home()
+    owned_agent_home = agent_home()
+    filesystem: dict[str, object] = {
+        "denyRead": [f"{real_home}/", f"{owned_agent_home}/"]
+    }
     if worktree is not None:
         filesystem["allowRead"] = [str(Path(worktree))]
     return {
@@ -488,9 +535,10 @@ def sandbox_settings(
             "filesystem": filesystem,
             "credentials": {
                 "files": [
-                    {"path": str(REAL_HOME / ".ssh"), "mode": "deny"},
-                    {"path": str(REAL_HOME / ".aws"), "mode": "deny"},
-                    {"path": str(REAL_HOME / ".config" / "gh"), "mode": "deny"},
+                    {"path": str(real_home / ".ssh"), "mode": "deny"},
+                    {"path": str(real_home / ".aws"), "mode": "deny"},
+                    {"path": str(real_home / ".config" / "gh"), "mode": "deny"},
+                    {"path": str(owned_agent_home), "mode": "deny"},
                 ],
                 "envVars": [
                     {"name": "GH_TOKEN", "mode": "deny"},
@@ -574,6 +622,7 @@ def write_sandbox_settings(cli: AgentCli) -> Path:
     adapter tightens the worktree via `-C` / `-c` instead.
     """
 
+    require_supported_platform()
     directory = ensure_agent_config_directory(cli)
     path = directory / cli.settings_filename
     path.write_text(rendered_sandbox_settings(cli))
@@ -588,7 +637,7 @@ def sandbox_settings_are_current(cli: AgentCli) -> bool:
     login`, which a developer runs once, and it is then read on every review
     for as long as the login lasts. Anything that changes the rendered policy
     afterwards -- a capability added to the table, a tightened credential deny,
-    a different `REAL_HOME` because the tool moved machines -- leaves a file on
+    a different real home because the tool moved machines -- leaves a file on
     disk that is weaker than what Diffuse intends, with nothing saying so.
 
     That is the same silent-weakening this module's version floor exists to
@@ -690,7 +739,7 @@ def probe_environment(cli: AgentCli) -> dict[str, str]:
     environment = {key: value for key, value in os.environ.items() if key in PROBE_ENVIRONMENT}
     environment.update(
         {
-            "HOME": str(REAL_HOME),
+            "HOME": str(require_real_home()),
             "PATH": PROBE_PATH,
             cli.config_directory_variable: str(agent_config_directory(cli)),
         }
@@ -870,9 +919,28 @@ def login(cli: AgentCli, vendor_arguments: Sequence[str] = ()) -> int:
     directory = ensure_agent_config_directory(cli)
     write_sandbox_settings(cli)
     environment = dict(os.environ)
+    environment["HOME"] = str(agent_login_home())
     environment[cli.config_directory_variable] = str(directory)
     completed = subprocess.run(
         [str(executable), *cli.login_arguments, *vendor_arguments],
+        env=environment,
+        check=False,
+    )
+    return completed.returncode
+
+
+def logout(cli: AgentCli, vendor_arguments: Sequence[str] = ()) -> int:
+    """Drive the vendor's logout against the same owned credential directory."""
+
+    require_supported_platform()
+    refuse_policy_overrides(cli, vendor_arguments)
+    executable = resolve_executable(cli)
+    directory = ensure_agent_config_directory(cli)
+    environment = dict(os.environ)
+    environment["HOME"] = str(agent_login_home())
+    environment[cli.config_directory_variable] = str(directory)
+    completed = subprocess.run(
+        [str(executable), *cli.logout_arguments, *vendor_arguments],
         env=environment,
         check=False,
     )

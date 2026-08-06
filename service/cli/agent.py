@@ -14,6 +14,7 @@ from service.review.agent_host import (
     AGENT_CLIS,
     agent_status,
     login,
+    logout,
     resolve_cli,
     write_sandbox_settings,
 )
@@ -75,6 +76,21 @@ def _status(args: argparse.Namespace) -> None:
     print(json.dumps(agent_status(), indent=2, sort_keys=True))
 
 
+def _logout(args: argparse.Namespace) -> None:
+    vendor_arguments = _vendor_arguments(args)
+    if _help_requested(vendor_arguments):
+        args.logout_parser.print_help()
+        raise SystemExit(0)
+    cli = resolve_cli(args.cli)
+    code = logout(cli, vendor_arguments)
+    if code != 0:
+        invocation = " ".join([cli.executable, *cli.logout_arguments, *vendor_arguments])
+        raise RuntimeError(
+            f"`{invocation}` exited {code}; Diffuse left the credential directory in place "
+            "so you can inspect or retry the vendor logout."
+        )
+
+
 def _write_policy(args: argparse.Namespace) -> None:
     cli = resolve_cli(args.cli)
     print(str(write_sandbox_settings(cli)))
@@ -132,6 +148,24 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     # Stash the parser so `_login` can print Diffuse help when REMAINDER
     # captures `-h` / `--help` after the CLI name.
     login_parser.set_defaults(handler=_login, login_parser=login_parser)
+
+    logout_parser = subparsers.add_parser(
+        "logout",
+        help="Sign out of an agent CLI in the Diffuse-owned credential directory",
+    )
+    logout_parser.add_argument(
+        "cli",
+        choices=RUNTIME_CHOICES,
+        metavar="CLI",
+        help="Which agent CLI to sign out of (claude or codex)",
+    )
+    logout_parser.add_argument(
+        "vendor_arguments",
+        nargs=argparse.REMAINDER,
+        metavar="-- VENDOR_ARGS",
+        help="Arguments forwarded verbatim to the vendor's logout command",
+    )
+    logout_parser.set_defaults(handler=_logout, logout_parser=logout_parser)
 
     status_parser = subparsers.add_parser(
         "status",

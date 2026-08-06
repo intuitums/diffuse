@@ -31,6 +31,7 @@ from service.review.agent_host import (
     agent_config_directory,
     agent_environment,
     agent_home,
+    agent_login_home,
     agent_scratch_directory,
     ensure_agent_config_directory,
     parse_version,
@@ -161,7 +162,7 @@ def test_probe_can_reach_the_macos_keychain(monkeypatch, owned_home):
     contradict the login that had just succeeded.
     """
 
-    monkeypatch.setattr(agent_host, "REAL_HOME", Path("/Users/developer"))
+    monkeypatch.setattr(agent_host, "real_home", lambda: Path("/Users/developer"))
     monkeypatch.setenv("USER", "developer")
     monkeypatch.setenv("LOGNAME", "developer")
 
@@ -222,7 +223,7 @@ def test_auth_probe_runs_under_the_probe_environment(monkeypatch, owned_home, in
     spawned with rather than only the builder that produces it.
     """
 
-    monkeypatch.setattr(agent_host, "REAL_HOME", Path("/Users/developer"))
+    monkeypatch.setattr(agent_host, "real_home", lambda: Path("/Users/developer"))
     monkeypatch.setenv("USER", "developer")
     seen: dict[str, object] = {}
 
@@ -344,21 +345,22 @@ def test_deny_read_names_the_real_home_not_a_tilde(monkeypatch):
     opposite of what the line is for.
     """
 
-    monkeypatch.setattr(agent_host, "REAL_HOME", Path("/Users/developer"))
+    monkeypatch.setattr(agent_host, "real_home", lambda: Path("/Users/developer"))
     sandbox = sandbox_settings()["sandbox"]
 
-    assert sandbox["filesystem"]["denyRead"] == ["/Users/developer/"]
+    assert sandbox["filesystem"]["denyRead"] == ["/Users/developer/", f"{agent_home()}/"]
     denied = {entry["path"] for entry in sandbox["credentials"]["files"]}
     assert denied == {
         "/Users/developer/.ssh",
         "/Users/developer/.aws",
         "/Users/developer/.config/gh",
+        str(agent_home()),
     }
     assert not any("~" in path for path in denied)
 
 
 def test_worktree_is_the_only_readable_path_when_supplied(monkeypatch):
-    monkeypatch.setattr(agent_host, "REAL_HOME", Path("/Users/developer"))
+    monkeypatch.setattr(agent_host, "real_home", lambda: Path("/Users/developer"))
     filesystem = sandbox_settings("/tmp/review-worktree")["sandbox"]["filesystem"]
     assert filesystem["allowRead"] == ["/tmp/review-worktree"]
 
@@ -426,6 +428,30 @@ def test_agent_home_refuses_a_relative_override(monkeypatch):
     monkeypatch.setenv("DIFFUSE_AGENT_HOME", "agent")
     with pytest.raises(AgentHostError, match="absolute path"):
         agent_home()
+
+
+@pytest.mark.parametrize("invalid_home", [Path("/"), Path("/home"), Path("relative")])
+def test_sandbox_refuses_a_root_or_shallow_real_home(monkeypatch, invalid_home):
+    """A deny rule for `/` would mask the worktree and look like a CLI error."""
+
+    monkeypatch.setattr(agent_host, "real_home", lambda: invalid_home)
+    with pytest.raises(AgentHostError, match="real user home"):
+        sandbox_settings()
+
+
+def test_real_home_is_resolved_when_the_policy_is_rendered(monkeypatch):
+    monkeypatch.setenv("HOME", "/Users/first-operator")
+    assert agent_host.require_real_home() == Path("/Users/first-operator")
+
+    monkeypatch.setenv("HOME", "/Users/second-operator")
+    assert agent_host.require_real_home() == Path("/Users/second-operator")
+
+
+def test_login_home_is_private_and_stays_under_agent_home(owned_home):
+    login_home = agent_login_home()
+    assert login_home == owned_home / "home"
+    assert login_home.is_dir()
+    assert login_home.stat().st_mode & 0o777 == 0o700
 
 
 def test_config_directory_is_created_owner_only(owned_home):
@@ -642,7 +668,7 @@ def test_a_policy_that_no_longer_matches_is_not_ready(monkeypatch, owned_home, i
 
     `write_sandbox_settings` runs at login, once, and the file is then read on
     every review for as long as that login lasts. A capability added to the
-    table, a tightened credential deny, or a different REAL_HOME all leave a
+    table, a tightened credential deny, or a different real home all leave a
     weaker boundary on disk than Diffuse intends -- and existence alone cannot
     tell the difference.
     """
@@ -799,15 +825,15 @@ def test_codex_auth_status_exit_nonzero_is_signed_out(monkeypatch, owned_home, t
 # --- Login ----------------------------------------------------------------
 
 
-def test_login_keeps_the_developers_environment_but_moves_the_config_dir(
+def test_login_moves_vendor_state_and_config_under_the_owned_home(
     monkeypatch, owned_home, installed_cli
 ):
     """Sign-in is interactive, so it is deliberately not sandboxed.
 
-    Only the configuration directory is overridden. Stripping `HOME`, `PATH`, and
-    the terminal the way a review does would break Claude's own auth menu
-    (browser OAuth, API key, third-party), and there is no untrusted diff in the
-    room: the developer typed the command.
+    Login keeps the developer's PATH and terminal because it is interactive, but
+    HOME is a private subdirectory of the agent volume. Some CLIs write fallback
+    state outside their explicit config variable; inheriting /home/diffuse would
+    fail under the packaged read-only rootfs.
     """
 
     monkeypatch.setenv("HOME", "/Users/developer")
@@ -824,7 +850,7 @@ def test_login_keeps_the_developers_environment_but_moves_the_config_dir(
 
     assert seen["command"][1:] == ["auth", "login"]
     assert seen["env"]["CLAUDE_CONFIG_DIR"] == str(owned_home / "claude")
-    assert seen["env"]["HOME"] == "/Users/developer"
+    assert seen["env"]["HOME"] == str(owned_home / "home")
     assert seen["env"]["PATH"] == "/usr/local/bin:/usr/bin"
 
 
@@ -870,6 +896,36 @@ def test_failed_login_is_reported(monkeypatch, owned_home, installed_cli):
     monkeypatch.setattr(agent_host.subprocess, "run", lambda *a, **k: _completed(returncode=1))
     with pytest.raises(RuntimeError, match="exited 1"):
         agent_cli._login(_namespace(cli=CLAUDE_CODE_RUNTIME, vendor_arguments=[]))
+
+
+def test_logout_uses_the_same_owned_home_and_config_directory(
+    monkeypatch, owned_home, installed_cli
+):
+    seen: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        seen["env"] = kwargs["env"]
+        return _completed()
+
+    monkeypatch.setattr(agent_host.subprocess, "run", fake_run)
+    assert agent_host.logout(CLAUDE_CODE) == 0
+
+    assert seen["command"][1:] == ["auth", "logout"]
+    assert seen["env"]["CLAUDE_CONFIG_DIR"] == str(owned_home / "claude")
+    assert seen["env"]["HOME"] == str(owned_home / "home")
+
+
+def test_logout_refuses_a_codex_config_override(monkeypatch, owned_home, installed_cli):
+    ran: list[object] = []
+    monkeypatch.setattr(
+        agent_host.subprocess, "run", lambda *a, **k: ran.append(a) or _completed()
+    )
+
+    with pytest.raises(agent_host.AgentHostError, match="write-policy"):
+        agent_host.logout(CODEX, ["--config"])
+
+    assert ran == []
 
 
 def test_vendor_arguments_reach_the_vendor_login_unchanged(
@@ -985,6 +1041,10 @@ def test_cli_routes_agent_commands():
 
     codex_login = parser.parse_args(["agent", "login", "codex"])
     assert codex_login.cli == "codex"
+
+    logout = parser.parse_args(["agent", "logout", "claude"])
+    assert logout.cli == "claude"
+    assert logout.handler is agent_cli._logout
 
 
 def test_cli_refuses_an_unhosted_runtime_at_parse_time(capsys):
