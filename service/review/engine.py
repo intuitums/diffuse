@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -32,15 +31,30 @@ from service.model_providers import model_family, resolve_provider
 from service.models.review import (
     CandidateBatch,
     CandidateFinding,
-    Category,
     DiagramProposal,
     ReviewDiagram,
-    ReviewFinding,
     ReviewReport,
-    SecurityClassification,
-    Severity,
     VerificationBatch,
 )
+from service.review.report_assembly import (
+    all_files_disabled_report,
+    review_confidence_score,
+    reviewable_diff,
+    verified_findings,
+)
+from service.review.report_assembly import (
+    deduplicate_candidates as _deduplicate_candidates,
+)
+from service.review.report_assembly import (
+    diagram_would_help as _diagram_would_help,
+)
+from service.review.report_assembly import (
+    minimum_review_confidence as _minimum_review_confidence,
+)
+from service.review.report_assembly import (
+    review_presentation as _review_presentation,
+)
+from service.review.report_assembly import risk_floor as _risk_floor
 from service.review.request import ReviewRequest
 from service.review.runtimes import (
     LITELLM_RUNTIME,
@@ -77,20 +91,6 @@ PASS_INSTRUCTIONS = {
         "boundaries, and architecture contracts. Report only defects with concrete impact."
     ),
 }
-SEVERITY_ORDER = {
-    Severity.CRITICAL: 0,
-    Severity.HIGH: 1,
-    Severity.MEDIUM: 2,
-    Severity.LOW: 3,
-}
-SEVERITY_RISK_FLOOR = {
-    Severity.CRITICAL: 9.0,
-    Severity.HIGH: 7.0,
-    Severity.MEDIUM: 4.0,
-    Severity.LOW: 2.0,
-}
-MIN_DIAGRAM_CHANGED_LINES = 40
-MIN_MULTI_FILE_DIAGRAM_CHANGED_LINES = 12
 
 
 class StructuredOutputValidationError(RuntimeError):
@@ -104,6 +104,12 @@ class StructuredOutputValidationError(RuntimeError):
 
 class ModelConnectionProbe(BaseModel):
     ready: Literal[True]
+
+
+def minimum_review_confidence() -> float:
+    """Compatibility export for callers predating report-contract extraction."""
+
+    return _minimum_review_confidence()
 
 
 def review_model() -> str:
@@ -208,13 +214,6 @@ def review_max_output_tokens() -> int:
     """
 
     return _positive_int("REVIEW_MAX_OUTPUT_TOKENS", 16000)
-
-
-def minimum_review_confidence() -> float:
-    value = float(os.environ.get("MIN_REVIEW_CONFIDENCE", "0.75"))
-    if not 0 <= value <= 1:
-        raise ValueError("MIN_REVIEW_CONFIDENCE must be between 0 and 1")
-    return value
 
 
 def _model_api_key(model: str) -> str | None:
@@ -771,75 +770,6 @@ def _security_policy_text(policy: ResolvedReviewPolicy | None) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def _normalize_security_candidate(
-    candidate: CandidateFinding,
-    policy: ResolvedReviewPolicy | None,
-) -> CandidateFinding | None:
-    classification = candidate.security_classification
-    if candidate.category is not Category.SECURITY:
-        return candidate if classification is None else None
-    if classification is None:
-        candidate = candidate.model_copy(
-            update={
-                "security_classification": SecurityClassification.VULNERABILITY,
-            }
-        )
-        classification = SecurityClassification.VULNERABILITY
-    if (
-        classification is SecurityClassification.PREVENTATIVE
-        and (
-            policy is None
-            or not policy.allows_preventative_security(candidate.file_path)
-            or candidate.severity in {Severity.CRITICAL, Severity.HIGH}
-        )
-    ):
-        return None
-    return candidate
-
-
-def _deduplicate_candidates(
-    candidates: list[CandidateFinding],
-    parsed_diff: ParsedDiff,
-    policy: ResolvedReviewPolicy | None = None,
-) -> list[CandidateFinding]:
-    selected: dict[tuple[str, str, int, str, str], CandidateFinding] = {}
-    for raw_candidate in candidates:
-        candidate = _normalize_security_candidate(raw_candidate, policy)
-        if candidate is None:
-            continue
-        if policy is not None and not policy.allows_path(candidate.file_path):
-            continue
-        if not parsed_diff.is_commentable(
-            candidate.file_path,
-            candidate.side,
-            candidate.line,
-        ):
-            continue
-        key = (
-            candidate.file_path,
-            candidate.side,
-            candidate.line,
-            candidate.category.value,
-            (
-                candidate.security_classification.value
-                if candidate.security_classification is not None
-                else ""
-            ),
-        )
-        existing = selected.get(key)
-        if existing is None or candidate.confidence > existing.confidence:
-            selected[key] = candidate
-    return sorted(
-        selected.values(),
-        key=lambda finding: (
-            SEVERITY_ORDER[finding.severity],
-            -finding.confidence,
-            finding.file_path,
-            finding.line,
-        ),
-    )[:80]
-
-
 def _verification_prompt(
     candidates: list[CandidateFinding],
     parsed_diff: ParsedDiff,
@@ -879,43 +809,6 @@ def _verification_prompt(
         "<repository_review_policy_json>\n"
         f"{json.dumps(policy_text)}\n"
         "</repository_review_policy_json>"
-    )
-
-
-def _fingerprint(candidate: CandidateFinding, title: str) -> str:
-    identity = "\0".join(
-        (
-            candidate.file_path,
-            candidate.side,
-            str(candidate.line),
-            candidate.category.value,
-            (
-                candidate.security_classification.value
-                if candidate.security_classification is not None
-                else "none"
-            ),
-            title.casefold(),
-        )
-    )
-    return hashlib.sha256(identity.encode()).hexdigest()
-
-
-def _risk_floor(findings: list[ReviewFinding]) -> float:
-    return max(
-        (SEVERITY_RISK_FLOOR[finding.severity] for finding in findings),
-        default=0.0,
-    )
-
-
-def _diagram_would_help(parsed_diff: ParsedDiff) -> bool:
-    changed_lines = sum(
-        entry.marker in {"+", "-"}
-        for file in parsed_diff.files
-        for entry in file.entries
-    )
-    return changed_lines >= MIN_DIAGRAM_CHANGED_LINES or (
-        len(parsed_diff.files) >= 2
-        and changed_lines >= MIN_MULTI_FILE_DIAGRAM_CHANGED_LINES
     )
 
 
@@ -993,78 +886,6 @@ def _generate_diagram(
     return proposal.diagram, prompt_tokens, completion_tokens
 
 
-def review_confidence_score(
-    *,
-    risk_score: float,
-    finding_count: int,
-    diff_file_count: int,
-    reviewed_file_count: int,
-    ignored_file_count: int,
-) -> int:
-    """Map verified review evidence to an explainable 0-5 readiness score."""
-    if not 0 <= risk_score <= 10:
-        raise ValueError("Review risk score must be between 0 and 10")
-    if min(
-        finding_count,
-        diff_file_count,
-        reviewed_file_count,
-        ignored_file_count,
-    ) < 0:
-        raise ValueError("Review confidence inputs cannot be negative")
-    if risk_score == 0:
-        score = 5
-    elif risk_score <= 2.5:
-        score = 4
-    elif risk_score <= 5:
-        score = 3
-    elif risk_score <= 7.5:
-        score = 2
-    elif risk_score < 10:
-        score = 1
-    else:
-        score = 0
-    if finding_count >= 10:
-        score = min(score, 1)
-    elif finding_count >= 6:
-        score = min(score, 2)
-    elif finding_count >= 3:
-        score = min(score, 3)
-    if diff_file_count and reviewed_file_count + ignored_file_count < diff_file_count:
-        score = min(score, 2)
-    if ignored_file_count:
-        score = min(score, 4)
-    if diff_file_count and reviewed_file_count == 0:
-        score = 0
-    return score
-
-
-def _review_presentation(
-    policy: ResolvedReviewPolicy | None,
-) -> dict[str, bool]:
-    if policy is None:
-        return {}
-    summary = policy.summary_section
-    issues = policy.issues_table_section
-    confidence = policy.confidence_score_section
-    return {
-        "summary_section_included": summary.included,
-        "summary_section_collapsible": summary.collapsible,
-        "summary_section_default_open": summary.default_open,
-        "issues_table_section_included": issues.included,
-        "issues_table_section_collapsible": issues.collapsible,
-        "issues_table_section_default_open": issues.default_open,
-        "confidence_score_section_included": confidence.included,
-        "confidence_score_section_collapsible": confidence.collapsible,
-        "confidence_score_section_default_open": confidence.default_open,
-        "footer_included": policy.footer_included,
-        "update_description": policy.update_description,
-        "summary_comment_enabled": policy.summary_comment_enabled,
-        "fix_with_agent_enabled": policy.fix_with_agent_enabled,
-        "diagram_collapsible": policy.diagram_collapsible,
-        "diagram_default_open": policy.diagram_default_open,
-    }
-
-
 def _generate_review_litellm(
     diff_text: str,
     contexts: list[RetrievedContext],
@@ -1077,35 +898,13 @@ def _generate_review_litellm(
     selected_candidate_model = candidate_model or review_model()
     selected_verifier_model = verifier_model or review_verifier_model()
     complete_diff = parse_unified_diff(diff_text)
-    parsed_diff = (
-        ParsedDiff(
-            files=tuple(
-                file
-                for file in complete_diff.files
-                if file.comment_path and policy.allows_path(file.comment_path)
-            )
-        )
-        if policy is not None
-        else complete_diff
-    )
-    ignored_file_count = len(complete_diff.files) - len(parsed_diff.files)
+    parsed_diff, ignored_file_count = reviewable_diff(complete_diff, policy)
     presentation = _review_presentation(policy)
     if complete_diff.files and not parsed_diff.files:
-        return ReviewReport(
-            summary="Review disabled by repository policy for all changed files.",
-            risk_score=0,
-            confidence_score=0,
-            findings=[],
+        return all_files_disabled_report(
             diff_file_count=len(complete_diff.files),
-            reviewed_file_count=0,
             ignored_file_count=ignored_file_count,
-            inline_comments_enabled=False,
-            publication_enabled=False,
-            skip_reason="all_files_disabled",
-            context_chunk_count=0,
-            prompt_tokens=0,
-            completion_tokens=0,
-            **presentation,
+            policy=policy,
         )
     chunks, reviewed_paths = pack_diff_files(
         parsed_diff,
@@ -1117,6 +916,8 @@ def _generate_review_litellm(
     security_policy_text = _security_policy_text(policy)
     prompt_tokens = 0
     completion_tokens = 0
+    verifier_prompt_tokens = 0
+    verifier_completion_tokens = 0
     cache_usage = PromptCacheUsage()
     cacheable_prompt_chars = 0
     raw_candidates: list[CandidateFinding] = []
@@ -1204,6 +1005,10 @@ def _generate_review_litellm(
             context_chunk_count=len(contexts),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            # No candidate survived deduplication, so the verification stage was
+            # never called. That is a measured zero, not an unreported split.
+            verifier_prompt_tokens=0,
+            verifier_completion_tokens=0,
             cache_read_tokens=cache_usage.read_tokens,
             cache_write_tokens=cache_usage.written_tokens,
             **presentation,
@@ -1227,6 +1032,8 @@ def _generate_review_litellm(
     )
     prompt_tokens += input_tokens
     completion_tokens += output_tokens
+    verifier_prompt_tokens += input_tokens
+    verifier_completion_tokens += output_tokens
     if progress_callback:
         progress_callback()
     decisions = {}
@@ -1237,77 +1044,7 @@ def _generate_review_litellm(
         else:
             decisions[decision.candidate_id] = decision
 
-    findings: list[ReviewFinding] = []
-    for index, candidate in enumerate(candidates):
-        candidate_id = f"candidate-{index}"
-        decision = decisions.get(candidate_id)
-        if (
-            policy is not None
-            and candidate.security_classification
-            is SecurityClassification.PREVENTATIVE
-        ):
-            threshold = policy.preventative_security_threshold_for(
-                candidate.file_path
-            )
-        else:
-            threshold = (
-                policy.threshold_for(candidate.file_path)
-                if policy is not None
-                else minimum_review_confidence()
-            )
-        if (
-            decision is None
-            or candidate_id in duplicate_decisions
-            or not decision.keep
-            or min(candidate.confidence, decision.confidence) < threshold
-        ):
-            continue
-        title = decision.revised_title or candidate.title
-        body = decision.revised_body or candidate.body
-        severity = decision.revised_severity or candidate.severity
-        if (
-            candidate.security_classification
-            is SecurityClassification.PREVENTATIVE
-            and severity in {Severity.CRITICAL, Severity.HIGH}
-        ):
-            continue
-        if policy is not None and not policy.allows_severity(
-            candidate.file_path,
-            severity.value,
-        ):
-            continue
-        suggested_fix = (
-            decision.revised_suggested_fix
-            if decision.revised_suggested_fix is not None
-            else candidate.suggested_fix
-        )
-        findings.append(
-            ReviewFinding(
-                fingerprint=_fingerprint(candidate, title),
-                title=title,
-                body=body,
-                severity=severity,
-                category=candidate.category,
-                security_classification=candidate.security_classification,
-                confidence=min(candidate.confidence, decision.confidence),
-                file_path=candidate.file_path,
-                line=candidate.line,
-                side=candidate.side,
-                evidence=candidate.evidence,
-                suggested_fix=suggested_fix,
-            )
-        )
-        if len(findings) == 25:
-            break
-
-    findings.sort(
-        key=lambda finding: (
-            SEVERITY_ORDER[finding.severity],
-            -finding.confidence,
-            finding.file_path,
-            finding.line,
-        )
-    )
+    findings = verified_findings(candidates, decisions, duplicate_decisions, policy)
     risk_score = max(verification.risk_score, _risk_floor(findings)) if findings else 0
     summary = (
         verification.summary
@@ -1334,6 +1071,8 @@ def _generate_review_litellm(
         context_chunk_count=len(contexts),
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
+        verifier_prompt_tokens=verifier_prompt_tokens,
+        verifier_completion_tokens=verifier_completion_tokens,
         cache_read_tokens=cache_usage.read_tokens,
         cache_write_tokens=cache_usage.written_tokens,
         **presentation,

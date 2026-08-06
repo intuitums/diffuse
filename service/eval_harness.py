@@ -32,8 +32,7 @@ import hashlib
 import json
 import sys
 import time
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -53,7 +52,6 @@ from service.evaluation import (
     RunConfiguration,
     score_evaluation,
 )
-from service.models.review import VerificationBatch
 from service.review import engine as review_engine
 
 #: Bumped from v1 because fixture labels now require semantic title text and an
@@ -314,69 +312,6 @@ def load_fixtures(root: Path) -> list[LoadedFixture]:
     return [load_fixture(directory) for directory in directories]
 
 
-@dataclass
-class _TokenSplit:
-    """Candidate- and verifier-stage tokens, observed rather than assumed."""
-
-    candidate_prompt: int = 0
-    candidate_completion: int = 0
-    verifier_prompt: int = 0
-    verifier_completion: int = 0
-
-
-@contextmanager
-def _observe_token_split() -> Iterator[_TokenSplit]:
-    """Attribute each structured call's tokens to the stage that made it.
-
-    `ReviewReport` carries one combined `prompt_tokens`/`completion_tokens`
-    pair, but `EvaluationSuite` prices candidate and verification tokens
-    separately -- deliberately, because a cross-family pair does not share a
-    rate card and folding the two together produces a cost figure that looks
-    authoritative and is not.
-
-    So the split has to be observed. This wraps `_call_structured` and
-    delegates to the real one: it changes no argument, no return value and no
-    control flow, it only records which stage each call belonged to. The
-    verification stage is the single `VerificationBatch` call; the candidate
-    passes and the diagram both run on the candidate model.
-
-    The tidier fix is for `generate_review` to return the split itself. That is
-    a change to `ReviewReport`, which this unit is not scoped to make; see the
-    pull request description.
-    """
-
-    split = _TokenSplit()
-    original = review_engine._call_structured
-
-    def recording(response_model, **kwargs):
-        verifier = response_model is VerificationBatch
-        try:
-            result, prompt_tokens, completion_tokens = original(response_model, **kwargs)
-        except review_engine.StructuredOutputValidationError as error:
-            # The diagram stage swallows this and keeps its token cost, so the
-            # harness has to keep it too or the recorded spend is short.
-            if verifier:
-                split.verifier_prompt += error.prompt_tokens
-                split.verifier_completion += error.completion_tokens
-            else:
-                split.candidate_prompt += error.prompt_tokens
-                split.candidate_completion += error.completion_tokens
-            raise
-        if verifier:
-            split.verifier_prompt += prompt_tokens
-            split.verifier_completion += completion_tokens
-        else:
-            split.candidate_prompt += prompt_tokens
-            split.candidate_completion += completion_tokens
-        return result, prompt_tokens, completion_tokens
-
-    review_engine._call_structured = recording
-    try:
-        yield split
-    finally:
-        review_engine._call_structured = original
-
-
 def run_fixture(
     loaded: LoadedFixture,
     *,
@@ -387,15 +322,23 @@ def run_fixture(
     """Review one fixture on the real call path and return a scoreable case."""
 
     started = time.monotonic()
-    with _observe_token_split() as split:
-        report = review_engine.generate_review(
-            loaded.diff_text,
-            list(loaded.contexts),
-            progress_callback=progress_callback,
-            candidate_model=candidate_model,
-            verifier_model=verifier_model,
-        )
+    report = review_engine.generate_review(
+        loaded.diff_text,
+        list(loaded.contexts),
+        progress_callback=progress_callback,
+        candidate_model=candidate_model,
+        verifier_model=verifier_model,
+    )
     latency_ms = max(0, round((time.monotonic() - started) * 1000))
+    if not report.reports_verifier_usage:
+        # Refuse rather than attribute. The suite prices candidate and verifier
+        # separately because a cross-family pair does not share a rate card, so
+        # folding an unreported split into the candidate's side produces a cost
+        # figure that reads as measured and is not.
+        raise FixtureError(
+            f"{loaded.fixture.case_id}: the review runtime did not report its "
+            "candidate/verifier token split, so this case cannot be priced"
+        )
     observed = [
         ObservedFinding(
             title=finding.title,
@@ -414,10 +357,10 @@ def run_fixture(
         observed=observed,
         addressed_finding_ids=loaded.fixture.addressed_finding_ids,
         latency_ms=latency_ms,
-        prompt_tokens=split.candidate_prompt,
-        completion_tokens=split.candidate_completion,
-        verifier_prompt_tokens=split.verifier_prompt,
-        verifier_completion_tokens=split.verifier_completion,
+        prompt_tokens=report.prompt_tokens - report.verifier_prompt_tokens,
+        completion_tokens=report.completion_tokens - report.verifier_completion_tokens,
+        verifier_prompt_tokens=report.verifier_prompt_tokens,
+        verifier_completion_tokens=report.verifier_completion_tokens,
         fixture_digest=loaded.digest,
     )
 

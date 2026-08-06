@@ -35,6 +35,7 @@ from service.models.review import (
     CandidateBatch,
     CandidateFinding,
     Category,
+    ReviewReport,
     SecurityClassification,
     Severity,
     VerificationBatch,
@@ -394,10 +395,10 @@ def test_run_fixture_emits_the_observed_structure_the_scorer_consumes(
     assert score.false_positives == 0
 
 
-def test_run_fixture_records_candidate_and_verifier_tokens_separately(
+def test_run_fixture_uses_the_reported_candidate_and_verifier_tokens(
     tmp_path, monkeypatch
 ):
-    """`ReviewReport` folds the two together; the suite prices them apart."""
+    """The suite prices the public report contract, not a private call seam."""
 
     monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setenv("REVIEW_PASSES", "security,correctness")
@@ -416,26 +417,41 @@ def test_run_fixture_records_candidate_and_verifier_tokens_separately(
     assert (case.verifier_prompt_tokens, case.verifier_completion_tokens) == (7, 3)
 
 
-def test_the_token_recorder_restores_the_real_call_path(tmp_path, monkeypatch):
+def test_run_fixture_refuses_a_report_with_no_reported_split(tmp_path, monkeypatch):
+    """A runtime that reports no split must not be priced as if it reported zero.
+
+    The candidate and verifier can be different families with different rate
+    cards, so attributing an unmeasured split to the candidate produces a cost
+    the suite would present as measured. Refusing is the only honest option.
+    """
+
     monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
-    monkeypatch.setenv("REVIEW_PASSES", "security")
-    _stub_call(monkeypatch, findings=[_candidate()], keep={"candidate-0"})
-    _write_fixture(tmp_path, "restores")
+    _write_fixture(tmp_path, "unreported-split")
     loaded = eval_harness.load_fixtures(tmp_path)[0]
-    before = review_engine._call_structured
 
-    eval_harness.run_fixture(
-        loaded,
-        candidate_model="openai/gpt-4.1-mini",
-        verifier_model="openai/gpt-4.1-mini",
-    )
+    def silent_runtime(*_args, **_kwargs):
+        return ReviewReport(
+            summary="A runtime that does not report its stages.",
+            risk_score=0,
+            findings=[],
+            diff_file_count=1,
+            reviewed_file_count=1,
+            context_chunk_count=0,
+            prompt_tokens=40,
+            completion_tokens=12,
+        )
 
-    assert review_engine._call_structured is before
+    monkeypatch.setattr(review_engine, "generate_review", silent_runtime)
+
+    with pytest.raises(eval_harness.FixtureError, match="did not report"):
+        eval_harness.run_fixture(
+            loaded,
+            candidate_model="openai/gpt-4.1-mini",
+            verifier_model="anthropic/claude-haiku-4-5",
+        )
 
 
-def test_run_fixture_restores_the_call_path_when_the_review_raises(
-    tmp_path, monkeypatch
-):
+def test_run_fixture_preserves_the_review_exception(tmp_path, monkeypatch):
     monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setenv("REVIEW_PASSES", "security")
 
@@ -452,7 +468,6 @@ def test_run_fixture_restores_the_call_path_when_the_review_raises(
             candidate_model="openai/gpt-4.1-mini",
             verifier_model="openai/gpt-4.1-mini",
         )
-    assert review_engine._call_structured is exploding
 
 
 def test_run_suite_refuses_a_cross_family_pair_without_a_second_rate_card(
