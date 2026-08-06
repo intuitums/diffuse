@@ -124,8 +124,16 @@ services:
       - ${DIFFUSE_ENV_FILE:-.env}
     environment:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
+      # The image rootfs is read-only. Keep vendor fallback state (for example
+      # Claude's legacy ~/.claude.json) beside the Diffuse-owned credential,
+      # not under /home/diffuse or /tmp.
+      DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent
+      HOME: /var/lib/diffuse/agent/home
     volumes:
       - repository_data:/var/lib/diffuse/repositories
+      # Exactly one writer: vendor CLIs refresh their own OAuth credential, so
+      # app intentionally does not mount this volume.
+      - agent_data:/var/lib/diffuse/agent
     tmpfs:
       - /tmp:size=512m,mode=1777
     logging:
@@ -138,3 +146,4 @@ services:
 volumes:
   pgdata:
   repository_data:
+  agent_data:
