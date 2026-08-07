@@ -184,6 +184,12 @@ def test_result_validation_failure_taxonomy_invalid_json():
     assert raised.value.code is ResultValidationFailureCode.INVALID_JSON
 
 
+def test_result_validation_failure_taxonomy_invalid_utf8_bytes():
+    with pytest.raises(ResultValidationError) as raised:
+        validate_agent_session_result(b"\xff")
+    assert raised.value.code is ResultValidationFailureCode.INVALID_JSON
+
+
 def test_result_validation_failure_taxonomy_not_an_object():
     with pytest.raises(ResultValidationError) as raised:
         validate_agent_session_result([])
@@ -220,6 +226,14 @@ def test_result_validation_failure_taxonomy_type_error():
 def test_result_validation_failure_taxonomy_constraint_violation():
     with pytest.raises(ResultValidationError) as raised:
         validate_agent_session_result({**_valid_result(), "risk_score": 99})
+    assert raised.value.code is ResultValidationFailureCode.CONSTRAINT_VIOLATION
+
+
+def test_result_validation_rejects_mismatched_security_classification():
+    payload = _valid_result()
+    payload["findings"][0]["security_classification"] = "vulnerability"
+    with pytest.raises(ResultValidationError) as raised:
+        validate_agent_session_result(payload)
     assert raised.value.code is ResultValidationFailureCode.CONSTRAINT_VIOLATION
 
 

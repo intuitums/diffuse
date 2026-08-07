@@ -12,7 +12,7 @@ import json
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from service.models.review import (
     BodyText,
@@ -71,6 +71,19 @@ class AgentFinding(StrictModel):
     suggested_fix: Annotated[str | None, Field(max_length=6000)] = None
     security_classification: SecurityClassification | None = None
 
+    @model_validator(mode="after")
+    def classification_matches_category(self) -> AgentFinding:
+        """Keep runner findings compatible with Diffuse's review finding contract."""
+
+        if self.category is Category.SECURITY:
+            if self.security_classification is None:
+                self.security_classification = SecurityClassification.VULNERABILITY
+        elif self.security_classification is not None:
+            raise ValueError(
+                "security_classification is allowed only for security findings"
+            )
+        return self
+
 
 class AgentSessionResult(StrictModel):
     """The schema-validated payload an agent-runner must return."""
@@ -126,9 +139,10 @@ def validate_agent_session_result(payload: str | bytes | dict[str, Any]) -> Agen
     if isinstance(payload, (str, bytes)):
         try:
             loaded: Any = json.loads(payload)
-        except json.JSONDecodeError as error:
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            detail = error.msg if isinstance(error, json.JSONDecodeError) else str(error)
             raise ResultValidationError(
-                f"agent session result is not valid JSON: {error.msg}",
+                f"agent session result is not valid JSON: {detail}",
                 code=ResultValidationFailureCode.INVALID_JSON,
             ) from error
     else:

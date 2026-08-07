@@ -39,6 +39,10 @@ def test_agent_volume_has_exactly_one_writer_on_the_runner_skeleton():
         assert "agent_data:/var/lib/diffuse/agent" in runner
         assert "DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent" in runner
         assert "HOME: /var/lib/diffuse/agent/home" in runner
+        assert "HTTP_PROXY: http://egress-proxy:3128" in runner
+        assert "HTTPS_PROXY: http://egress-proxy:3128" in runner
+        assert "egress-proxy:" in runner
+        assert "condition: service_healthy" in runner
         assert "profiles: [\"agent\"]" in runner
         assert "env_file:" not in runner
         assert "DATABASE_URL" not in runner

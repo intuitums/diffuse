@@ -165,9 +165,18 @@ services:
     profiles: ["agent"]
     healthcheck:
       disable: true
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
     environment:
       HOME: /var/lib/diffuse/agent/home
       DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent
+      # The runner has no direct external network. Route vendor login and future
+      # CLI calls through the allowlisted CONNECT proxy instead.
+      HTTP_PROXY: http://egress-proxy:3128
+      HTTPS_PROXY: http://egress-proxy:3128
+      NO_PROXY: app,egress-proxy,localhost,127.0.0.1
+      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_AGENT_MODEL_HOST:-api.anthropic.com}
     volumes:
       - agent_data:/var/lib/diffuse/agent
     tmpfs:
