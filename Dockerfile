@@ -216,11 +216,11 @@ ENV DIFFUSE_SQL_DIR=/opt/diffuse/_internal/sql \
 # 0755 default after the fact, so assert the mode in the build.
 #
 # `agent/home` is created here and not only by `agent_login_home()`. Compose
-# sets HOME to it for the whole worker service, but that helper only runs during
-# `agent login` / `agent logout`, so on a stack that has never signed in to an
-# agent the long-running worker would boot pointing at a directory that does not
-# exist. Both are on the volume path, so Docker seeds them onto a new named
-# volume together.
+# sets HOME to it for the opt-in `agent-runner` service (not the worker), but
+# that helper only runs during `agent login` / `agent logout`, so on a stack
+# that has never signed in to an agent the runner would boot pointing at a
+# directory that does not exist. Both are on the volume path, so Docker seeds
+# them onto a new named volume together.
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \

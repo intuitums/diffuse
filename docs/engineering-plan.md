@@ -7,10 +7,11 @@ right now, in dependency order, and the open questions that gate them.
 Status is recorded per item so a reader picking this up cold knows what is left.
 Delete an item once it has landed and stayed landed for a release.
 
-**Product shape:** Diffuse keeps the review contract and publication on a
-self-hosted server; local `diffuse review` may rent a developer agent CLI.
-See [agent-runtimes.md](agent-runtimes.md). The server path is not scheduled
-for deletion.
+**Product shape:** Diffuse is the control plane; Claude Code / Codex run on an
+isolated agent-runner under a session-capability contract. LiteLLM remains a
+transitional in-process review path until Gate E. See
+[agent-runtimes.md](agent-runtimes.md) and the Linear
+[CLI-native agent operation plan](https://linear.app/intuitum/document/cli-native-agent-operation-plan-6ccec382faef).
 
 ## Open questions that gate the work below
 
@@ -64,18 +65,28 @@ Nothing after this is verifiable without it.
 
 ## Wave 2 — review runtimes and tools
 
-Diffuse owns the contract (`ReviewReport`, policy, publication). Runtimes are
-pluggable; see [agent-runtimes.md](agent-runtimes.md).
+Diffuse owns the contract (`ReviewReport`, policy, publication). The CLI-native
+operation layer is delivered through the Linear plan gates; see
+[agent-runtimes.md](agent-runtimes.md).
 
-- **`ReviewRuntime` seam at `generate_review`.** *Done.* `LiteLLMRuntime` is
-  the only selectable implementation (`REVIEW_RUNTIME=litellm`).
+- **Freeze the CLI-native contract (Gate A).** *Done.* `service.agents.contract`
+  defines runtime / session-capability / structured-result modules; Compose
+  references the `agent-runner` skeleton; worker no longer mounts agent
+  credentials.
+- **`ReviewRuntime` seam at `generate_review`.** *Done (transitional).*
+  `LiteLLMRuntime` is the only selectable implementation
+  (`REVIEW_RUNTIME=litellm`) until Gate C.
 - **Agent CLI host plumbing.** *Done for Claude and Codex.* Config dir, sandbox
   policy, version floor (measured for Claude; not yet set for Codex),
-  `diffuse agent login|status|write-policy`. Adapters that make either a selectable
-  `REVIEW_RUNTIME` are still open.
-- **Claude Code adapter.** *Not started.* Blocked on the baseline. Exit: fixture
-  review completes, `review_tool_calls` has rows, `claude` enters
-  `RUNTIME_NAMES` (not `HOSTED_RUNTIME_NAMES`).
+  `diffuse agent login|status|write-policy`. Execution moves to the isolated
+  agent-runner (Gate B/C), not a worker-spawned CLI.
+- **Read-only agent-runner + capability tools (Gate B).** *Not started.* Long-lived
+  runner image, read-only workspace, session-capability tool endpoint, egress
+  allowlist. Builds on the review-compartment / credential-home work already
+  landed.
+- **Move review execution to CLIs (Gate C).** *Not started.* Replace LiteLLM
+  candidate/diagram/verifier calls with the shared session contract; Diffuse
+  still validates and publishes.
 - **`ReviewRequest` + internal tool provider.** *Done (preflight).* Runtimes
   take a `ReviewRequest` (diff, policy, optional worktree / context plan /
   tools). `ReviewToolProvider.search_code` wraps the same `search_codebase`
@@ -83,19 +94,19 @@ pluggable; see [agent-runtimes.md](agent-runtimes.md).
   builds tools onto the request; the one-shot runtime still ignores them.
 - **Tool-call log.** *Done (schema).* `review_tool_calls` (migration 0011)
   records every call so an agentic investigation stays replayable. The
-  Postgres recorder is ready; the adapter is what must write rows on a real
+  Postgres recorder is ready; the runner path is what must write rows on a real
   review run.
 - **Retrievers as tools.** `search_code` and `ask_codebase` are exposed over MCP
   to external agents but unused by Diffuse's own one-shot runtime, which receives
-  a pre-fused blob capped at 18 chunks and 24,000 characters. The agent-CLI
-  runtime should consume them as tools. *Blocked on the adapter, on the
+  a pre-fused blob capped at 18 chunks and 24,000 characters. The agent-runner
+  capability tools should consume them. *Blocked on Gate B/C, on the
   reproducibility trade-off, and — for measurement — on the retrieval corpus.*
 - **Extend the harness to exercise retrieval.** *Blocked on the retrieval corpus.*
 - **Retire one-shot pass scaffolding** (`REVIEW_PASSES` fan-out, diff chunking,
   pre-fused blob, verifier pass) from being the default story — and from the
-  agent path — only after measured parity on fixtures. Not before.
-- **Codex adapter.** Restores cross-family verification across CLIs. Empirics
-  still unmeasured.
+  agent path — only after Gate C/E cutover. Not before.
+- **Codex on the same runner contract.** Restores cross-family verification
+  across CLIs. Empirics still unmeasured.
 - **Record runtime (+ CLI version) on eval runs and review runs.** Partial:
   `ReviewReport` carries the candidate/verifier token split and `review_runs`
   persists it, so the harness no longer depends on the one-shot
@@ -142,7 +153,8 @@ repositories. That gap has no answer yet.
 
 `service/hosted/` holds the webhook ingress, durable queue, worker, REST/MCP
 HTTP app, and related server modules. They are the fleet/fork-PR path and are
-**not** obsolete. Local `diffuse review` and agent-CLI runtimes sit beside them.
+**not** obsolete. The isolated agent-runner (Gate B) sits beside them; the
+worker remains the control-plane job executor and never hosts a CLI.
 Edges into this package are listed in `service/hosted/__init__.py`.
 
 What the CLI still must absorb over time (without deleting the server): running
