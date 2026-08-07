@@ -440,6 +440,8 @@ jobs:
         working-directory: deploy
         run: |
           sed -e "s|^DIFFUSE_IMAGE=.*|DIFFUSE_IMAGE=diffuse:test|" \
+              -e "s|^DIFFUSE_CLAUDE_RUNNER_IMAGE=.*|DIFFUSE_CLAUDE_RUNNER_IMAGE=diffuse-runner-claude:test|" \
+              -e "s|^DIFFUSE_CODEX_RUNNER_IMAGE=.*|DIFFUSE_CODEX_RUNNER_IMAGE=diffuse-runner-codex:test|" \
               -e "s|^DIFFUSE_ENV_FILE=.*|DIFFUSE_ENV_FILE=ci.env|" \
               -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" \
               -e "s|^DIFFUSE_API_TOKEN=.*|DIFFUSE_API_TOKEN=${DIFFUSE_API_TOKEN}|" \
@@ -539,24 +541,20 @@ jobs:
           # Docker copies the image directory's metadata to a fresh empty named
           # volume; without the pinned uid/gid and 0700 mode this fails only on
           # a customer's first agent sign-in.
-          # Gate A moves the mount from worker to the isolated agent-runner.
-          # Every layout receives the same live, non-root volume check, so the
-          # workflow remains valid during the short transition on main.
+          # Each isolated runner gets its own credential volume, so exercise
+          # both current service profiles rather than falling back to worker.
           credential_check='set -eu
             test "$(id -u):$(id -g)" = "10001:10001"
             test "$(stat -c "%u:%g:%a" /var/lib/diffuse/agent)" = "10001:10001:700"
             test -w /var/lib/diffuse/agent
             test "$HOME" = /var/lib/diffuse/agent/home
             test -d "$HOME" && test -w "$HOME"'
-          if docker compose --env-file ci.env --file compose.yaml --profile agent \
-            config --services | grep -Fxq agent-runner; then
+          for runner in claude codex; do
             docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-              --profile agent run --rm --no-deps --entrypoint /bin/sh agent-runner \
+              --profile "agent-${runner}" run --rm --no-deps --entrypoint /bin/sh \
+              "agent-runner-${runner}" \
               -c "$credential_check"
-          else
-            docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-              exec -T worker /bin/sh -c "$credential_check"
-          fi
+          done
 
       - name: Collect stack logs
         if: always()
