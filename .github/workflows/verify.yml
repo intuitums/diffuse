@@ -456,6 +456,11 @@ jobs:
           fi
           echo "REVIEW_MODEL=${REVIEW_MODEL}" >> ci.env
 
+          # Keep the startup capability check enabled without storing a signing
+          # secret in the repository. This generated CI file is removed in teardown.
+          printf 'DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY=%s\n' \
+            "$(openssl rand -hex 48)" >> ci.env
+
           # Publish the database on an ephemeral host port for this boot only.
           # compose.yaml ships 127.0.0.1:5432 because that is the right default for a
           # customer running one instance on one machine. It is the wrong default for a
