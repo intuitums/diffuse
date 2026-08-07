@@ -145,26 +145,28 @@ services:
     stop_grace_period: 30s
     networks: [backend, control_egress]
 
-  # Gate B skeleton: credential-isolated agent-runner. The worker never mounts
+  # Gate B: long-lived credential-isolated agent-runner. The worker never mounts
   # agent credentials and never executes a CLI. This service is the only Compose
   # writer of `agent_data`. It deliberately has no `env_file` (no database /
   # GitHub / API secrets). Opt-in via `docker compose --profile agent ...`.
-  # Gate B replaces the inert default command with the long-lived runner.
   agent-runner:
     image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
-    restart: "no"
+    restart: unless-stopped
     init: true
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-    # Inert until Gate B: `docker compose --profile agent run --rm agent-runner
-    # agent login …` overrides this command for operator sign-in.
-    command: ["agent", "status"]
+    # `docker compose run … agent login` still overrides this daemon command for
+    # operator sign-in.
+    command: ["agent-runner"]
     profiles: ["agent"]
     healthcheck:
-      disable: true
+      test: ["CMD", "diffuse", "agent-runner-healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
     depends_on:
       egress-proxy:
         condition: service_healthy
@@ -177,6 +179,9 @@ services:
       HTTPS_PROXY: http://egress-proxy:3128
       NO_PROXY: app,egress-proxy,localhost,127.0.0.1
       DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_AGENT_MODEL_HOST:-api.anthropic.com}
+      # The runner can reach only this capability-checked control-plane surface
+      # over the private agent_mcp network. Gate C supplies per-session use.
+      DIFFUSE_AGENT_TOOL_URL: http://app:8000/agent/v1
     volumes:
       - agent_data:/var/lib/diffuse/agent
     tmpfs:

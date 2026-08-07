@@ -23,7 +23,7 @@ BRIDGE_URL_VARIABLE = "DIFFUSE_REVIEW_TOOL_BRIDGE_URL"
 #: The most matches a single `search_code` call may ask the index for. The agent
 #: chooses `limit`, and an untrusted diff is what steers the agent, so the value
 #: is clamped rather than trusted.
-MAX_SEARCH_LIMIT = 50
+MAX_SEARCH_LIMIT = 20
 
 
 class McpBridge(AbstractContextManager["McpBridge"]):

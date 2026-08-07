@@ -63,16 +63,18 @@ Gate C moves review execution onto it.
 Both `docker-compose.yml` and `deploy/compose.yaml` keep an opt-in
 `agent` profile:
 
-- `agent-runner` — credential-isolated CLI host skeleton. Mounts `agent_data`,
-  does **not** load the worker `env_file`, and is not wired to reviews yet.
-  Gate B replaces its inert command with the long-lived runner.
+- `agent-runner` — credential-isolated, long-lived CLI host. It mounts
+  `agent_data`, does **not** load the worker `env_file`, and refuses to become
+  ready unless its compartment assertions pass. It can reach the private,
+  capability-verified `search_code` surface but is not wired to review
+  submission yet.
 - `agent-preflight` / `egress-proxy` — compartment and allowlisted egress checks
   already used by the review-compartment work.
 
 The `worker` and `app` services do not mount agent credentials.
 
 ```bash
-# Sign in through the runner skeleton (not the worker):
+# Sign in through the isolated runner (not the worker):
 docker compose --profile agent run --rm agent-runner agent login claude --console
 docker compose --profile agent run --rm agent-runner agent status
 ```
