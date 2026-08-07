@@ -151,13 +151,8 @@ COPY tests ./tests
 # stage: evals/ for the harness fixtures (test_eval_harness), .env.example and
 # deploy/env.example for the documented-configuration checks
 # (test_env_documentation, test_deploy_env_example), both Compose profiles for
-<<<<<<< HEAD
-# the agent-volume assertion, and the workflow definitions for release-provenance
-# assertions.
-=======
 # the compartment-boundary assertions, and the workflow definitions for the
 # release-provenance assertions.
->>>>>>> 7af2b1e (Stop the compartment gating a stack that cannot use it yet)
 COPY evals ./evals
 COPY deploy ./deploy
 COPY .env.example ./.env.example
