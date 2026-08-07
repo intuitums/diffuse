@@ -9,7 +9,7 @@ first pull request. These pages are the reference behind it.
 | [architecture.md](architecture.md) | Target architecture, component boundaries, data model, durable workflow model, and security invariants. Says explicitly where it describes a target rather than the current state. |
 | [roadmap.md](roadmap.md) | Delivery phases, ordered by dependency and risk, with the exit condition each phase has to pass. |
 | [engineering-plan.md](engineering-plan.md) | The near-term work in dependency order, with per-item status and the open questions that gate it. Shorter-lived than the roadmap. |
-| [agent-runtimes.md](agent-runtimes.md) | Review runtimes: API one-shot vs local agent CLIs, what `litellm` means, and what has actually landed. |
+| [agent-runtimes.md](agent-runtimes.md) | CLI-native runtime contract: control plane + isolated agent-runner, session capability / result modules, and the transitional LiteLLM path. |
 | [configuration.md](configuration.md) | Repository review policy: every `.diffuse/` file, field, default, and inheritance rule. |
 | [deployment.md](deployment.md) | Single-server operation: host preparation, secrets, backups and restore drills, upgrades, rollback, and the operational checklist. |
 | [cli.md](cli.md) | The `diffuse` command: every subcommand, the local-review flags and output modes, and the stable exit-code table. |
