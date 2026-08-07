@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
 import json
 import logging
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, closing
+from contextlib import asynccontextmanager, closing, contextmanager
 from functools import partial
 
 import anyio
+import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -81,6 +81,19 @@ ACCEPTED_ACTIONS = {
 MAX_WEBHOOK_BODY_BYTES = 1_000_000
 
 
+class _EmbeddedToolServer(uvicorn.Server):
+    """A Uvicorn server embedded in the API process without owning signals.
+
+    The public API's Uvicorn instance owns the process signal handlers.  Letting
+    this private listener install its own handler would replace the API's
+    SIGTERM handler, so Docker shutdown would stop only the listener.
+    """
+
+    @contextmanager
+    def capture_signals(self):
+        yield
+
+
 async def _read_bounded_webhook_body(request: Request) -> bytes:
     """Reject oversized webhook bodies before buffering the full payload."""
     content_length = request.headers.get("content-length")
@@ -144,10 +157,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     tool_server = None
     tool_task = None
     if os.environ.get(CAPABILITY_SIGNING_KEY_VARIABLE, "").strip():
-        import uvicorn
-
         session_capability_signing_key()
-        tool_server = uvicorn.Server(
+        tool_server = _EmbeddedToolServer(
             uvicorn.Config(
                 create_tool_app(),
                 host="0.0.0.0",
@@ -156,7 +167,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 access_log=False,
             )
         )
-        tool_server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
         tool_task = asyncio.create_task(tool_server.serve())
 
     try:

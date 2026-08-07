@@ -3,6 +3,7 @@ import threading
 
 import httpx
 import pytest
+import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.auth.provider import AccessToken
@@ -20,6 +21,19 @@ from service.review import trigger as review_trigger
 from service.scm import PullRequestEvent
 
 API_TOKEN = "m" * 48
+
+
+def test_embedded_tool_server_does_not_take_process_signal_ownership(monkeypatch):
+    """The outer API server must remain responsible for SIGTERM and SIGINT."""
+
+    def parent_signal_handler(*_args, **_kwargs):
+        raise AssertionError("the embedded listener must not install signal handlers")
+
+    monkeypatch.setattr(uvicorn.Server, "capture_signals", parent_signal_handler)
+    server = webhook_server._EmbeddedToolServer(uvicorn.Config(app))
+
+    with server.capture_signals():
+        pass
 
 
 @pytest.mark.anyio
