@@ -16,6 +16,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 
 from indexer.store import get_conn
+from service.agents.tool_api import router as agent_tool_router
 from service.github.api import (
     fetch_manual_pull_request_event,
     normalize_manual_review_request,
@@ -135,6 +136,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Diffuse", version="0.1.0", lifespan=lifespan)
 app.include_router(rest_api_router)
 app.include_router(oauth_router)
+app.include_router(agent_tool_router)
 app.add_exception_handler(RestApiError, rest_api_error_handler)
 
 
