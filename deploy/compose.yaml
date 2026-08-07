@@ -156,7 +156,11 @@ services:
   # Isolated agent-runner skeleton (Gate B / DEV-330). Built from
   # Dockerfile.agent-runner, not the control-plane release image. No env_file.
   agent-runner:
-    image: ${DIFFUSE_AGENT_RUNNER_IMAGE:?Set DIFFUSE_AGENT_RUNNER_IMAGE to the agent-runner digest in .env}
+    # Profiles are applied after Compose interpolates the whole file. Keep the
+    # normal stack backward-compatible with pre-Gate-B .env files; operators
+    # enabling this profile must set DIFFUSE_AGENT_RUNNER_IMAGE to a release
+    # digest instead of relying on this development-only fallback.
+    image: ${DIFFUSE_AGENT_RUNNER_IMAGE:-diffuse-agent-runner:local}
     restart: "no"
     init: true
     user: "10001:10001"

@@ -48,6 +48,7 @@ DEFAULT_MAX_REQUESTS = 64
 MAX_TTL_SECONDS = 60 * 60
 MAX_MAX_REQUESTS = 512
 _TOKEN_SEPARATOR = "."
+MAX_CAPABILITY_ID_LENGTH = 128
 
 
 class CapabilityError(ValueError):
@@ -116,6 +117,22 @@ def _validate_operations(operations: frozenset[str] | set[str] | tuple[str, ...]
     return selected
 
 
+def _validate_capability_id(capability_id: str) -> str:
+    """Keep the externally supplied token identity safe for its wire format."""
+
+    if (
+        not isinstance(capability_id, str)
+        or not capability_id
+        or len(capability_id) > MAX_CAPABILITY_ID_LENGTH
+        or _TOKEN_SEPARATOR in capability_id
+    ):
+        raise CapabilityError(
+            "capability_id must be a non-empty string of at most "
+            f"{MAX_CAPABILITY_ID_LENGTH} characters and must not contain {_TOKEN_SEPARATOR!r}"
+        )
+    return capability_id
+
+
 def _payload_bytes(capability: SessionCapability) -> bytes:
     body = {
         "capability_id": capability.capability_id,
@@ -182,8 +199,11 @@ def mint_session_capability(
         )
 
     moment = _require_utc(now or datetime.now(UTC), field="now")
+    selected_capability_id = _validate_capability_id(
+        secrets.token_urlsafe(16) if capability_id is None else capability_id
+    )
     capability = SessionCapability(
-        capability_id=capability_id or secrets.token_urlsafe(16),
+        capability_id=selected_capability_id,
         runtime=cast(AgentRuntimeName, runtime),
         profile=cast(AgentProfileName, profile),
         repository_id=repository_id,
@@ -239,8 +259,11 @@ def verify_session_capability(
     try:
         expires_at = datetime.fromisoformat(str(body["expires_at"]))
         operations = _validate_operations(body["operations"])
+        raw_capability_id = body["capability_id"]
+        if not isinstance(raw_capability_id, str):
+            raise TypeError("capability_id must be a string")
         capability = SessionCapability(
-            capability_id=str(body["capability_id"]),
+            capability_id=_validate_capability_id(raw_capability_id),
             runtime=cast(AgentRuntimeName, str(body["runtime"])),
             profile=cast(AgentProfileName, str(body["profile"])),
             repository_id=int(body["repository_id"]),

@@ -91,6 +91,11 @@ def test_unknown_operation_cannot_be_minted():
         _mint(operations=("search_code", "shell_exec"))
 
 
+def test_capability_id_cannot_break_the_token_separator():
+    with pytest.raises(CapabilityError, match="must not contain"):
+        _mint(capability_id="review.42")
+
+
 def test_request_budget_exhausts():
     minted = _mint(max_requests=2)
     budget = CapabilityRequestBudget(minted.capability)

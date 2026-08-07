@@ -282,6 +282,11 @@ docker compose run --rm worker agent status
 Build and smoke the agent-runner image (opt-in profile; does not publish
 reviews yet):
 
+For a release deployment, set `DIFFUSE_AGENT_RUNNER_IMAGE` to the published
+digest before enabling the `agent` profile. It is intentionally optional for a
+normal app/worker deployment, so existing `.env` files remain valid while the
+profile is unused.
+
 ```bash
 docker compose --profile agent build agent-runner
 docker compose --profile agent run --rm agent-runner status

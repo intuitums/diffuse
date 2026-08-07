@@ -101,3 +101,13 @@ def test_agent_runner_service_has_no_control_plane_secrets_or_env_file():
         assert "user: \"10001:10001\"" in runner
         # Transitional: credential volume still sole-written by worker.
         assert "agent_data:" not in runner
+
+
+def test_agent_runner_image_does_not_make_the_opt_in_profile_required():
+    """Compose interpolates disabled-profile services before filtering them."""
+
+    release_compose = _service_block(
+        (REPOSITORY_ROOT / "deploy" / "compose.yaml").read_text(), "agent-runner"
+    )
+    assert "${DIFFUSE_AGENT_RUNNER_IMAGE:?" not in release_compose
+    assert "${DIFFUSE_AGENT_RUNNER_IMAGE:-diffuse-agent-runner:local}" in release_compose
