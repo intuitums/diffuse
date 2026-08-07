@@ -520,7 +520,8 @@ jobs:
           if docker compose --env-file ci.env --file compose.yaml --profile agent \
             config --services | grep -Fxq agent-runner; then
             docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-              --profile agent run --rm --no-deps agent-runner /bin/sh -c "$credential_check"
+              --profile agent run --rm --no-deps --entrypoint /bin/sh agent-runner \
+              -c "$credential_check"
           else
             docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
               exec -T worker /bin/sh -c "$credential_check"
