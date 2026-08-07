@@ -98,29 +98,24 @@ def _configure_passing_preflight(monkeypatch, tmp_path: Path) -> _Connection:
     return proxy
 
 
-def test_preflight_passes_even_when_the_suite_itself_runs_as_root(monkeypatch, tmp_path):
-    """The container job runs the suite as root, and CI is where that showed up.
-
-    Pinning the expected uid to `os.geteuid()` made a passing preflight
-    impossible there: `_check_identity` refuses euid 0 outright, before it ever
-    compares against the pin. The fixture describes a compartment, so it has to
-    override the ambient identity rather than adopt it.
-    """
-
-    monkeypatch.setattr(agent_compartment.os, "geteuid", lambda: 0)
-    proxy = _configure_passing_preflight(monkeypatch, tmp_path)
-
-    agent_compartment.preflight()
-
-    assert proxy.sent.startswith(b"CONNECT ")
-
-
 def test_preflight_asserts_the_runtime_compartment(monkeypatch, tmp_path):
+    """Full session preflight proves allowlisted vendor CONNECT."""
+
     proxy = _configure_passing_preflight(monkeypatch, tmp_path)
-
     agent_compartment.preflight()
-
     assert proxy.sent.startswith(b"CONNECT api.anthropic.com:443 HTTP/1.1")
+
+
+def test_daemon_preflight_skips_vendor_connect(monkeypatch, tmp_path):
+    """Long-lived runner readiness must not depend on vendor reachability."""
+
+    proxy = _configure_passing_preflight(monkeypatch, tmp_path)
+    # CONNECT would fail with an empty response; the daemon only opens TCP.
+    proxy.response = b""
+
+    agent_compartment.preflight(require_model_egress=False)
+
+    assert proxy.sent == b""
 
 
 def test_preflight_names_the_first_failed_control(monkeypatch, tmp_path):

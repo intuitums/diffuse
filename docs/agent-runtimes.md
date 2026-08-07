@@ -65,9 +65,10 @@ Both `docker-compose.yml` and `deploy/compose.yaml` keep an opt-in
 
 - `agent-runner` — credential-isolated, long-lived CLI host. It mounts
   `agent_data`, does **not** load the worker `env_file`, and refuses to become
-  ready unless its compartment assertions pass. It can reach the private,
-  capability-verified `search_code` surface but is not wired to review
-  submission yet.
+  ready unless its compartment boundary assertions pass (without requiring a
+  live vendor CONNECT). It reaches `search_code` on the app's unpublished
+  internal tool listener (`app:8011`) over `agent_mcp`, authenticated by a
+  short-lived signed capability. Review submission remains Gate C.
 - `agent-preflight` / `egress-proxy` — compartment and allowlisted egress checks
   already used by the review-compartment work.
 

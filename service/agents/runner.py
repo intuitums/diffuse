@@ -2,9 +2,10 @@
 
 Gate B intentionally exposes no review-execution route: the runner is brought
 up and hardened independently before Gate C lets the worker submit a CLI
-review.  Its lifespan runs the same compartment assertions as a real session,
-so a healthy process is evidence of the actual container boundary rather than
-only a Compose declaration.
+review.  Its lifespan asserts the container boundary (identity, credentials,
+isolation, proxy wiring) without requiring a live vendor CONNECT, so an
+upstream model outage cannot crash-loop the daemon. Session start still runs
+the full compartment preflight.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from service.review.agent_compartment import preflight
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    preflight()
+    preflight(require_model_egress=False)
     yield
 
 

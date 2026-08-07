@@ -5,15 +5,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from mcp.server.fastmcp import FastMCP
 
 from service.agents.mcp_bridge import BRIDGE_URL_VARIABLE, MAX_SEARCH_LIMIT
+from service.agents.tool_api import DEFAULT_AGENT_TOOL_PORT
 from service.review.tools import ReviewToolProvider
 
 AGENT_TOOL_URL_VARIABLE = "DIFFUSE_AGENT_TOOL_URL"
 SESSION_CAPABILITY_VARIABLE = "DIFFUSE_AGENT_SESSION_CAPABILITY"
+_ALLOWED_TOOL_HOSTS = frozenset({"app", "127.0.0.1", "localhost"})
 
 
 def create_tool_server(provider: ReviewToolProvider) -> FastMCP:
@@ -72,6 +75,29 @@ def create_bridge_tool_server(bridge_url: str) -> FastMCP:
     return server
 
 
+def validate_agent_tool_url(tool_url: str) -> str:
+    """Refuse anything that is not the control-plane's internal agent-tool URL."""
+
+    parsed = urlparse(tool_url)
+    path = parsed.path.rstrip("/") or "/"
+    port = parsed.port or (80 if parsed.scheme == "http" else None)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in _ALLOWED_TOOL_HOSTS
+        or port != DEFAULT_AGENT_TOOL_PORT
+        or path != "/agent/v1"
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            f"{AGENT_TOOL_URL_VARIABLE} must be an http URL to app:"
+            f"{DEFAULT_AGENT_TOOL_PORT}/agent/v1 on the private agent network"
+        )
+    return f"{parsed.scheme}://{parsed.hostname}:{port}/agent/v1"
+
+
 def create_capability_tool_server(tool_url: str, capability: str) -> FastMCP:
     """Create the stdio child for a runner session's remote capability tools.
 
@@ -82,8 +108,8 @@ def create_capability_tool_server(tool_url: str, capability: str) -> FastMCP:
     every call; this child is deliberately just a transport adapter.
     """
 
+    endpoint = f"{validate_agent_tool_url(tool_url)}/tools/search-code"
     server = FastMCP("Diffuse review tools")
-    endpoint = f"{tool_url.rstrip('/')}/tools/search-code"
 
     @server.tool()
     def search_code(
@@ -108,7 +134,7 @@ def create_capability_tool_server(tool_url: str, capability: str) -> FastMCP:
             },
             method="POST",
         )
-        with urlopen(request, timeout=30) as response:  # noqa: S310 - configured private runner URL
+        with urlopen(request, timeout=30) as response:  # noqa: S310 - allowlisted private URL
             result = json.loads(response.read())
         if not isinstance(result, dict):
             raise RuntimeError("Diffuse capability tool endpoint returned a non-object result")
@@ -119,8 +145,9 @@ def create_capability_tool_server(tool_url: str, capability: str) -> FastMCP:
 
 def main() -> None:
     argparse.ArgumentParser(description="Diffuse review-tool MCP bridge").parse_args()
-    # Read from the environment, not a flag: the URL embeds the session's bearer
-    # token, and a flag would put that token in `ps` output for every local user.
+    # Credentials travel in the environment, never argv (`ps` would otherwise
+    # expose them): the loopback bridge URL embeds a bearer path token, and the
+    # capability transport carries DIFFUSE_AGENT_SESSION_CAPABILITY separately.
     bridge_url = os.environ.get(BRIDGE_URL_VARIABLE)
     if bridge_url:
         create_bridge_tool_server(bridge_url).run(transport="stdio")

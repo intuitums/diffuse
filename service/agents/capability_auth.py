@@ -26,3 +26,16 @@ def session_capability_signing_key() -> bytes:
             f"{MIN_CAPABILITY_SIGNING_KEY_BYTES} bytes"
         )
     return key
+
+
+def probe_session_capability_signing_key() -> None:
+    """Startup probe: absent is fine until agent tools are enabled; weak is not.
+
+    When the variable is unset the internal agent-tool listener stays down. When
+    it is set, refuse to boot with a short key rather than minting forgeable
+    capabilities after the process is already serving traffic.
+    """
+
+    if not os.environ.get(CAPABILITY_SIGNING_KEY_VARIABLE, "").strip():
+        return
+    session_capability_signing_key()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -16,7 +17,11 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 
 from indexer.store import get_conn
-from service.agents.tool_api import router as agent_tool_router
+from service.agents.capability_auth import (
+    CAPABILITY_SIGNING_KEY_VARIABLE,
+    session_capability_signing_key,
+)
+from service.agents.tool_api import agent_tool_port, create_tool_app
 from service.github.api import (
     fetch_manual_pull_request_event,
     normalize_manual_review_request,
@@ -129,14 +134,39 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # worker, the CLI, and `diffuse model`.
     await anyio.to_thread.run_sync(validate_worker_configuration)
     await anyio.to_thread.run_sync(_verify_database_schema)
-    async with diffuse_mcp.session_manager.run():
-        yield
+
+    # Agent tools listen on a separate, unpublished port reachable only via the
+    # internal agent_mcp network — never on the public API port.
+    tool_server = None
+    tool_task = None
+    if os.environ.get(CAPABILITY_SIGNING_KEY_VARIABLE, "").strip():
+        import uvicorn
+
+        session_capability_signing_key()
+        tool_server = uvicorn.Server(
+            uvicorn.Config(
+                create_tool_app(),
+                host="0.0.0.0",
+                port=agent_tool_port(),
+                log_level="warning",
+                access_log=False,
+            )
+        )
+        tool_task = asyncio.create_task(tool_server.serve())
+
+    try:
+        async with diffuse_mcp.session_manager.run():
+            yield
+    finally:
+        if tool_server is not None:
+            tool_server.should_exit = True
+        if tool_task is not None:
+            await tool_task
 
 
 app = FastAPI(title="Diffuse", version="0.1.0", lifespan=lifespan)
 app.include_router(rest_api_router)
 app.include_router(oauth_router)
-app.include_router(agent_tool_router)
 app.add_exception_handler(RestApiError, rest_api_error_handler)
 
 

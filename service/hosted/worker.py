@@ -36,6 +36,7 @@ from retriever.retrieve import (
     retrieve_context_from_plan,
     retrieve_context_from_snapshot,
 )
+from service.agents.capability_auth import probe_session_capability_signing_key
 from service.approval_publication import (
     ApprovalNotCurrentError,
     PublishedApproval,
@@ -2557,6 +2558,9 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("GITHUB_API_URL", partial(_probe_base_url, "GITHUB_API_URL", "https://api.github.com")),
     ("GITHUB_WEB_URL", partial(_probe_base_url, "GITHUB_WEB_URL", "https://github.com")),
     ("GitHub App authentication", validate_app_configuration),
+    # Optional until an operator enables agent sessions: unset keeps the
+    # internal tool listener down; a short value must not reach minting.
+    ("DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY", probe_session_capability_signing_key),
 )
 
 

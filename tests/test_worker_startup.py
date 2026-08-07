@@ -80,3 +80,11 @@ def test_unset_review_model_stops_the_worker_with_an_actionable_error(monkeypatc
     # A refusal that merely says "unset" leaves the operator guessing at the
     # format; it has to show one.
     assert "anthropic/claude-sonnet-5" in message
+
+
+def test_weak_capability_signing_key_fails_startup(monkeypatch):
+    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY", "too-short")
+
+    with pytest.raises(ValueError, match="DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY"):
+        worker.validate_worker_configuration()

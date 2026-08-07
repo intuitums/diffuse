@@ -46,7 +46,7 @@ def test_agent_volume_has_exactly_one_writer_on_the_runner_skeleton():
         assert "profiles: [\"agent\"]" in runner
         assert 'command: ["agent-runner"]' in runner
         assert 'test: ["CMD", "diffuse", "agent-runner-healthcheck"]' in runner
-        assert "DIFFUSE_AGENT_TOOL_URL: http://app:8000/agent/v1" in runner
+        assert "DIFFUSE_AGENT_TOOL_URL: http://app:8011/agent/v1" in runner
         assert "env_file:" not in runner
         assert "DATABASE_URL" not in runner
         assert text.count("agent_data:/var/lib/diffuse/agent") == 1

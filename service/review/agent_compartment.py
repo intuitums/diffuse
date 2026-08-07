@@ -172,6 +172,16 @@ def _check_proxy_environment() -> None:
         raise AgentCompartmentError("NO_PROXY must include app and egress-proxy")
 
 
+def _check_proxy_is_reachable() -> None:
+    """TCP reachability only — does not require the vendor API to answer."""
+
+    try:
+        with _connect(EGRESS_PROXY_HOST, EGRESS_PROXY_PORT):
+            pass
+    except OSError as error:
+        raise AgentCompartmentError("review compartment cannot reach its egress proxy") from error
+
+
 def _check_proxy_connects() -> None:
     request = (
         f"CONNECT {MODEL_API_HOST}:{MODEL_API_PORT} HTTP/1.1\r\n"
@@ -187,7 +197,9 @@ def _check_proxy_connects() -> None:
         raise AgentCompartmentError("review compartment egress proxy refused the model API CONNECT")
 
 
-CHECKS: tuple[CompartmentCheck, ...] = (
+# Boundary checks for the long-lived runner daemon. Vendor CONNECT stays off this
+# list so an upstream model outage cannot crash-loop the compartment process.
+DAEMON_CHECKS: tuple[CompartmentCheck, ...] = (
     CompartmentCheck("non-root pinned uid", _check_identity),
     CompartmentCheck("read-only root filesystem", _check_read_only_root),
     CompartmentCheck("credential-free environment", _check_no_credentials),
@@ -196,14 +208,27 @@ CHECKS: tuple[CompartmentCheck, ...] = (
     CompartmentCheck("database isolation", _check_database_is_unreachable),
     CompartmentCheck("direct egress denial", _check_direct_egress_is_denied),
     CompartmentCheck("explicit proxy environment", _check_proxy_environment),
+    CompartmentCheck("egress proxy reachable", _check_proxy_is_reachable),
+)
+
+# Full session / one-shot preflight: prove the allowlisted vendor CONNECT works.
+CHECKS: tuple[CompartmentCheck, ...] = (
+    *DAEMON_CHECKS[:-1],
     CompartmentCheck("allowlisted proxy egress", _check_proxy_connects),
 )
 
 
-def preflight() -> None:
-    """Fail closed with the first violated, named compartment property."""
+def preflight(*, require_model_egress: bool = True) -> None:
+    """Fail closed with the first violated, named compartment property.
 
-    for check in CHECKS:
+    The long-lived agent-runner passes ``require_model_egress=False`` so its
+    readiness tracks the container boundary, not vendor reachability. Session
+    start and the one-shot ``agent-preflight`` service keep the full CONNECT
+    proof.
+    """
+
+    selected = CHECKS if require_model_egress else DAEMON_CHECKS
+    for check in selected:
         try:
             check.verify()
         except AgentCompartmentError as error:
@@ -215,7 +240,7 @@ def preflight() -> None:
 def run_preflight() -> None:
     """Entrypoint used by the one-shot Compose preflight service."""
 
-    preflight()
+    preflight(require_model_egress=True)
     print("review compartment preflight passed", file=sys.stderr)
 
 

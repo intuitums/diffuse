@@ -194,9 +194,9 @@ services:
       HTTPS_PROXY: http://egress-proxy:3128
       NO_PROXY: app,egress-proxy,localhost,127.0.0.1
       DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_AGENT_MODEL_HOST:-api.anthropic.com}
-      # The runner can reach only this capability-checked control-plane surface
-      # over the private agent_mcp network. Gate C supplies per-session use.
-      DIFFUSE_AGENT_TOOL_URL: http://app:8000/agent/v1
+      # Internal agent-tool listener on app:8011 (not the published :8000 API).
+      # Gate C supplies per-session capabilities; this URL is allowlisted.
+      DIFFUSE_AGENT_TOOL_URL: http://app:8011/agent/v1
     volumes:
       - agent_data:/var/lib/diffuse/agent
     tmpfs:

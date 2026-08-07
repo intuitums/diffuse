@@ -265,11 +265,12 @@ CLI — see [agent-runtimes.md](agent-runtimes.md). Vendor CLIs refresh an OAuth
 credential in place, so exactly one writer is required.
 
 The API and worker also need a separate, high-entropy
-`DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY` before a runner session can use the
-private capability-tool surface. The runner never receives that key: it only
-presents a short-lived signed capability. Generate it with
-`openssl rand -base64 48` and keep it in `.env`, alongside—not in—the
-`agent_data` volume.
+`DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY` before the unpublished agent-tool
+listener (`app:8011`, reachable only on `agent_mcp`) will start. The runner
+never receives that key: it only presents a short-lived signed capability.
+Generate it with `openssl rand -base64 48` and keep it in `.env`,
+alongside—not in—the `agent_data` volume. A short key fails boot; an unset key
+leaves the listener down.
 
 Sign in through the long-lived runner (the command overrides its daemon entry
 point for this one operator action):
