@@ -25,12 +25,12 @@ that gap with repository-aware review grounded in the exact code being changed
 and the wider system around it.
 
 Diffuse owns the review contract — policy, structured findings, lineage, and
-publication — and the codebase index behind it. A self-hosted server reviews
-pull requests on your infrastructure via a model API; local `diffuse review`
-uses that same contract today and is built to rent a developer-installed agent
-CLI (Claude Code or Codex) tomorrow. Graph and lexical retrieval, inspectable
-team feedback, cross-repository context, and the same intelligence over CLI,
-REST, and MCP stay under your control.
+publication — and the codebase index behind it. A self-hosted control plane
+reviews pull requests on your infrastructure; today that uses a transitional
+model-API path, and the destination is an isolated agent-runner for Claude Code
+or Codex. Graph and lexical retrieval, inspectable team feedback,
+cross-repository context, and the same intelligence over CLI, REST, and MCP stay
+under your control.
 
 You run all of it inside infrastructure you control. There is no Diffuse-hosted
 cloud control plane and no Diffuse account to create.

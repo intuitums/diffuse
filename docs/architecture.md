@@ -10,9 +10,11 @@ forcing small installations to operate a distributed system.
 The review **contract** is native to Diffuse — `ReviewReport`, policy, lineage,
 evidence, conversation and learning, and observability share one coherent data
 model. How a report is *produced* is a pluggable review runtime: today a
-one-shot model-API path; for local `diffuse review`, optionally a developer
-agent CLI once adapters land. Review generation and SCM publication are
-separate durable stages. See [agent-runtimes.md](agent-runtimes.md).
+transitional one-shot model-API path (`litellm`); the destination is an
+isolated agent-runner executing Claude Code or Codex under a short-lived
+session capability. The worker never executes a CLI or mounts agent credentials
+in that target architecture. Review generation and SCM publication are separate
+durable stages. See [agent-runtimes.md](agent-runtimes.md).
 
 PostgreSQL schema changes are also durable workflow boundaries. Version 1 is a
 frozen packaged baseline; subsequent migrations are consecutive append-only
@@ -44,13 +46,14 @@ GitHub / CLI / MCP / Web app
                      |
            PostgreSQL / cache / object store
                      |
-                   model gateway / agent host
+              isolated agent-runner (CLI)
 ```
 
 > **Target, not current state.** The web app, the source-execution validator and
-> its sandbox, agent-CLI review adapters, and the cache and object store are not
-> implemented. The one-shot API review runtime and Claude Code host plumbing
-> exist; the sections below say how much.
+> its sandbox, the long-lived agent-runner review path, and the cache and object
+> store are not implemented. The transitional one-shot API review runtime,
+> Claude/Codex host plumbing, review-compartment skeleton, and Gate A session
+> capability / result contract exist; the sections below say how much.
 
 ## Deployment and ownership boundary
 

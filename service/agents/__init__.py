@@ -1,15 +1,7 @@
-"""CLI-native agent session contracts and offline-testable primitives.
+"""Agent operation primitives and the shared CLI-native contract.
 
-Target architecture: the control plane mints a short-lived capability; an
-isolated agent-runner executes Claude Code or Codex; Diffuse validates
-`AgentSessionResult` and alone publishes.
-
-Landed here today:
-
-* `capability` / `result` — Gate A contracts shared by worker and runner
-* `session` / `claude_session` / `profiles` / `replay` — subprocess primitive
-  with record/replay (DEV-329); still has no production callers
-
-Do not add LiteLLM call sites in this package. Do not spawn a CLI from the
-worker — production execution belongs to the dedicated runner (Gate B/C).
+`service.agents.contract` is the Gate A runtime/session/capability/result
+surface shared by the control plane and the isolated agent-runner. Session
+subprocess helpers in this package remain offline-testable and have no
+production review callers yet; Gate B/C wire the runner onto the contract.
 """

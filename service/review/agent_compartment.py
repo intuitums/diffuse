@@ -53,7 +53,8 @@ MODEL_API_PORT = 443
 PROXY_URL = f"http://{EGRESS_PROXY_HOST}:{EGRESS_PROXY_PORT}"
 NO_PROXY_VARIABLE = "NO_PROXY"
 NETWORK_PROBE_TIMEOUT_SECONDS = 2.0
-# DEV-332 must use this upper bound when it drives a session.  The container
+# The isolated agent-runner (Gate B/C) must use this upper bound when it drives
+# a session.  The container
 # limits below stop a process from monopolising the machine; this bound stops it
 # from monopolising the operator's paid vendor seat.
 MAX_AGENT_SESSION_SECONDS = 600

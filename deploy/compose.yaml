@@ -133,16 +133,8 @@ services:
       - ${DIFFUSE_ENV_FILE:-.env}
     environment:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
-      # The image rootfs is read-only. Keep vendor fallback state (for example
-      # Claude's legacy ~/.claude.json) beside the Diffuse-owned credential,
-      # not under /home/diffuse or /tmp.
-      DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent
-      HOME: /var/lib/diffuse/agent/home
     volumes:
       - repository_data:/var/lib/diffuse/repositories
-      # Transitional sole writer for `agent login` until Gate C moves
-      # credentials to the isolated runner service. `app` must never mount this.
-      - agent_data:/var/lib/diffuse/agent
     tmpfs:
       - /tmp:size=512m,mode=1777
     logging:
@@ -153,14 +145,13 @@ services:
     stop_grace_period: 30s
     networks: [backend, control_egress]
 
-  # Isolated agent-runner skeleton (Gate B / DEV-330). Built from
-  # Dockerfile.agent-runner, not the control-plane release image. No env_file.
+  # Gate B skeleton: credential-isolated agent-runner. The worker never mounts
+  # agent credentials and never executes a CLI. This service is the only Compose
+  # writer of `agent_data`. It deliberately has no `env_file` (no database /
+  # GitHub / API secrets). Opt-in via `docker compose --profile agent ...`.
+  # Gate B replaces the inert default command with the long-lived runner.
   agent-runner:
-    # Profiles are applied after Compose interpolates the whole file. Keep the
-    # normal stack backward-compatible with pre-Gate-B .env files; operators
-    # enabling this profile must set DIFFUSE_AGENT_RUNNER_IMAGE to a release
-    # digest instead of relying on this development-only fallback.
-    image: ${DIFFUSE_AGENT_RUNNER_IMAGE:-diffuse-agent-runner:local}
+    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
     restart: "no"
     init: true
     user: "10001:10001"
@@ -168,17 +159,26 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-    command: ["status"]
+    # Inert until Gate B: `docker compose --profile agent run --rm agent-runner
+    # agent login …` overrides this command for operator sign-in.
+    command: ["agent", "status"]
     profiles: ["agent"]
     healthcheck:
       disable: true
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
     environment:
       HOME: /var/lib/diffuse/agent/home
       DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent
+      # The runner has no direct external network. Route vendor login and future
+      # CLI calls through the allowlisted CONNECT proxy instead.
       HTTP_PROXY: http://egress-proxy:3128
       HTTPS_PROXY: http://egress-proxy:3128
       NO_PROXY: app,egress-proxy,localhost,127.0.0.1
       DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_AGENT_MODEL_HOST:-api.anthropic.com}
+    volumes:
+      - agent_data:/var/lib/diffuse/agent
     tmpfs:
       - /tmp:size=512m,mode=1777
     mem_limit: 1g

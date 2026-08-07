@@ -259,48 +259,31 @@ key. The release profile stores it in the `agent_data` named volume at
 root filesystem is read-only and `/tmp` is ephemeral, so do not redirect
 `DIFFUSE_AGENT_HOME` to either location.
 
-**Target architecture** (CLI-native plan): only the isolated `agent-runner`
-service mounts this volume. The worker never executes a vendor CLI and never
-receives agent credentials. See [agent-runtimes.md](agent-runtimes.md).
+Only the opt-in `agent-runner` Compose service (profile `agent`) mounts this
+volume. The worker and API never receive agent credentials and never execute a
+CLI — see [agent-runtimes.md](agent-runtimes.md). Vendor CLIs refresh an OAuth
+credential in place, so exactly one writer is required.
 
-**Transitional today:** `worker` is still the sole writer so operators can sign
-in before the runner-backed review path lands. `app` does not receive the
-credential. Vendor CLIs refresh an OAuth credential in place; two writers can
-invalidate each other, so keep a single mount owner.
-
-Sign in through a disposable worker process (transitional) so it has the exact
-same read-only-rootfs and capability constraints as the long-running worker,
-without interrupting active jobs:
+Sign in through the runner skeleton (Gate B will replace its inert default
+command with the long-lived runner):
 
 ```bash
-docker compose run --rm worker agent login claude --console
+docker compose --profile agent run --rm agent-runner agent login claude --console
 # or, for a headless Codex login:
-docker compose run --rm worker agent login codex --device-auth
-docker compose run --rm worker agent status
+docker compose --profile agent run --rm agent-runner agent login codex --device-auth
+docker compose --profile agent run --rm agent-runner agent status
 ```
 
-Build and smoke the agent-runner image (opt-in profile; does not publish
-reviews yet):
-
-For a release deployment, set `DIFFUSE_AGENT_RUNNER_IMAGE` to the published
-digest before enabling the `agent` profile. It is intentionally optional for a
-normal app/worker deployment, so existing `.env` files remain valid while the
-profile is unused.
-
-```bash
-docker compose --profile agent build agent-runner
-docker compose --profile agent run --rm agent-runner status
-```
-
-The worker service sets `HOME` to a private subdirectory of the credential
-volume, and the login command sets the vendor's explicit config variable on top
-of it. This keeps vendor fallback state such as a legacy home-directory auth
-file off the read-only image. That subdirectory is created in the image, so it
-exists on a stack that has never signed in to an agent. To rotate or decommission the credential, use the matching
-vendor logout in the same context, then sign in again if needed:
+The runner sets `HOME` to a private subdirectory of the credential volume, and
+the login command sets the vendor's explicit config variable on top of it. This
+keeps vendor fallback state such as a legacy home-directory auth file off the
+read-only image. That subdirectory is created in the image, so it exists on a
+stack that has never signed in to an agent. To rotate or decommission the
+credential, use the matching vendor logout in the same context, then sign in
+again if needed:
 
 ```bash
-docker compose run --rm worker agent logout claude
+docker compose --profile agent run --rm agent-runner agent logout claude
 ```
 
 Do **not** back up `agent_data`. It is a live, revocable vendor credential, not

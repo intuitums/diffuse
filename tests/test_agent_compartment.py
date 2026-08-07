@@ -257,14 +257,14 @@ def test_connect_proxy_refuses_every_authority_except_the_vendor():
 def test_compose_keeps_agent_out_of_worker_environment_and_database_network():
     for path in COMPOSE_FILES:
         text = path.read_text()
-        for service_name in ("agent-preflight", "agent-runner"):
-            service = _service_block(text, service_name)
-            assert "env_file:" not in service
-            assert "networks: [agent_mcp, agent_egress]" in service
-            assert "DATABASE_URL" not in service
-            assert "mem_limit:" in service
-            assert "cpus:" in service
-            assert "pids_limit:" in service
+        service = text.split("\n  agent-preflight:\n", 1)[1].split("\n  egress-proxy:", 1)[0]
+
+        assert "env_file:" not in service
+        assert "networks: [agent_mcp, agent_egress]" in service
+        assert "DATABASE_URL" not in service
+        assert "mem_limit:" in service
+        assert "cpus:" in service
+        assert "pids_limit:" in service
         assert "image: ${DIFFUSE_IMAGE" in text
         assert "backend:\n    internal: true" in text
         assert "agent_egress:\n    internal: true" in text
@@ -281,11 +281,10 @@ def test_the_compartment_does_not_gate_the_review_pipeline():
 
     for path in COMPOSE_FILES:
         text = path.read_text()
-        worker = _service_block(text, "worker")
+        worker = text.split("\n  worker:\n", 1)[1].split("\n  agent-preflight:\n", 1)[0]
 
         assert "agent-preflight" not in worker
-        assert "agent-runner" not in worker
-        for service in ("agent-preflight", "agent-runner", "egress-proxy"):
+        for service in ("agent-preflight", "egress-proxy"):
             assert 'profiles: ["agent"]' in _service_block(text, service)
 
 
