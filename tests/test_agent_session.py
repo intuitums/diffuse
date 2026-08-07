@@ -25,9 +25,9 @@ from service.agents.errors import (
 from service.agents.mcp_bridge import MAX_SEARCH_LIMIT, McpBridge, write_mcp_config
 from service.agents.profiles import REVIEW, SessionProfile
 from service.agents.replay import SessionTranscript, record, replay
+from service.review.agent_environment import CREDENTIAL_ENVIRONMENT
 from service.review.agent_host import (
     CLAUDE_CODE,
-    CREDENTIAL_ENVIRONMENT,
     write_sandbox_settings,
 )
 
