@@ -95,11 +95,12 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          # amd64 builds on the self-hosted box, on the same persistent builder
-          # verify.yml's build-container uses. It builds this same image, so it starts
-          # from the layers the merge's own Verify run just proved — locally, with no
-          # cache import leg at all. See build-container for the measurements that
-          # retired the GitHub Actions cache on this box.
+          # amd64 builds on the self-hosted runner build-container uses — the label
+          # maps to exactly one runner, whose rootless daemon holds the persistent
+          # `diffuse` builder — so it starts from the layers the merge's own Verify
+          # run just proved, locally, with no cache import leg at all. See
+          # build-container for the measurements that retired the GitHub Actions
+          # cache on the box.
           - platform: linux/amd64
             runner: intuitum-8vcpu-ubuntu-2604
             builder: diffuse
@@ -138,7 +139,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # amd64 adopts the box's persistent builder — the same idempotent command as
+      # amd64 adopts its runner's persistent builder — the same idempotent command as
       # verify.yml's container jobs; keep the two spellings identical. arm64 is on an
       # ephemeral Blacksmith VM, so it provisions a throwaway buildx the ordinary way
       # and leans on the `type=gha` cache declared in the matrix. Attestations below

@@ -259,12 +259,14 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      # The SAME builder as build-container, on purpose. When the two jobs held
-      # separate GitHub Actions cache scopes it was because two scopes writing one
-      # key would evict each other; a persistent BuildKit store holds both build
-      # graphs side by side, and the parts the targets share — the pinned base
-      # image, the apt layer, the pip wheel cache mount — dedupe instead of being
-      # paid twice. See build-container for why the Actions cache is gone.
+      # The same builder NAME as build-container — one spelling to keep in step —
+      # but usually not the same builder: each runner on the box has its own
+      # rootless Docker daemon, and this job's label maps to three runners, so the
+      # step below materialises an independent `diffuse` builder on whichever
+      # runner the job lands. Each warms on its first build there and persists
+      # from then on. Separate daemons also mean nothing this job does can evict
+      # or poison build-container's cache, which lives on another runner. See
+      # build-container for why the Actions cache is gone.
       - name: Use the persistent builder
         run: |
           docker buildx inspect diffuse >/dev/null 2>&1 \
@@ -334,11 +336,13 @@ jobs:
             docker compose --env-file deploy/env.example \
               --file deploy/compose.yaml config --quiet
 
-      # One persistent BuildKit builder on the box, no GitHub Actions cache. The
-      # intuitum runners share a single host and a single Docker daemon, so a builder
-      # created once (`docker buildx create --name diffuse`) and never torn down IS
-      # the cache: its state volume outlives every job, and each build starts from
-      # whatever the last one proved.
+      # One persistent BuildKit builder on the runner's daemon, no GitHub Actions
+      # cache. Each intuitum runner runs its own rootless Docker daemon, and this
+      # job's label maps to exactly one runner, so a builder created once on that
+      # daemon (`docker buildx create --name diffuse`) and never torn down IS the
+      # cache: its state volume outlives every job, and each build starts from
+      # whatever the last one proved. release.yml's amd64 leg lands on this same
+      # runner and adopts this same builder.
       #
       # Measured before this change, over the previous 40 Verify runs: this job held
       # steady around 117s, of which ~35s was importing and exporting the `type=gha`
@@ -359,11 +363,17 @@ jobs:
       # create the builder: the loser's create fails, the final inspect confirms
       # the winner's builder exists, and both proceed onto it.
       #
-      # Shared state across pull requests is not a new trust surface: every job on
-      # these runners already talks to the shared daemon (`load: true`, the compose
-      # boot below), so PR code that wanted to poison a neighbour's build never
-      # needed the cache to do it. Disk is bounded by BuildKit's default GC; if the
-      # box ever runs tight, `docker buildx prune` on the host is the lever.
+      # Shared state across pull requests is not a new trust surface, but name the
+      # real boundary: any job scheduled to this label already executes arbitrary
+      # code as the runner's own user, and that user owns its rootless daemon
+      # outright — DOCKER_HOST is the user's socket. Anything that can run a job
+      # here could always poison anything this daemon holds, cache or no cache.
+      # The isolation that matters on the box — CI cannot reach the product
+      # runtimes, runners cannot reach each other — is per-user rootless daemons
+      # plus the runner units' InaccessiblePaths, and none of it moves with the
+      # layer cache. Disk is bounded by BuildKit's default GC; if the runner ever
+      # runs tight, `docker buildx prune --builder diffuse` on its daemon is the
+      # lever.
       - name: Use the persistent builder
         run: |
           docker buildx inspect diffuse >/dev/null 2>&1 \
