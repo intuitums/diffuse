@@ -80,3 +80,22 @@ def test_unset_review_model_stops_the_worker_with_an_actionable_error(monkeypatc
     # A refusal that merely says "unset" leaves the operator guessing at the
     # format; it has to show one.
     assert "anthropic/claude-sonnet-5" in message
+
+
+def test_native_runtime_does_not_require_litellm_review_model_configuration(monkeypatch):
+    """CLI-native review mode has credentials only in its isolated runners."""
+
+    for name, _probe in (
+        *worker._CONFIGURATION_PROBES,
+        *worker._LITELLM_CONFIGURATION_PROBES,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("REVIEW_RUNTIME", "codex")
+    monkeypatch.setenv("DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY", "x" * 32)
+    # Learning remains on its transitional API path until Gate D, so it has an
+    # explicit independent model rather than falling back to REVIEW_MODEL.
+    monkeypatch.setenv("RULE_LEARNING_MODEL", "openai/gpt-4.1-mini")
+
+    # The API process performs only static validation: it intentionally has no
+    # runner-control network or worker dispatch private key.
+    worker.validate_worker_configuration(verify_native_runners=False)

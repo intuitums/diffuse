@@ -1,4 +1,4 @@
-"""The agent credential volume is a runtime security boundary, not YAML garnish."""
+"""Compose declarations are part of the native-runner security boundary."""
 
 from __future__ import annotations
 
@@ -12,75 +12,88 @@ COMPOSE_FILES = (
 
 
 def _service_block(text: str, name: str) -> str:
-    """Slice one service out of a Compose file by its own indentation.
-
-    Not "from this service to the top-level `volumes:`" -- that only isolates
-    the worker while the worker happens to be the last service in the file, and
-    would silently widen to cover whatever service gets added after it.
-    """
-
     lines = text.splitlines()
     start = lines.index(f"  {name}:")
     body = []
     for line in lines[start + 1 :]:
-        starts_a_sibling = line and not line.startswith("   ")
-        if starts_a_sibling and line.strip():
+        if line.strip() and not line.startswith("   "):
             break
         body.append(line)
     return "\n".join(body)
 
 
-def test_agent_volume_has_exactly_one_writer_on_the_runner_skeleton():
-    """Vendor refreshes against one OAuth token must not race the worker."""
-
+def test_each_runner_has_its_own_pinned_image_credential_home_and_egress_proxy():
     for path in COMPOSE_FILES:
         text = path.read_text()
-        runner = _service_block(text, "agent-runner")
-        assert "agent_data:/var/lib/diffuse/agent" in runner
-        assert "DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent" in runner
-        assert "HOME: /var/lib/diffuse/agent/home" in runner
-        assert "HTTP_PROXY: http://egress-proxy:3128" in runner
-        assert "HTTPS_PROXY: http://egress-proxy:3128" in runner
-        assert "egress-proxy:" in runner
-        assert "condition: service_healthy" in runner
-        assert "profiles: [\"agent\"]" in runner
-        assert 'command: ["agent-runner"]' in runner
-        assert 'test: ["CMD", "diffuse", "agent-runner-healthcheck"]' in runner
-        assert "DIFFUSE_AGENT_TOOL_URL: http://app:8000/agent/v1" in runner
-        assert "env_file:" not in runner
-        assert "DATABASE_URL" not in runner
-        assert text.count("agent_data:/var/lib/diffuse/agent") == 1
-        assert "  agent_data:\n" in text
+        for runtime in ("claude", "codex"):
+            runner = _service_block(text, f"agent-runner-{runtime}")
+            assert f"DIFFUSE_{runtime.upper()}_RUNNER_IMAGE" in runner
+            assert f"{runtime}_agent_data:/var/lib/diffuse/agent" in runner
+            assert "DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent" in runner
+            assert "HOME: /var/lib/diffuse/agent/home" in runner
+            assert f"HTTP_PROXY: http://egress-proxy-{runtime}:3128" in runner
+            assert f"HTTPS_PROXY: http://egress-proxy-{runtime}:3128" in runner
+            assert f"DIFFUSE_AGENT_EGRESS_PROXY_HOST: egress-proxy-{runtime}" in runner
+            assert f"egress-proxy-{runtime}:" in runner
+            assert f'profiles: ["agent-{runtime}"]' in runner
+            assert 'command: ["agent-runner"]' in runner
+            assert 'test: ["CMD", "diffuse", "agent-runner-healthcheck"]' in runner
+            assert "DIFFUSE_AGENT_TOOL_URL: http://agent-tool-gateway:8011/agent/v1" in runner
+            assert "env_file:" not in runner
+            assert "DATABASE_URL" not in runner
+        assert "claude_agent_data" not in _service_block(text, "agent-runner-codex")
+        assert "codex_agent_data" not in _service_block(text, "agent-runner-claude")
 
 
-def test_worker_and_app_never_mount_the_credential_volume():
-    """Target architecture: only the isolated agent-runner holds CLI credentials."""
-
+def test_only_the_credential_free_gateway_shares_the_app_network_with_runners():
     for path in COMPOSE_FILES:
         text = path.read_text()
-        assert "agent_data" not in _service_block(text, "worker")
-        assert "DIFFUSE_AGENT_HOME" not in _service_block(text, "worker")
-        assert "agent_data" not in _service_block(text, "app")
+        app = _service_block(text, "app")
+        worker = _service_block(text, "worker")
+        gateway = _service_block(text, "agent-tool-gateway")
+        assert "agent_mcp_" not in app
+        assert "networks: [backend, agent_mcp_claude, agent_mcp_codex]" in gateway
+        assert "runner_control_claude" in worker
+        assert "runner_control_codex" in worker
+        for runtime in ("claude", "codex"):
+            assert (
+                f"networks: [agent_mcp_{runtime}, agent_egress_{runtime}, "
+                f"runner_control_{runtime}]"
+            ) in _service_block(text, f"agent-runner-{runtime}")
 
 
-def test_runtime_image_pins_the_volume_owner_and_mode():
+def test_worker_and_app_never_mount_a_runner_credential_volume():
+    for path in COMPOSE_FILES:
+        text = path.read_text()
+        for service in ("worker", "app"):
+            block = _service_block(text, service)
+            assert "agent_data" not in block
+            assert "DIFFUSE_AGENT_HOME" not in block
+
+
+def test_only_the_worker_retains_dispatch_signing_authority():
+    for path in COMPOSE_FILES:
+        text = path.read_text()
+        assert 'DIFFUSE_AGENT_DISPATCH_PRIVATE_KEY: ""' in _service_block(text, "app")
+        assert 'DIFFUSE_AGENT_DISPATCH_PRIVATE_KEY: ""' in _service_block(text, "migrate")
+        for runtime in ("claude", "codex"):
+            runner = _service_block(text, f"agent-runner-{runtime}")
+            assert "DIFFUSE_AGENT_DISPATCH_PRIVATE_KEY" not in runner
+            assert "DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY" in runner
+
+
+def test_runner_images_pin_cli_dependencies_and_the_runtime_keeps_the_home_private():
     dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
+    assert "AS runner-claude" in dockerfile
+    assert "AS runner-codex" in dockerfile
+    assert "DISABLE_AUTOUPDATER=1" in dockerfile
     assert "addgroup --system --gid 10001 diffuse" in dockerfile
-    assert "adduser --system --uid 10001 --ingroup diffuse" in dockerfile
     assert "--mode=700 /var/lib/diffuse/agent" in dockerfile
-    assert "'10001:10001:700'" in dockerfile
-
-
-def test_runtime_image_creates_the_home_compose_points_at():
-    """`agent_login_home()` creates this lazily, but HOME is set service-wide.
-
-    Without it in the image, a stack that has never run an agent login boots its
-    agent-runner with HOME pointing at a directory that does not exist.
-    """
-
-    dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
     assert "--mode=700 /var/lib/diffuse/agent/home" in dockerfile
-
-    for path in COMPOSE_FILES:
-        runner = _service_block(path.read_text(), "agent-runner")
-        assert "HOME: /var/lib/diffuse/agent/home" in runner
+    assert "'10001:10001:700'" in dockerfile
+    assert '"@anthropic-ai/claude-code": "2.1.224"' in (
+        REPOSITORY_ROOT / "agent-runners" / "claude" / "package.json"
+    ).read_text()
+    assert '"@openai/codex": "0.147.0"' in (
+        REPOSITORY_ROOT / "agent-runners" / "codex" / "package.json"
+    ).read_text()

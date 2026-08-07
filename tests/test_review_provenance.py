@@ -1,9 +1,11 @@
 from service.review.provenance import (
     CommitMetadata,
     PullRequestCommits,
+    PullRequestProvenance,
     classify_pull_request_provenance,
     model_family,
     select_review_model_plan,
+    select_review_runtime_plan,
 )
 
 
@@ -499,3 +501,22 @@ def test_model_family_understands_direct_and_openrouter_identifiers():
     assert model_family("openrouter/openai/gpt-5.2") == "openai"
     assert model_family("google/gemini-3-pro") == "google"
     assert model_family("ollama/qwen3-coder") is None
+
+
+def test_cli_runner_routing_defaults_to_codex_and_opposes_trusted_families():
+    def provenance(family: str | None, confidence: float = 0.0) -> PullRequestProvenance:
+        return PullRequestProvenance(
+            classification="agent_authored" if family else "human_or_undetected",
+            model_family=family,
+            tool="codex" if family == "openai" else "claude_code" if family else None,
+            confidence=confidence,
+            commit_count=1,
+            ai_commit_count=1 if family else 0,
+            metadata_complete=True,
+        )
+
+    assert select_review_runtime_plan(provenance(None)).runtime == "codex"
+    assert select_review_runtime_plan(provenance("openai", 0.98)).runtime == "claude"
+    assert select_review_runtime_plan(provenance("anthropic", 0.98)).runtime == "codex"
+    # Weak or forgeable evidence cannot influence selection.
+    assert select_review_runtime_plan(provenance("openai", 0.7)).runtime == "codex"

@@ -127,7 +127,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # `invalid_request`: a server misconfiguration reported to the caller as
     # their mistake. Failing here names the variable instead, and matches the
     # worker, the CLI, and `diffuse model`.
-    await anyio.to_thread.run_sync(validate_worker_configuration)
+    # The API deliberately cannot reach credential-isolated runner control
+    # networks. The worker validates their availability before claiming work.
+    await anyio.to_thread.run_sync(
+        partial(validate_worker_configuration, verify_native_runners=False)
+    )
     await anyio.to_thread.run_sync(_verify_database_schema)
     async with diffuse_mcp.session_manager.run():
         yield

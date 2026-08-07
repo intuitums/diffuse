@@ -14,6 +14,8 @@ from service.review import engine as review_engine
 from service.review import runtimes
 from service.review.request import ReviewRequest
 from service.review.runtimes import (
+    CLAUDE_CODE_RUNTIME,
+    CODEX_RUNTIME,
     LITELLM_RUNTIME,
     RUNTIME_NAMES,
     hosted_review_runtime_name,
@@ -102,6 +104,13 @@ def test_every_accepted_runtime_name_resolves(monkeypatch):
 def test_hosted_runtime_accepts_litellm(monkeypatch):
     monkeypatch.setenv("REVIEW_RUNTIME", LITELLM_RUNTIME)
     assert hosted_review_runtime_name() == LITELLM_RUNTIME
+
+
+def test_hosted_runtime_accepts_both_isolated_native_runners(monkeypatch):
+    for runtime in (CLAUDE_CODE_RUNTIME, CODEX_RUNTIME):
+        monkeypatch.setenv("REVIEW_RUNTIME", runtime)
+        assert hosted_review_runtime_name() == runtime
+        assert resolve_review_runtime().name == runtime
 
 
 def test_hosted_runtime_refuses_an_unsupported_runtime(monkeypatch):

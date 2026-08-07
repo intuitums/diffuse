@@ -4,13 +4,9 @@ A review runtime turns a `ReviewRequest` into a `ReviewReport`. Diffuse owns
 the contract; the runtime supplies the investigation. See
 `docs/agent-runtimes.md` and the CLI-native agent operation plan.
 
-`litellm` is the only selectable implementation today: the transitional
-one-shot API path that orchestrates candidate passes, deduplication, diagram,
-and verifier via structured completions (implemented with the LiteLLM library).
-Planned CLI-native values `claude` and `codex` are named here so host plumbing
-and tests can refer to them, but they are not in `RUNTIME_NAMES` until Gate C
-wires them through the isolated agent-runner. They are not local-only forever
-and must not be implemented as worker-spawned CLIs.
+`litellm` remains the transitional one-shot implementation. CLI-native
+`claude` and `codex` dispatch over the private runner-control network to an
+isolated container; the worker never executes either vendor binary.
 
 The seam is deliberately the whole report rather than a single model call.
 `_call_structured` is the wrong altitude for it -- an agentic runtime that
@@ -44,13 +40,11 @@ CODEX_RUNTIME = "codex"
 #: Every name `REVIEW_RUNTIME` accepts. A name is listed here once the adapter
 #: exists, not when it is planned: an accepted name with no implementation is a
 #: configuration that validates at startup and fails mid-review.
-RUNTIME_NAMES: tuple[str, ...] = (LITELLM_RUNTIME,)
+RUNTIME_NAMES: tuple[str, ...] = (LITELLM_RUNTIME, CLAUDE_CODE_RUNTIME, CODEX_RUNTIME)
 
-#: Runtimes the worker process may execute in-process today. Agent-CLI runtimes
-#: (`claude`, `codex`) are intentionally absent: the worker never executes a CLI
-#: and never mounts agent credentials. Gate C will select them by minting a
-#: session capability for the isolated agent-runner, not by adding them here.
-HOSTED_RUNTIME_NAMES: tuple[str, ...] = (LITELLM_RUNTIME,)
+#: Values the worker may dispatch. Native names are network clients only; the
+#: worker never mounts credentials or executes their CLI.
+HOSTED_RUNTIME_NAMES: tuple[str, ...] = (LITELLM_RUNTIME, CLAUDE_CODE_RUNTIME, CODEX_RUNTIME)
 
 RUNTIME_VARIABLE = "REVIEW_RUNTIME"
 
@@ -99,13 +93,7 @@ def review_runtime_name() -> str:
 
 
 def hosted_review_runtime_name() -> str:
-    """Resolve `REVIEW_RUNTIME` for a worker process, refusing CLI-host paths.
-
-    Separate from `review_runtime_name` so the refusal happens at worker
-    startup -- named, once -- rather than per job. A runtime this process
-    cannot drive would otherwise dead-letter every pull request in the fleet,
-    and fixing the variable afterwards recovers none of them.
-    """
+    """Resolve the runtime a worker may dispatch without executing a CLI."""
 
     name = review_runtime_name()
     if name not in HOSTED_RUNTIME_NAMES:
@@ -129,4 +117,8 @@ def resolve_review_runtime(name: str | None = None) -> ReviewRuntime:
         from service.review.engine import LiteLLMRuntime
 
         return LiteLLMRuntime()
+    if selected in {CLAUDE_CODE_RUNTIME, CODEX_RUNTIME}:
+        from service.review.native_runner import NativeRunnerRuntime
+
+        return NativeRunnerRuntime(selected)
     raise _unknown_runtime(selected)

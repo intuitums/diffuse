@@ -36,6 +36,8 @@ from retriever.retrieve import (
     retrieve_context_from_plan,
     retrieve_context_from_snapshot,
 )
+from service.agents.capability_auth import session_capability_signing_key
+from service.agents.contract import SessionScope, mint_session_capability
 from service.approval_publication import (
     ApprovalNotCurrentError,
     PublishedApproval,
@@ -123,16 +125,21 @@ from service.review.engine import (
 )
 from service.review.failure_notice import (
     TerminalReviewFailure,
+    agent_auth_required_failure,
     terminal_review_failure,
 )
+from service.review.native_runner import NativeSessionDispatch
 from service.review.provenance import (
     PullRequestCommits,
     PullRequestProvenance,
     ReviewModelPlan,
     classify_pull_request_provenance,
     select_review_model_plan,
+    select_review_runtime_plan,
 )
+from service.review.request import ReviewRequest
 from service.review.runtimes import (
+    LITELLM_RUNTIME,
     hosted_review_runtime_name,
     resolve_review_runtime,
 )
@@ -144,6 +151,7 @@ from service.scm import (
     normalize_base_url,
     scm_api_timeout_seconds,
 )
+from service.storage.agent_session import create_agent_session
 from service.storage.approval import (
     AutoApprovalHandle,
     begin_auto_approval,
@@ -737,6 +745,42 @@ def _continuity_paths(
     return frozenset(touched), aliases
 
 
+def _create_native_agent_session(
+    job: WorkflowJob,
+    *,
+    runtime: str,
+    snapshot_id: int,
+    head_sha: str,
+) -> NativeSessionDispatch:
+    if job.pull_request_id is None:
+        raise NonRetryableError("Native review job does not reference a pull request")
+    grant = mint_session_capability(
+        signing_key=session_capability_signing_key(),
+        runtime=runtime,
+        scope=SessionScope(
+            repository_id=job.repository_id,
+            pull_request_id=job.pull_request_id,
+            snapshot_id=snapshot_id,
+            head_sha=head_sha,
+            operations=frozenset({"search_code"}),
+        ),
+    )
+    with closing(get_conn()) as conn, conn:
+        handle = create_agent_session(
+            conn,
+            review_job_id=job.id,
+            capability=grant.capability,
+            capability_token=grant.token,
+        )
+    return NativeSessionDispatch(
+        session_id=handle.session_id,
+        runtime=handle.runtime,
+        capability=grant.token,
+        capability_id=handle.capability_id,
+        expires_at=handle.expires_at,
+    )
+
+
 def _generate_and_persist_review(
     job: WorkflowJob,
     review_run_id: int,
@@ -747,6 +791,9 @@ def _generate_and_persist_review(
     touched_paths: frozenset[str],
     path_aliases: dict[str, str] | None = None,
     model_plan: ReviewModelPlan | None = None,
+    runtime_name: str | None = None,
+    snapshot_id: int | None = None,
+    head_sha: str | None = None,
 ) -> None:
     def report_progress() -> None:
         if not _heartbeat_and_check_current(job.id, worker_id):
@@ -755,6 +802,17 @@ def _generate_and_persist_review(
             )
 
     try:
+        selected_runtime = runtime_name or hosted_review_runtime_name()
+        agent_session = None
+        if selected_runtime != LITELLM_RUNTIME:
+            if snapshot_id is None or head_sha is None:
+                raise NonRetryableError("Native review session is missing immutable scope")
+            agent_session = _create_native_agent_session(
+                job,
+                runtime=selected_runtime,
+                snapshot_id=snapshot_id,
+                head_sha=head_sha,
+            )
         report = generate_review(
             diff_text,
             contexts,
@@ -764,7 +822,7 @@ def _generate_and_persist_review(
             # check ran once against the environment as it was then; resolving
             # here means the refusal is a property of the call rather than of
             # boot order.
-            runtime=resolve_review_runtime(hosted_review_runtime_name()),
+            runtime=resolve_review_runtime(selected_runtime),
             progress_callback=report_progress,
             policy=policy,
             candidate_model=(
@@ -772,6 +830,16 @@ def _generate_and_persist_review(
             ),
             verifier_model=(
                 model_plan.verifier_model if model_plan is not None else None
+            ),
+            request=ReviewRequest(
+                diff_text=diff_text,
+                contexts=contexts,
+                progress_callback=report_progress,
+                policy=policy,
+                candidate_model=(model_plan.candidate_model if model_plan is not None else None),
+                verifier_model=(model_plan.verifier_model if model_plan is not None else None),
+                review_identity=str(review_run_id),
+                agent_session=agent_session,
             ),
         )
         report_progress()
@@ -1676,25 +1744,50 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
             )
             await anyio.to_thread.run_sync(partial(_supersede, job.id, worker_id))
             return
-    model_plan = select_review_model_plan(
-        provenance,
-        candidate_model=review_model(),
-        verifier_model=review_verifier_model(),
-        minimum_confidence=review_provenance_minimum_confidence(),
-    )
-    # Startup validated the *configured* pair. Routing permutes it, so on an
-    # AI-authored pull request the candidate pass runs on the model configured
-    # as the verifier -- a pair no validator has looked at, and one that can
-    # have no reasoning control at all while the configured candidate had one.
-    # Resolve the pair that will actually be used, and record it on the run:
-    # refusing here would dead-letter the pull request over configuration the
-    # operator can only change between runs.
-    depth_support = resolve_review_depth_support(
-        candidate_model=model_plan.candidate_model,
-        verifier_model=model_plan.verifier_model,
-        source=f"routed by provenance: {model_plan.reason_code}",
-    )
-    report_review_depth_support(depth_support)
+    configured_runtime = hosted_review_runtime_name()
+    runtime_name = configured_runtime
+    if configured_runtime == LITELLM_RUNTIME:
+        model_plan = select_review_model_plan(
+            provenance,
+            candidate_model=review_model(),
+            verifier_model=review_verifier_model(),
+            minimum_confidence=review_provenance_minimum_confidence(),
+        )
+        # Startup validated the *configured* pair. Routing permutes it, so on an
+        # AI-authored pull request the candidate pass runs on the model configured
+        # as the verifier -- a pair no validator has looked at, and one that can
+        # have no reasoning control at all while the configured candidate had one.
+        # Resolve the pair that will actually be used, and record it on the run:
+        # refusing here would dead-letter the pull request over configuration the
+        # operator can only change between runs.
+        depth_support = resolve_review_depth_support(
+            candidate_model=model_plan.candidate_model,
+            verifier_model=model_plan.verifier_model,
+            source=f"routed by provenance: {model_plan.reason_code}",
+        )
+        report_review_depth_support(depth_support)
+    else:
+        runtime_name = select_review_runtime_plan(
+            provenance,
+            default_runtime=configured_runtime,
+            minimum_confidence=review_provenance_minimum_confidence(),
+        ).runtime
+        # Native CLIs own their reasoning settings; do not require or silently
+        # repurpose LiteLLM model controls merely to create an audit record.
+        # The runtime label is deliberately the persisted "model" identity so
+        # cache reuse remains bound to the actual independent reviewer.
+        model_plan = ReviewModelPlan(
+            candidate_model=f"native_{runtime_name}",
+            verifier_model=f"native_{runtime_name}",
+            reason_code="native_cli_runtime",
+            detected_family=None,
+        )
+        depth_support = ReviewDepthSupport(
+            depth=None,
+            variable="REVIEW_DEPTH",
+            plans=(),
+            source="native CLI runtime",
+        )
 
     review_run = await anyio.to_thread.run_sync(
         partial(
@@ -1803,6 +1896,9 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
                     touched_paths,
                     path_aliases,
                     model_plan,
+                    runtime_name,
+                    snapshot_id,
+                    event.head_sha,
                 )
             )
         except ReviewSupersededError:
@@ -2289,10 +2385,14 @@ async def run_once(worker_id: str) -> bool:
             job.job_type == "review_pull_request"
             and next_status in {"dead", "failed"}
         ):
-            failure = terminal_review_failure(
-                job.id,
-                retries_exhausted=next_status == "dead",
-            )
+            error_text = str(error)
+            if error_text.startswith("agent_auth_required:"):
+                failure = agent_auth_required_failure(job.id, error_text.rsplit(":", 1)[1])
+            else:
+                failure = terminal_review_failure(
+                    job.id,
+                    retries_exhausted=next_status == "dead",
+                )
             try:
                 await anyio.to_thread.run_sync(
                     partial(
@@ -2495,20 +2595,6 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     # would dead-letter every pull request in the fleet, and fixing the
     # variable afterwards recovers none of them.
     ("REVIEW_RUNTIME", hosted_review_runtime_name),
-    ("REVIEW_MODEL", review_model),
-    ("REVIEW_VERIFIER_MODEL", review_verifier_model),
-    ("REVIEW_DEPTH", review_depth),
-    ("REVIEW_PASSES", review_passes),
-    ("MIN_REVIEW_CONFIDENCE", minimum_review_confidence),
-    ("REVIEW_PROVENANCE_MIN_CONFIDENCE", review_provenance_minimum_confidence),
-    ("REVIEW_STRUCTURED_OUTPUT_MODE", lambda: _supports_json_schema(review_model())),
-    ("REVIEW_API_BASE", lambda: _model_api_base(review_model())),
-    ("REVIEW_MAX_OUTPUT_TOKENS", partial(_probe_positive_int, "REVIEW_MAX_OUTPUT_TOKENS")),
-    (
-        "REVIEW_MODEL_TIMEOUT_SECONDS",
-        partial(_probe_positive_int, "REVIEW_MODEL_TIMEOUT_SECONDS"),
-    ),
-    ("REVIEW_MODEL_RETRIES", model_retries),
     ("WORKER_HEARTBEAT_SECONDS", _heartbeat_seconds),
     (
         "REVIEW_DIFF_CHARS_PER_CALL",
@@ -2559,14 +2645,52 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("GitHub App authentication", validate_app_configuration),
 )
 
+# LiteLLM is retained as a transition path, but its provider model settings are
+# not a prerequisite for a CLI-native deployment.  Keeping this separate from
+# the universal probes prevents an unused, expired API credential from making
+# Codex/Claude runner mode unavailable at startup.
+_LITELLM_CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
+    ("REVIEW_MODEL", review_model),
+    ("REVIEW_VERIFIER_MODEL", review_verifier_model),
+    ("REVIEW_DEPTH", review_depth),
+    ("REVIEW_PASSES", review_passes),
+    ("MIN_REVIEW_CONFIDENCE", minimum_review_confidence),
+    ("REVIEW_PROVENANCE_MIN_CONFIDENCE", review_provenance_minimum_confidence),
+    ("REVIEW_STRUCTURED_OUTPUT_MODE", lambda: _supports_json_schema(review_model())),
+    ("REVIEW_API_BASE", lambda: _model_api_base(review_model())),
+    ("REVIEW_MAX_OUTPUT_TOKENS", partial(_probe_positive_int, "REVIEW_MAX_OUTPUT_TOKENS")),
+    (
+        "REVIEW_MODEL_TIMEOUT_SECONDS",
+        partial(_probe_positive_int, "REVIEW_MODEL_TIMEOUT_SECONDS"),
+    ),
+    ("REVIEW_MODEL_RETRIES", model_retries),
+)
 
-def validate_worker_configuration() -> None:
+
+def validate_worker_configuration(*, verify_native_runners: bool = True) -> None:
     """Resolve every hot-path configuration value, naming the one that fails."""
     for name, resolve in _CONFIGURATION_PROBES:
         try:
             resolve()
         except ValueError as error:
             raise ValueError(f"{name} is invalid: {error}") from error
+    if hosted_review_runtime_name() == LITELLM_RUNTIME:
+        for name, resolve in _LITELLM_CONFIGURATION_PROBES:
+            try:
+                resolve()
+            except ValueError as error:
+                raise ValueError(f"{name} is invalid: {error}") from error
+    else:
+        # The API verifies every capability-tool call and the worker mints
+        # them, so native mode cannot start with a key that would fail only
+        # after a pull request has been claimed.
+        session_capability_signing_key()
+        if verify_native_runners:
+            from service.agents.dispatch import validate_dispatch_private_key
+            from service.review.native_runner import validate_native_runners
+
+            validate_dispatch_private_key()
+            validate_native_runners()
 
 
 def validate_worker_model_controls() -> None:
@@ -2589,6 +2713,8 @@ def validate_worker_model_controls() -> None:
     pair provenance routing actually chose, which startup cannot know.
     """
 
+    if hosted_review_runtime_name() != LITELLM_RUNTIME:
+        return
     support = resolve_review_depth_support()
     report_review_depth_support(support)
     refusal = support.refusal()
