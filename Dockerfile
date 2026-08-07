@@ -261,33 +261,33 @@ HEALTHCHECK --interval=15s --timeout=5s --retries=5 --start-period=30s \
 ENTRYPOINT ["diffuse"]
 CMD ["serve"]
 
+# Claude Code 2.1.224 requires Node 22 or newer. Keep Node separate from the
+# application image, and pin it just like the Debian and Python bases above.
+FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS runner-node
+
 # Each runner is a separately selected final target so a credential-isolated
 # Claude process never carries the Codex executable (or vice versa). The CLI
 # packages are installed from committed lockfiles, not downloaded at startup;
 # the root filesystem and Claude updater disable make a Diffuse release the
 # only update channel.
-FROM runtime-base AS runner-claude
+FROM runtime-base AS runner-base
 USER root
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update \
-    && apt-get install -y --no-install-recommends nodejs npm \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=runner-node /usr/local/ /usr/local/
+
+FROM runner-base AS runner-claude
 COPY agent-runners/claude/package.json agent-runners/claude/package-lock.json /opt/diffuse/agent-cli/
+# Claude's native executable is installed by this package's lifecycle script.
+# Run that one lockfile-verified script explicitly rather than enabling scripts
+# for every dependency in the npm tree.
 RUN npm ci --prefix /opt/diffuse/agent-cli --omit=dev --ignore-scripts --no-audit --no-fund \
+    && node /opt/diffuse/agent-cli/node_modules/@anthropic-ai/claude-code/install.cjs \
     && ln -s /opt/diffuse/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
     && claude --version
 ENV DISABLE_AUTOUPDATER=1 \
     PATH=/opt/diffuse/agent-cli/node_modules/.bin:${PATH}
 USER diffuse
 
-FROM runtime-base AS runner-codex
-USER root
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update \
-    && apt-get install -y --no-install-recommends nodejs npm \
-    && rm -rf /var/lib/apt/lists/*
+FROM runner-base AS runner-codex
 COPY agent-runners/codex/package.json agent-runners/codex/package-lock.json /opt/diffuse/agent-cli/
 RUN npm ci --prefix /opt/diffuse/agent-cli --omit=dev --ignore-scripts --no-audit --no-fund \
     && ln -s /opt/diffuse/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \

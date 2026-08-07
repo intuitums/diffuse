@@ -355,6 +355,28 @@ jobs:
           cache-from: type=gha,scope=diffuse/Dockerfile
           cache-to: type=gha,scope=diffuse/Dockerfile,mode=max
 
+      # The runner targets are published only from release.yml, so building the
+      # application image alone would let a broken CLI package install reach a
+      # release tag. Load and exercise each target here while the application
+      # build cache is warm; the command also proves the image separation that
+      # keeps each credential-bearing runner free of the other CLI.
+      - name: Build and validate native runner images
+        run: |
+          docker buildx build --load --target runner-claude --tag diffuse-runner-claude:test .
+          docker buildx build --load --target runner-codex --tag diffuse-runner-codex:test .
+          docker run --rm --entrypoint /bin/sh diffuse-runner-claude:test -c '
+            test "$(id -u)" = 10001
+            test "$(node -p "process.versions.node.split(\".\")[0]")" -ge 22
+            test ! -e /usr/local/bin/codex
+            claude --version
+          '
+          docker run --rm --entrypoint /bin/sh diffuse-runner-codex:test -c '
+            test "$(id -u)" = 10001
+            test "$(node -p "process.versions.node.split(\".\")[0]")" -ge 22
+            test ! -e /usr/local/bin/claude
+            codex --version
+          '
+
       - name: Validate packaged runtime
         run: |
           docker run --rm --entrypoint diffuse diffuse:test database --help
