@@ -82,7 +82,7 @@ def _configure_passing_preflight(monkeypatch, tmp_path: Path) -> _Connection:
     monkeypatch.setenv("DIFFUSE_AGENT_HOME", str(home))
     monkeypatch.setenv("HTTP_PROXY", agent_compartment.PROXY_URL)
     monkeypatch.setenv("HTTPS_PROXY", agent_compartment.PROXY_URL)
-    monkeypatch.setenv("NO_PROXY", "app,egress-proxy")
+    monkeypatch.setenv("NO_PROXY", "agent-tool-gateway,egress-proxy")
     for name in CREDENTIAL_ENVIRONMENT:
         monkeypatch.delenv(name, raising=False)
     vfs = type("Vfs", (), {"f_flag": 1})()
@@ -257,22 +257,27 @@ def test_connect_proxy_refuses_every_authority_except_the_vendor():
 def test_compose_keeps_agent_out_of_worker_environment_and_database_network():
     for path in COMPOSE_FILES:
         text = path.read_text()
-        service = text.split("\n  agent-preflight:\n", 1)[1].split("\n  egress-proxy:", 1)[0]
-
-        assert "env_file:" not in service
-        assert "networks: [agent_mcp, agent_egress]" in service
-        assert "DATABASE_URL" not in service
-        assert "mem_limit:" in service
-        assert "cpus:" in service
-        assert "pids_limit:" in service
+        for runtime in ("claude", "codex"):
+            service = _service_block(text, f"agent-runner-{runtime}")
+            assert "env_file:" not in service
+            assert (
+                f"networks: [agent_mcp_{runtime}, agent_egress_{runtime}, "
+                f"runner_control_{runtime}]"
+            ) in service
+            assert "DATABASE_URL" not in service
+            assert "mem_limit:" in service
+            assert "cpus:" in service
+            assert "pids_limit:" in service
         assert "image: ${DIFFUSE_IMAGE" in text
         assert "backend:\n    internal: true" in text
-        assert "agent_egress:\n    internal: true" in text
+        for runtime in ("claude", "codex"):
+            assert f"agent_mcp_{runtime}:\n    internal: true" in text
+            assert f"agent_egress_{runtime}:\n    internal: true" in text
         assert "proxy_external:\n    internal: false" in text
 
 
 def test_the_compartment_does_not_gate_the_review_pipeline():
-    """No agent runtime is selectable, so nothing running may depend on it.
+    """Runner availability is a worker check, not a Compose startup dependency.
 
     As a `depends_on` of the worker this made a live CONNECT to the model API a
     precondition for starting reviews at all -- including for an operator on a
@@ -281,11 +286,12 @@ def test_the_compartment_does_not_gate_the_review_pipeline():
 
     for path in COMPOSE_FILES:
         text = path.read_text()
-        worker = text.split("\n  worker:\n", 1)[1].split("\n  agent-preflight:\n", 1)[0]
+        worker = text.split("\n  worker:\n", 1)[1].split("\n  agent-runner-claude:\n", 1)[0]
 
-        assert "agent-preflight" not in worker
-        for service in ("agent-preflight", "egress-proxy"):
-            assert 'profiles: ["agent"]' in _service_block(text, service)
+        assert "depends_on:\n      agent-" not in worker
+        for runtime in ("claude", "codex"):
+            for service in (f"agent-runner-{runtime}", f"egress-proxy-{runtime}"):
+                assert f'profiles: ["agent-{runtime}"]' in _service_block(text, service)
 
 
 def test_the_app_keeps_its_outbound_route():

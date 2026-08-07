@@ -21,7 +21,17 @@ from service.agents.claude_session import (
     build_argv,
     parse_envelope,
 )
+from service.agents.codex_session import (
+    CodexEnvelope,
+)
+from service.agents.codex_session import (
+    build_argv as build_codex_argv,
+)
+from service.agents.codex_session import (
+    parse_envelope as parse_codex_envelope,
+)
 from service.agents.errors import (
+    AgentSessionAuthRequired,
     AgentSessionCoverageCaveat,
     AgentSessionError,
     AgentSessionOutputError,
@@ -32,6 +42,7 @@ from service.agents.errors import (
 from service.agents.mcp_bridge import BRIDGE_URL_VARIABLE, McpBridge, write_mcp_config
 from service.agents.profiles import SessionProfile
 from service.agents.replay import SessionTranscript
+from service.agents.tool_server import AGENT_TOOL_URL_VARIABLE, SESSION_CAPABILITY_VARIABLE
 from service.review.agent_host import (
     AgentCli,
     agent_environment,
@@ -111,6 +122,8 @@ def run_structured[T: BaseModel](
     workspace: Path,
     tools: ReviewToolProvider | None,
     profile: SessionProfile,
+    capability: str | None = None,
+    tool_url: str | None = None,
     runner: Runner = subprocess_runner,
 ) -> tuple[T, int, int]:
     """Run one structured CLI turn and mirror `_call_structured`'s return shape.
@@ -132,6 +145,8 @@ def run_structured[T: BaseModel](
             f"{cli.display_name}'s Diffuse-owned sandbox policy is missing or out of "
             f"date; run `diffuse agent write-policy {cli.runtime}` before a session"
         )
+    if (capability is None) != (tool_url is None):
+        raise ValueError("capability and tool_url must be supplied together")
     bridge_context = (
         McpBridge(tools) if tools is not None and profile.tool_allowlist else _NullBridge()
     )
@@ -151,13 +166,20 @@ def run_structured[T: BaseModel](
         # declaration rather than no declaration.
         mcp_config = write_mcp_config(
             Path(config_directory) / "mcp.json",
-            bridge_url=bridge.url if bridge is not None else None,
+            bridge_url=(
+                (bridge.url if bridge is not None else "remote-capability")
+                if capability
+                else None
+            ),
         )
         environment = agent_environment(cli, scratch=scratch)
         if bridge is not None:
             # The token authenticates the tool bridge, so it must not sit in the
             # child's argv where `ps` shows it to every local user.
             environment[BRIDGE_URL_VARIABLE] = bridge.url
+        if capability is not None and tool_url is not None:
+            environment[AGENT_TOOL_URL_VARIABLE] = tool_url
+            environment[SESSION_CAPABILITY_VARIABLE] = capability
         return _run_once_or_raised_budget(
             executable,
             cli=cli,
@@ -265,18 +287,29 @@ def _run_once[T: BaseModel](
     environment: dict[str, str],
     runner: Runner,
 ) -> tuple[T, int, int]:
-    if cli.runtime != "claude":
+    if cli.runtime == "claude":
+        argv = build_argv(
+            executable,
+            profile=profile,
+            workspace=workspace,
+            schema=schema,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            settings=settings,
+            mcp_config=mcp_config,
+        )
+    elif cli.runtime == "codex":
+        argv = build_codex_argv(
+            executable,
+            profile=profile,
+            workspace=workspace,
+            schema=schema,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            mcp_config=mcp_config,
+        )
+    else:
         raise AgentSessionTerminalError(f"No session adapter exists for {cli.runtime!r}")
-    argv = build_argv(
-        executable,
-        profile=profile,
-        workspace=workspace,
-        schema=schema,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        settings=settings,
-        mcp_config=mcp_config,
-    )
     run = runner(argv, environment, workspace, profile.timeout_seconds)
     # The envelope is classified before the exit code, not after. Claude exits
     # non-zero whenever it sets `is_error`, so checking the code first would
@@ -284,19 +317,23 @@ def _run_once[T: BaseModel](
     # dead MCP server -- collapse into one opaque error carrying the whole JSON
     # document as its message, and the raised-budget retry would never fire.
     # The exit code is the fallback for a CLI that died before emitting one.
-    envelope = _parse_envelope_or_exit_failure(run)
+    envelope = _parse_envelope_or_exit_failure(run, runtime=cli.runtime)
     try:
         raw_result = envelope.result
         document = raw_result if isinstance(raw_result, str) else json.dumps(raw_result)
         value = response_model.model_validate_json(document)
     except (TypeError, ValueError, ValidationError) as error:
         raise AgentSessionOutputError(
-            "Claude Code result did not match the response schema"
+            f"{cli.display_name} result did not match the response schema"
         ) from error
     return value, envelope.prompt_tokens, envelope.completion_tokens
 
 
-def _parse_envelope_or_exit_failure(run: SessionRun) -> ClaudeEnvelope:
+def _parse_envelope_or_exit_failure(
+    run: SessionRun,
+    *,
+    runtime: str,
+) -> ClaudeEnvelope | CodexEnvelope:
     """Prefer the envelope's own account of the failure over the exit code.
 
     An envelope that parses is always the better witness: it names the subtype,
@@ -306,7 +343,9 @@ def _parse_envelope_or_exit_failure(run: SessionRun) -> ClaudeEnvelope:
     """
 
     try:
-        return parse_envelope(run.stdout)
+        if runtime == "claude":
+            return parse_envelope(run.stdout)
+        return parse_codex_envelope(run.stdout)
     except AgentSessionOutputError:
         if run.returncode == 0:
             raise
@@ -318,7 +357,9 @@ def _raise_exit_failure(run: SessionRun) -> None:
     detail = run.stderr.strip() or run.stdout.strip() or f"agent exit code {run.returncode}"
     lowered = detail.lower()
     if CREDENTIAL_MARKERS.search(lowered):
-        raise AgentSessionTerminalError(f"{detail}; run `diffuse agent login claude`")
+        raise AgentSessionAuthRequired(
+            "Agent authentication is required; run `diffuse agent login claude`"
+        )
     if any(marker in lowered for marker in RATE_LIMIT_MARKERS):
         raise AgentSessionRateLimited(detail)
     raise AgentSessionError(detail)
