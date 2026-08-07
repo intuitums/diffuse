@@ -166,6 +166,9 @@ COPY scripts ./scripts
 # the runtime stage below installs the BSL text, because a release that ships
 # without it is a licensing problem rather than a functional one.
 COPY Dockerfile ./Dockerfile
+# Gate A/B deployment tests assert the isolated runner image contract.
+COPY Dockerfile.agent-runner ./Dockerfile.agent-runner
+COPY deploy/agent-runner ./deploy/agent-runner
 
 # Migrate first when an integration database is configured, then hand every
 # argument to pytest. The integration suite connects to an already-migrated

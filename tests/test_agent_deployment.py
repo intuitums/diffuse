@@ -71,3 +71,33 @@ def test_runtime_image_creates_the_home_compose_points_at():
     for path in COMPOSE_FILES:
         worker = _service_block(path.read_text(), "worker")
         assert "HOME: /var/lib/diffuse/agent/home" in worker
+
+
+def test_agent_runner_image_is_not_the_control_plane_image():
+    """Gate B: pinned CLIs live in a dedicated image without Diffuse secrets."""
+
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile.agent-runner").read_text()
+    assert "@anthropic-ai/claude-code@" in dockerfile
+    assert "@openai/codex@" in dockerfile
+    assert "uid 10001" in dockerfile or "--uid 10001" in dockerfile
+    assert "DATABASE_URL=" in dockerfile
+    assert "GITHUB_APP_PRIVATE_KEY=" in dockerfile
+    # Must not bake the control-plane frozen binary or LiteLLM collect step.
+    assert "pyinstaller" not in dockerfile
+    assert "collect-data litellm" not in dockerfile
+    assert (REPOSITORY_ROOT / "deploy" / "agent-runner" / "docker-entrypoint.sh").is_file()
+
+
+def test_agent_runner_service_has_no_control_plane_secrets_or_env_file():
+    for path in COMPOSE_FILES:
+        text = path.read_text()
+        runner = _service_block(text, "agent-runner")
+        assert 'profiles: ["agent"]' in runner
+        assert "env_file:" not in runner
+        assert "DATABASE_URL" not in runner
+        assert "GITHUB_" not in runner
+        assert "REVIEW_MODEL" not in runner
+        assert "networks: [agent_mcp, agent_egress]" in runner
+        assert "user: \"10001:10001\"" in runner
+        # Transitional: credential volume still sole-written by worker.
+        assert "agent_data:" not in runner

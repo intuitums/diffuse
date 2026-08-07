@@ -39,6 +39,7 @@ COMPOSE_SUPPLIED = frozenset(
 CUSTOMER_ONLY = frozenset(
     {
         "DIFFUSE_IMAGE",
+        "DIFFUSE_AGENT_RUNNER_IMAGE",
         "POSTGRES_IMAGE",
         "DIFFUSE_ENV_FILE",
     }

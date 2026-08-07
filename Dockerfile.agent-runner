@@ -1,0 +1,83 @@
+# syntax=docker/dockerfile:1.11
+#
+# Isolated agent-runner image (Gate B / DEV-330).
+#
+# This image deliberately does NOT reuse the Diffuse control-plane image:
+# it must not contain DATABASE_URL, GitHub App material, or the LiteLLM
+# frozen binary. It only needs pinned vendor CLIs, a non-root identity that
+# matches the agent credential volume contract (uid/gid 10001), and enough
+# of a userspace to run those CLIs under the review compartment.
+#
+# Build (from repository root):
+#   docker build -f Dockerfile.agent-runner \
+#     --build-arg CLAUDE_CODE_VERSION=2.1.220 \
+#     --build-arg CODEX_VERSION=0.147.0 \
+#     -t diffuse-agent-runner:local .
+#
+# Empty version pins fail the build rather than silently floating to @latest.
+# Release builds should additionally pin the FROM digest once the image is
+# built in CI (this VM has no Docker daemon to resolve digests at edit time).
+
+ARG NODE_IMAGE=node:22-bookworm-slim
+
+FROM ${NODE_IMAGE} AS runtime
+
+ARG CLAUDE_CODE_VERSION=2.1.220
+ARG CODEX_VERSION=0.147.0
+ARG DIFFUSE_VERSION=0.1.0
+ARG DIFFUSE_REVISION=unknown
+ARG DIFFUSE_CREATED=unknown
+
+LABEL org.opencontainers.image.title="Diffuse Agent Runner" \
+      org.opencontainers.image.description="Credential-isolated Claude Code / Codex runner for Diffuse" \
+      org.opencontainers.image.version="${DIFFUSE_VERSION}" \
+      org.opencontainers.image.revision="${DIFFUSE_REVISION}" \
+      org.opencontainers.image.created="${DIFFUSE_CREATED}" \
+      org.opencontainers.image.source="https://github.com/intuitumxyz/diffuse" \
+      diffuse.agent.claude_code.version="${CLAUDE_CODE_VERSION}" \
+      diffuse.agent.codex.version="${CODEX_VERSION}"
+
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false \
+    NPM_CONFIG_FUND=false \
+    DEBIAN_FRONTEND=noninteractive \
+    DIFFUSE_AGENT_HOME=/var/lib/diffuse/agent \
+    HOME=/var/lib/diffuse/agent/home \
+    # Fail closed defaults: compose must not inject control-plane secrets here.
+    DATABASE_URL= \
+    GITHUB_APP_ID= \
+    GITHUB_APP_PRIVATE_KEY= \
+    GITHUB_WEBHOOK_SECRET= \
+    REVIEW_MODEL=
+
+RUN test -n "${CLAUDE_CODE_VERSION}" \
+    && test -n "${CODEX_VERSION}" \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        adduser \
+        ca-certificates \
+        git \
+    && rm -rf /var/lib/apt/lists/* \
+    && addgroup --system --gid 10001 diffuse \
+    && adduser --system --uid 10001 --ingroup diffuse --home /home/diffuse diffuse \
+    && install -d --owner=diffuse --group=diffuse --mode=700 /var/lib/diffuse/agent \
+    && install -d --owner=diffuse --group=diffuse --mode=700 /var/lib/diffuse/agent/home \
+    && install -d --owner=diffuse --group=diffuse --mode=755 /var/lib/diffuse/workspaces \
+    && npm install -g \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+        "@openai/codex@${CODEX_VERSION}" \
+    && npm cache clean --force \
+    && test "$(stat -c '%u:%g:%a' /var/lib/diffuse/agent)" = '10001:10001:700' \
+    && test "$(stat -c '%u:%g:%a' /var/lib/diffuse/agent/home)" = '10001:10001:700' \
+    && claude --version \
+    && codex --version
+
+COPY deploy/agent-runner/docker-entrypoint.sh /usr/local/bin/diffuse-agent-runner
+RUN chmod 555 /usr/local/bin/diffuse-agent-runner \
+    && /usr/local/bin/diffuse-agent-runner --self-check
+
+USER diffuse
+
+STOPSIGNAL SIGTERM
+
+ENTRYPOINT ["diffuse-agent-runner"]
+CMD ["status"]

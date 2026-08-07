@@ -140,8 +140,8 @@ services:
       HOME: /var/lib/diffuse/agent/home
     volumes:
       - repository_data:/var/lib/diffuse/repositories
-      # Exactly one writer: vendor CLIs refresh their own OAuth credential, so
-      # app intentionally does not mount this volume.
+      # Transitional sole writer for `agent login` until Gate C moves
+      # credentials to the isolated runner service. `app` must never mount this.
       - agent_data:/var/lib/diffuse/agent
     tmpfs:
       - /tmp:size=512m,mode=1777
@@ -152,6 +152,40 @@ services:
         max-file: "5"
     stop_grace_period: 30s
     networks: [backend, control_egress]
+
+  # Isolated agent-runner skeleton (Gate B / DEV-330). Built from
+  # Dockerfile.agent-runner, not the control-plane release image. No env_file.
+  agent-runner:
+    image: ${DIFFUSE_AGENT_RUNNER_IMAGE:?Set DIFFUSE_AGENT_RUNNER_IMAGE to the agent-runner digest in .env}
+    restart: "no"
+    init: true
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command: ["status"]
+    profiles: ["agent"]
+    healthcheck:
+      disable: true
+    environment:
+      HOME: /var/lib/diffuse/agent/home
+      DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent
+      HTTP_PROXY: http://egress-proxy:3128
+      HTTPS_PROXY: http://egress-proxy:3128
+      NO_PROXY: app,egress-proxy,localhost,127.0.0.1
+      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_AGENT_MODEL_HOST:-api.anthropic.com}
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks: [agent_mcp, agent_egress]
 
   # This one-shot assertion runs as the same identity and on the same networks
   # a future agent session will use. It deliberately has no `env_file`: the

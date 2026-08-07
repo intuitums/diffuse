@@ -259,19 +259,32 @@ key. The release profile stores it in the `agent_data` named volume at
 root filesystem is read-only and `/tmp` is ephemeral, so do not redirect
 `DIFFUSE_AGENT_HOME` to either location.
 
-Only `worker` mounts this volume. This is intentional: vendor CLIs refresh an
-OAuth credential in place, and two containers trying to refresh one token can
-invalidate each other. `app` does not receive the credential.
+**Target architecture** (CLI-native plan): only the isolated `agent-runner`
+service mounts this volume. The worker never executes a vendor CLI and never
+receives agent credentials. See [agent-runtimes.md](agent-runtimes.md).
 
-Sign in through a disposable worker process so it has the exact same
-read-only-rootfs and capability constraints as the long-running worker, without
-interrupting active jobs:
+**Transitional today:** `worker` is still the sole writer so operators can sign
+in before the runner-backed review path lands. `app` does not receive the
+credential. Vendor CLIs refresh an OAuth credential in place; two writers can
+invalidate each other, so keep a single mount owner.
+
+Sign in through a disposable worker process (transitional) so it has the exact
+same read-only-rootfs and capability constraints as the long-running worker,
+without interrupting active jobs:
 
 ```bash
 docker compose run --rm worker agent login claude --console
 # or, for a headless Codex login:
 docker compose run --rm worker agent login codex --device-auth
 docker compose run --rm worker agent status
+```
+
+Build and smoke the agent-runner image (opt-in profile; does not publish
+reviews yet):
+
+```bash
+docker compose --profile agent build agent-runner
+docker compose --profile agent run --rm agent-runner status
 ```
 
 The worker service sets `HOME` to a private subdirectory of the credential

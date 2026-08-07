@@ -4,167 +4,134 @@ Diffuse owns the review **contract** — the diff, policy, `ReviewReport` schema
 finding lineage, and publication. A *review runtime* turns a diff plus context
 into that report. The seam is the whole report, not a single model call.
 
-## Two paths
+## Authority
 
-| Path | Who runs it | Runtime today | Destination |
-| --- | --- | --- | --- |
-| Self-hosted server | API + worker on your infrastructure | `litellm` (one-shot structured passes via a model API) | May drive an agent CLI only from a dedicated, preflight-asserted review compartment; the API and worker themselves still refuse agent-CLI runtimes. |
-| Local CLI | `diffuse review` on a developer machine | `litellm` (same one-shot path) | May select `claude` or `codex` once adapters exist — driving a locally installed, locally authenticated agent CLI behind Diffuse-owned config. |
+The active architecture is the Linear
+[CLI-native agent operation plan](https://linear.app/intuitum/document/cli-native-agent-operation-plan-6ccec382faef).
+This document tracks what has landed in the repository against that plan.
 
-There is no Diffuse-hosted cloud control plane. “Hosted” in older comments means
-the **self-hosted server** process, not a SaaS tier.
+## Target architecture
 
-### Container review boundary (decision, not implementation)
+```
+GitHub webhook → Diffuse queue/index/database → session capability
+→ isolated agent-runner → Claude Code or Codex CLI
+→ schema-validated read-only findings → Diffuse policy/publish path → GitHub App
+```
+
+| Role | Owns |
+| --- | --- |
+| Diffuse control plane (`app` + `worker`) | GitHub App identity and publication, webhooks, queueing, mirrors, indexing, database, policy, audit, evaluation, capability minting |
+| Isolated agent-runner | Pinned Claude Code / Codex CLIs, agent credential/config storage, immutable review workspace mounts, allowlisted model-auth egress |
+| Agent CLI session | Read-only investigation via scoped Diffuse tools; structured answer only |
+
+Non-negotiable boundaries:
+
+* The worker never executes a CLI and never mounts agent credentials in the
+  target architecture.
+* Agents do not receive database credentials, GitHub App credentials, arbitrary
+  HTTP access, or direct GitHub write capability.
+* Agents are read-only in this delivery. Diffuse alone validates and publishes.
+* Running repository code is **not** part of this delivery.
+* A deployment must explicitly choose `claude` or `codex`. There is no default
+  runtime once LiteLLM is removed (Gate E).
+
+## Transitional state (today)
+
+| Path | Runtime today | Destination |
+| --- | --- | --- |
+| Self-hosted server | `litellm` (one-shot structured API calls) | Explicit `claude` or `codex` over the isolated agent-runner |
+| Local CLI (`diffuse review`) | `litellm` | Same CLI-native session contract once adapters select it |
+
+`REVIEW_RUNTIME=litellm` remains the only selectable implementation until Gate C
+lands a runner-backed adapter. It is transitional scaffolding, not the product
+direction. Do not add new LiteLLM call sites or design features that assume the
+worker spawns a vendor CLI.
+
+### Container review boundary
 
 The supported Ubuntu/Docker posture cannot run Claude Code's Bubblewrap
-sandbox: the measured user-namespace probe failed under the default hardened
-container, every tested AppArmor/seccomp/capability variation, and privileged
-mode. `failIfUnavailable: true` therefore correctly prevents Claude from
-silently running without its local sandbox; weakening the container until that
-setting stops refusing is not an option.
+sandbox (DEV-327). For the agent-runner, the container is the boundary: non-root,
+no control-plane credentials, no database reachability, intended egress only.
+`CONTAINER_COMPARTMENT_PROFILE` and the review-compartment preflight encode that
+requirement. Evidence is in [SECURITY.md](../SECURITY.md).
 
-For a future self-hosted agent runtime, the container must be the boundary. Its
-dedicated compartment must prove at runtime that the process reading untrusted
-content is non-root, has no control-plane credentials, cannot reach the database
-or other sensitive services, and has only intended egress. The corresponding
-`CONTAINER_COMPARTMENT_PROFILE` in `agent_host.sandbox_settings` disables the
-unavailable CLI sandbox, and will not render at all without a
-`CompartmentAssertion` from a preflight that passed — the requirement is
-enforced, not annotated. It does not make an agent runtime selectable or relax
-the local profile. The complete evidence matrix and security rationale are in
-[SECURITY.md](../SECURITY.md).
+## What has landed
 
-## What `litellm` is
+| Piece | State |
+| --- | --- |
+| `ReviewRuntime` / `ReviewRequest` seam | Done |
+| `report_assembly` extracted from the LiteLLM engine | Done (DEV-328) |
+| Claude + Codex host plumbing (`diffuse agent login\|status\|write-policy`) | Done |
+| Durable agent credential home (`DIFFUSE_AGENT_HOME`) | Done (DEV-333) |
+| Review compartment preflight + CONNECT egress proxy | Done (DEV-331) |
+| `service.agents` session primitive + Claude argv/MCP bridge + record/replay | Done (DEV-329); no production callers yet |
+| Session capability + structured result contracts | Done (DEV-338 / Gate A) |
+| Dedicated agent-runner image with pinned CLIs | In progress (DEV-330 / Gate B) |
+| Capability tool HTTP endpoint + runner service | Not started (Gate B) |
+| Review / Q&A / conversation / learning over CLI sessions | Not started (Gates C–D) |
+| Delete LiteLLM + provider config surface | Not started (Gate E) |
 
-`REVIEW_RUNTIME=litellm` names today’s one-shot API runtime. The implementation
-uses the LiteLLM library to call `REVIEW_MODEL` (and optional
-`REVIEW_VERIFIER_MODEL`), including self-hosted OpenAI-compatible endpoints via
-`REVIEW_API_BASE`. The same library still powers repository Q&A, learning, and
-conversation even when local review later rents an agent CLI.
+## Session capability contract
 
-`litellm` is therefore an implementation label, not the product. Prefer talking
-about the **API / one-shot runtime** vs **agent-CLI runtimes**. Renaming the
-env value waits until a second runtime is actually selectable.
+`service.agents.capability` defines the short-lived bearer a runner presents to
+scoped read-only tools. Claims are pinned to repository, snapshot, optional PR,
+head SHA, runtime, profile, operation allowlist, request budget, and expiry.
+Audit logs use `SessionCapability.as_audit_dict()` — never the bearer token.
 
-## Agent CLI runtimes (destination)
+Allowed operations today (read-only):
 
-Planned values: `claude`, `codex`. Neither is in `RUNTIME_NAMES` yet, so
-`REVIEW_RUNTIME` rejects them. What *has* landed:
+* `search_code`, `read_diff`, `read_file`, `read_symbol`
+* `read_pr_metadata`, `read_review_threads`, `read_prior_findings`, `read_policy`
 
-- `diffuse agent login claude` — runs `claude auth login` into
-  `~/.diffuse/agent/claude`. Auth method is Claude's own menu (Claude.ai
-  subscription, Anthropic API key, or a third-party / gateway option). Diffuse
-  does not collect or store API keys itself.
-- `diffuse agent login codex` — runs `codex login` into
-  `~/.diffuse/agent/codex` (`CODEX_HOME`), with `cli_auth_credentials_store =
-  "file"` so the credential stays in that directory. ChatGPT OAuth by default;
-  Codex's own API-key path if you prefer. Same rule: Diffuse does not collect
-  keys.
-- **Arguments after the CLI name are forwarded to the vendor command
-  unchanged.** Choosing *how* to authenticate is the vendor's menu, so Diffuse
-  does not mirror their flags — an allowlist here would need updating on every
-  vendor release and would be silently wrong in between.
+`service.agents.result.AgentSessionResult` is the runner→control-plane answer
+shape: success with `value`, or failure with a stable `error_code`, named
+`stage`, and `audit_ref`. Spend is turns + wall time; do not invent provider
+token counts the CLI does not expose.
+
+## Agent CLI host plumbing
+
+Still useful for local development and for the eventual runner image:
+
+* `diffuse agent login claude|codex` — vendor auth into `~/.diffuse/agent/...`
+* `diffuse agent status` / `write-policy` / `logout`
+* Child environment allowlist; Claude sandbox policy + version floor (2.1.219+);
+  Codex TOML policy (`sandbox_mode = "read-only"`)
+
+Production login belongs on the agent-runner once that service owns the
+credential volume (Gate B). Until then, compose still mounts `agent_data` on
+`worker` so operators can sign in — that is transitional, not the target.
 
 ### Signing in on a server with no browser
 
-This is the normal case for a self-hosted operator, and the default flows do
-not cover it. Codex's default OAuth expects a browser that can reach a callback
-on the host's own localhost; on a headless box it hangs until you build an SSH
-tunnel. Use device authorization instead — it prints a URL and a one-time code
-you complete from any machine:
-
 ```bash
-diffuse agent login codex --device-auth
-diffuse agent login claude --console   # Anthropic Console / API billing
+# Transitional (worker still mounts agent_data):
+docker compose run --rm worker agent login codex --device-auth
+docker compose run --rm worker agent login claude --console
+
+# Target (Gate B+): same commands against the agent-runner service.
 ```
 
-Anything else the vendor accepts works the same way, including the stdin
-credential paths:
+Arguments after the CLI name are forwarded to the vendor command unchanged.
+Codex `-c` / `--config` / `-p` / `--profile` are refused because they rewrite
+Diffuse-owned policy keys.
 
-```bash
-printenv OPENAI_API_KEY | diffuse agent login codex --with-api-key
-```
+## Open adapter problems
 
-Use `--` before the vendor arguments if one ever collides with a Diffuse flag:
-`diffuse agent login codex -- --device-auth`.
+* **Credential reach under `agent_environment` on macOS** — Keychain needs
+  host identity the review child must not inherit (DEV-316).
+* **Read policy for a worktree inside `$HOME`** — `denyRead` / `allowRead`
+  overlap is unmeasured for paths under the real home.
+* **Release-supported auth modes** — verify each offered subscription / API-key
+  / third-party mode before exposing it (DEV-326).
 
-**Exceptions.** Codex's `-c` / `--config` and `-p` / `--profile` are refused,
-because they write or select the same `config.toml` keys Diffuse persists —
-including the `cli_auth_credentials_store = "file"` that keeps the credential
-inside `CODEX_HOME`. Sending it back to the OS keychain would put the
-credential where a review run with `--ignore-user-config` cannot read it, and
-the login would still exit 0, so the breakage would surface much later as a
-review that cannot authenticate. Change the persisted policy with
-`diffuse agent write-policy codex` instead. The refusal is per-CLI: those flags
-mean nothing to `claude auth login`, so Claude forwards them.
-- `diffuse agent status` / `write-policy` for both
-- Diffuse-owned config under `~/.diffuse/agent` (`DIFFUSE_AGENT_HOME`)
-- Child environment allowlist; Claude sandbox policy + version floor (2.1.219+);
-  Codex TOML policy (`sandbox_mode = "read-only"`, shell env excludes). Codex
-  has no version floor yet: setting one means first measuring which of its
-  settings older builds accept and then ignore.
-- Native Windows refused (no OS sandbox Diffuse can rely on)
+## Delivery order
 
-What has **not** landed: an adapter that spawns either CLI for a review, or lets
-`diffuse review` run without `REVIEW_MODEL`.
+1. ~~Freeze contract / replace unsafe assumptions~~ Gate A (DEV-338)
+2. Isolated runner image + capability tools — Gate B (DEV-330+)
+3. Move review execution onto CLI sessions — Gate C (DEV-332)
+4. Move Q&A, conversation, rule learning — Gate D (DEV-335)
+5. Delete LiteLLM, provider config, legacy tests/docs — Gate E (DEV-336)
+6. Pilot + cutover — Gate F
 
-The reusable session primitive is available in `service.agents` with no
-production callers. It constructs Claude Code's print/JSON invocation and can
-record or replay its subprocess transcript in offline unit tests.
-
-It carries all three of the local boundaries rather than leaving them to the
-adapter, because each fails silently when omitted: the `agent_environment`
-allowlist, `--settings` naming the Diffuse-owned sandbox policy (a session
-refuses to start if that policy is missing or stale, since without
-`failIfUnavailable` a host lacking bubblewrap runs the review unsandboxed), and
-`--strict-mcp-config` with a Diffuse-written `--mcp-config` — unconditionally,
-so the `.mcp.json` of the repository under review is never loaded. Tools come
-from the profile's allowlist via `--allowed-tools`, and the tool bridge's bearer
-token reaches the child through the environment rather than argv.
-
-Adapters remain responsible for their credential, evaluation, and
-runtime-selection gates; this primitive does not make an agent runtime
-selectable.
-
-**What the adapter still needs.** In place:
-
-| Item | State |
-| --- | --- |
-| `ReviewRequest` seam | Done — runtimes take a request object |
-| Internal `search_code` tool provider + recorders | Done — agent path can log calls |
-| Claude + Codex host plumbing | Done — login / status / write-policy |
-| `diffuse agent login` end to end | Done — signing in reports `ready` from `diffuse agent status` |
-
-Two unsolved problems, both about the boundary rather than the model:
-
-- **How the agent process receives its credential.** On macOS the CLI reads it
-  from the login Keychain, which needs `USER`, the real `HOME`, and `security`
-  on `PATH` — all three removed by `agent_environment`. The read-only status
-  probes get a wider `probe_environment`; a review cannot have one, because the
-  diff it is reading is untrusted. Undecided.
-- **Read policy for a worktree inside `$HOME`.** `denyRead` covers all of
-  `REAL_HOME` while `allowRead` names the worktree, which for local review is
-  normally somewhere under it. Which one wins is unmeasured, and the single test
-  covering the pair uses a `/tmp` path that never exercises the overlap.
-
-Two further things are decisions rather than engineering: capturing the review
-baseline that makes "is this runtime better?" answerable at all, and measuring
-which Codex settings older builds ignore silently, which is what a Codex version
-floor would have to be derived from.
-
-Delivery order:
-
-1. ~~`ReviewRuntime` seam~~ done
-2. ~~Claude + Codex host plumbing~~ done
-3. Claude Code adapter — next; needs the baseline above first
-4. Retire pass scaffolding only after eval parity
-5. Codex adapter
-6. Measure per runtime
-
-## Pass scaffolding
-
-`REVIEW_PASSES`, diff chunking, the pre-fused context blob, and the verifier
-*pass* belong to the one-shot API runtime. They are not the review contract.
-An agent runtime investigates once with tools (`search_code` / `ask_codebase`
-over the index). Deleting that scaffolding waits on measured parity — see
-[engineering-plan.md](engineering-plan.md).
+Code execution, shell access, branch mutation, and GitHub/database writes from
+agents remain deferred behind a separate sandbox design.

@@ -2,14 +2,15 @@
 
 A review runtime turns a `ReviewRequest` into a `ReviewReport`. Diffuse owns
 the contract; the runtime supplies the investigation. See
-`docs/agent-runtimes.md`.
+`docs/agent-runtimes.md` and the Linear CLI-native agent operation plan.
 
-`litellm` is the only selectable implementation today: the one-shot API path
-that orchestrates candidate passes, deduplication, diagram, and verifier via
-structured completions (implemented with the LiteLLM library). Planned
-local-only values `claude` and `codex` are named here so host plumbing and
-tests can refer to them, but they are not in `RUNTIME_NAMES` until an adapter
-exists.
+`litellm` is the only selectable implementation today: the transitional
+one-shot API path that orchestrates candidate passes, deduplication, diagram,
+and verifier via structured completions. Destination values `claude` and
+`codex` are named here for host plumbing and tests, but they are not in
+`RUNTIME_NAMES` until a dedicated agent-runner adapter exists (Gate C). Those
+runtimes execute on an isolated runner with a session capability — never by
+having the worker spawn a vendor CLI.
 
 The seam is deliberately the whole report rather than a single model call.
 `_call_structured` is the wrong altitude for it -- an agentic runtime that
@@ -44,11 +45,10 @@ CODEX_RUNTIME = "codex"
 #: configuration that validates at startup and fails mid-review.
 RUNTIME_NAMES: tuple[str, ...] = (LITELLM_RUNTIME,)
 
-#: The runtimes the hosted worker may use. The agent-CLI runtimes drive a
-#: developer's locally installed, locally authenticated CLI, so they are a
-#: `diffuse review` capability and not a server one -- the hosted path reviews
-#: pull requests from anyone who can open one, which is a different threat
-#: model, and it has no CLI to drive in the first place.
+#: The runtimes a server process may use today. Agent-CLI values join this
+#: tuple only after the isolated agent-runner adapter exists (Gate C). Until
+#: then the worker keeps the transitional LiteLLM path; it must not spawn a
+#: vendor CLI itself.
 HOSTED_RUNTIME_NAMES: tuple[str, ...] = (LITELLM_RUNTIME,)
 
 RUNTIME_VARIABLE = "REVIEW_RUNTIME"
@@ -98,20 +98,23 @@ def review_runtime_name() -> str:
 
 
 def hosted_review_runtime_name() -> str:
-    """Resolve `REVIEW_RUNTIME` for a server process, refusing local runtimes.
+    """Resolve `REVIEW_RUNTIME` for a server process.
 
     Separate from `review_runtime_name` so the refusal happens at worker
     startup -- named, once -- rather than per job. A runtime this process
     cannot drive would otherwise dead-letter every pull request in the fleet,
     and fixing the variable afterwards recovers none of them.
+
+    When `claude` / `codex` become hosted, the worker will dispatch to the
+    isolated agent-runner rather than execute those CLIs in-process.
     """
 
     name = review_runtime_name()
     if name not in HOSTED_RUNTIME_NAMES:
         raise ValueError(
-            f"{RUNTIME_VARIABLE}={name} is a local `diffuse review` runtime and "
-            f"cannot be used by a server process; set it to "
-            f"{' or '.join(HOSTED_RUNTIME_NAMES)}"
+            f"{RUNTIME_VARIABLE}={name} is not available to a server process yet; "
+            f"set it to {' or '.join(HOSTED_RUNTIME_NAMES)} until the "
+            f"agent-runner adapter lands"
         )
     return name
 
