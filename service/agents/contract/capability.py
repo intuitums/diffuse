@@ -264,7 +264,10 @@ def verify_session_capability(
         raise CapabilityScopeMismatch("session capability pull_request_id does not match")
     if require_snapshot_id is not None and capability.scope.snapshot_id != require_snapshot_id:
         raise CapabilityScopeMismatch("session capability snapshot_id does not match")
-    if require_head_sha is not None and capability.scope.head_sha != require_head_sha.strip().lower():
+    if (
+        require_head_sha is not None
+        and capability.scope.head_sha != require_head_sha.strip().lower()
+    ):
         raise CapabilityScopeMismatch("session capability head_sha does not match")
     if require_operation is not None:
         if require_operation not in CAPABILITY_OPERATIONS:

@@ -455,9 +455,18 @@ jobs:
           # regression rather than a slow start.
           docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
             up --detach worker
-          sleep 10
-          worker_state="$(docker compose --env-file ci.env --file compose.yaml \
-            --project-name diffuse-ci ps --format '{{.State}}' worker)"
+          # Most worker processes are running almost immediately. Polling keeps
+          # the same ten-second failure window without spending ten seconds on
+          # every healthy self-hosted Check.
+          worker_state=""
+          for attempt in $(seq 1 10); do
+            worker_state="$(docker compose --env-file ci.env --file compose.yaml \
+              --project-name diffuse-ci ps --format '{{.State}}' worker)"
+            if [ "$worker_state" = "running" ]; then
+              break
+            fi
+            sleep 1
+          done
           if [ "$worker_state" != "running" ]; then
             echo "::error::worker is '${worker_state}', expected 'running'" >&2
             docker compose --env-file ci.env --file compose.yaml \
@@ -499,16 +508,23 @@ jobs:
           # Docker copies the image directory's metadata to a fresh empty named
           # volume; without the pinned uid/gid and 0700 mode this fails only on
           # a customer's first agent sign-in.
-          docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-            exec -T worker /bin/sh -c '
-              test "$(id -u):$(id -g)" = "10001:10001"
-              test "$(stat -c "%u:%g:%a" /var/lib/diffuse/agent)" = "10001:10001:700"
-              test -w /var/lib/diffuse/agent
-              # Compose points HOME here for the whole service, so it has to
-              # exist before anyone runs an agent login -- not only after.
-              test "$HOME" = /var/lib/diffuse/agent/home
-              test -d "$HOME" && test -w "$HOME"
-            '
+          # Gate A moves the mount from worker to the isolated agent-runner.
+          # Every layout receives the same live, non-root volume check, so the
+          # workflow remains valid during the short transition on main.
+          credential_check='set -eu
+            test "$(id -u):$(id -g)" = "10001:10001"
+            test "$(stat -c "%u:%g:%a" /var/lib/diffuse/agent)" = "10001:10001:700"
+            test -w /var/lib/diffuse/agent
+            test "$HOME" = /var/lib/diffuse/agent/home
+            test -d "$HOME" && test -w "$HOME"'
+          if docker compose --env-file ci.env --file compose.yaml --profile agent \
+            config --services | grep -Fxq agent-runner; then
+            docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
+              --profile agent run --rm --no-deps agent-runner /bin/sh -c "$credential_check"
+          else
+            docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
+              exec -T worker /bin/sh -c "$credential_check"
+          fi
 
       - name: Collect stack logs
         if: always()
