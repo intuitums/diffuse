@@ -311,6 +311,10 @@ jobs:
       POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
       DIFFUSE_API_TOKEN: 0123456789abcdef0123456789abcdef
       DIFFUSE_PUBLIC_URL: http://localhost:8000
+      # Compose validates opt-in runner profiles too. This is a well-formed
+      # public key for configuration validation only; it has no corresponding
+      # private key in CI and cannot sign a dispatch envelope.
+      DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY: Yfs8wlT_0BUOdJOjbOpcJ2khTWvDZi4y-K8XZOVxeFE
       # Set here rather than read from deploy/env.example, which now ships this
       # commented out: a customer who copies that file and gets a working review
       # model has been handed the same guess the code default was deleted for.
