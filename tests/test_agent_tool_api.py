@@ -126,6 +126,15 @@ async def test_runner_daemon_preflight_fails_closed(monkeypatch):
             pass
 
 
+def test_agent_tool_url_requires_the_fixed_internal_port():
+    with pytest.raises(ValueError, match="8011"):
+        tool_server.validate_agent_tool_url("http://app:9999/agent/v1")
+    assert (
+        tool_server.validate_agent_tool_url("http://app:8011/agent/v1")
+        == "http://app:8011/agent/v1"
+    )
+
+
 @pytest.mark.anyio
 async def test_capability_mcp_transport(monkeypatch):
     requests = []

@@ -7,7 +7,6 @@ only for the tool and immutable snapshot named in that capability.
 
 from __future__ import annotations
 
-import os
 from contextlib import closing
 from functools import partial
 from typing import Annotated
@@ -30,8 +29,9 @@ from service.code_query import CodeQueryTarget, search_codebase
 from service.repositories import get_repository
 
 AGENT_API_PREFIX = "/agent/v1"
+#: Fixed internal port. Compose and the runner URL allowlist both pin this value;
+#: it is not an operator override.
 DEFAULT_AGENT_TOOL_PORT = 8011
-AGENT_TOOL_PORT_VARIABLE = "DIFFUSE_AGENT_TOOL_PORT"
 MAX_AGENT_SEARCH_LIMIT = 20
 
 router = APIRouter(prefix=AGENT_API_PREFIX, include_in_schema=False)
@@ -49,16 +49,6 @@ class SearchCodeRequest(_StrictRequest):
     query: Annotated[str, Field(min_length=1, max_length=2000)]
     path: Annotated[str | None, Field(min_length=1, max_length=1024)] = None
     limit: int = Field(default=8, ge=1, le=MAX_AGENT_SEARCH_LIMIT)
-
-
-def agent_tool_port() -> int:
-    """Port for the internal agent-tool listener (never published to the host)."""
-
-    raw = os.environ.get(AGENT_TOOL_PORT_VARIABLE, str(DEFAULT_AGENT_TOOL_PORT)).strip()
-    port = int(raw)
-    if not 1 <= port <= 65535:
-        raise ValueError(f"{AGENT_TOOL_PORT_VARIABLE} must be between 1 and 65535")
-    return port
 
 
 def create_tool_app() -> FastAPI:

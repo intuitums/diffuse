@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -21,7 +22,7 @@ from service.agents.capability_auth import (
     CAPABILITY_SIGNING_KEY_VARIABLE,
     session_capability_signing_key,
 )
-from service.agents.tool_api import agent_tool_port, create_tool_app
+from service.agents.tool_api import DEFAULT_AGENT_TOOL_PORT, create_tool_app
 from service.github.api import (
     fetch_manual_pull_request_event,
     normalize_manual_review_request,
@@ -136,7 +137,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await anyio.to_thread.run_sync(_verify_database_schema)
 
     # Agent tools listen on a separate, unpublished port reachable only via the
-    # internal agent_mcp network — never on the public API port.
+    # internal agent_mcp network — never on the public API port. Nested
+    # uvicorn.Server.serve() captures SIGTERM for itself; disable that so a
+    # Compose stop still belongs to the public API process, which then stops
+    # this listener in the lifespan finally below.
     tool_server = None
     tool_task = None
     if os.environ.get(CAPABILITY_SIGNING_KEY_VARIABLE, "").strip():
@@ -147,11 +151,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             uvicorn.Config(
                 create_tool_app(),
                 host="0.0.0.0",
-                port=agent_tool_port(),
+                port=DEFAULT_AGENT_TOOL_PORT,
                 log_level="warning",
                 access_log=False,
             )
         )
+        tool_server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
         tool_task = asyncio.create_task(tool_server.serve())
 
     try:
