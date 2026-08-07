@@ -146,6 +146,27 @@ def _run_egress_proxy_healthcheck(arguments: Sequence[str]) -> None:
         )
 
 
+def _run_agent_runner(arguments: Sequence[str]) -> None:
+    if arguments:
+        raise ValueError("The agent-runner command does not accept positional arguments")
+    import uvicorn
+
+    from service.agents.runner import app
+
+    _logging_level, uvicorn_level = _log_level()
+    uvicorn.run(app, host=DEFAULT_BIND_HOST, port=8010, log_level=uvicorn_level)
+
+
+def _run_agent_runner_healthcheck(arguments: Sequence[str]) -> None:
+    if arguments:
+        raise ValueError(
+            "The agent-runner-healthcheck command does not accept positional arguments"
+        )
+    with urlopen("http://127.0.0.1:8010/ready", timeout=_healthcheck_timeout()) as response:
+        if response.status != 200:
+            raise RuntimeError(f"Agent runner readiness returned HTTP {response.status}")
+
+
 def _run_cli(arguments: Sequence[str]) -> None:
     from service.cli.review import main as cli_main
 
@@ -169,6 +190,10 @@ def main(arguments: Sequence[str] | None = None) -> None:
             _run_egress_proxy(selected)
         elif command == "egress-proxy-healthcheck":
             _run_egress_proxy_healthcheck(selected)
+        elif command == "agent-runner":
+            _run_agent_runner(selected)
+        elif command == "agent-runner-healthcheck":
+            _run_agent_runner_healthcheck(selected)
         else:
             # The CLI owns its own exit codes and error formatting.
             _run_cli([command, *selected])
