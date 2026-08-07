@@ -54,7 +54,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from service.review.agent_environment import AGENT_HOME_VARIABLE, CREDENTIAL_ENVIRONMENT
+from service.review.agent_environment import AGENT_HOME_VARIABLE
 from service.review.runtimes import CLAUDE_CODE_RUNTIME, CODEX_RUNTIME
 
 #: Where Diffuse keeps the agent configuration it owns. Deliberately not
