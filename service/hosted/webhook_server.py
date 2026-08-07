@@ -2,27 +2,21 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, closing, contextmanager
+from contextlib import asynccontextmanager, closing
 from functools import partial
 
 import anyio
-import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 
 from indexer.store import get_conn
-from service.agents.capability_auth import (
-    CAPABILITY_SIGNING_KEY_VARIABLE,
-    session_capability_signing_key,
-)
-from service.agents.tool_api import DEFAULT_AGENT_TOOL_PORT, create_tool_app
+from service.agents.tool_api import router as agent_tool_router
 from service.github.api import (
     fetch_manual_pull_request_event,
     normalize_manual_review_request,
@@ -81,19 +75,6 @@ ACCEPTED_ACTIONS = {
 MAX_WEBHOOK_BODY_BYTES = 1_000_000
 
 
-class _EmbeddedToolServer(uvicorn.Server):
-    """A Uvicorn server embedded in the API process without owning signals.
-
-    The public API's Uvicorn instance owns the process signal handlers.  Letting
-    this private listener install its own handler would replace the API's
-    SIGTERM handler, so Docker shutdown would stop only the listener.
-    """
-
-    @contextmanager
-    def capture_signals(self):
-        yield
-
-
 async def _read_bounded_webhook_body(request: Request) -> bytes:
     """Reject oversized webhook bodies before buffering the full payload."""
     content_length = request.headers.get("content-length")
@@ -146,42 +127,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # `invalid_request`: a server misconfiguration reported to the caller as
     # their mistake. Failing here names the variable instead, and matches the
     # worker, the CLI, and `diffuse model`.
-    await anyio.to_thread.run_sync(validate_worker_configuration)
+    # The API deliberately cannot reach credential-isolated runner control
+    # networks. The worker validates their availability before claiming work.
+    await anyio.to_thread.run_sync(
+        partial(validate_worker_configuration, verify_native_runners=False)
+    )
     await anyio.to_thread.run_sync(_verify_database_schema)
-
-    # Agent tools listen on a separate, unpublished port reachable only via the
-    # internal agent_mcp network — never on the public API port. Nested
-    # uvicorn.Server.serve() captures SIGTERM for itself; disable that so a
-    # Compose stop still belongs to the public API process, which then stops
-    # this listener in the lifespan finally below.
-    tool_server = None
-    tool_task = None
-    if os.environ.get(CAPABILITY_SIGNING_KEY_VARIABLE, "").strip():
-        session_capability_signing_key()
-        tool_server = _EmbeddedToolServer(
-            uvicorn.Config(
-                create_tool_app(),
-                host="0.0.0.0",
-                port=DEFAULT_AGENT_TOOL_PORT,
-                log_level="warning",
-                access_log=False,
-            )
-        )
-        tool_task = asyncio.create_task(tool_server.serve())
-
-    try:
-        async with diffuse_mcp.session_manager.run():
-            yield
-    finally:
-        if tool_server is not None:
-            tool_server.should_exit = True
-        if tool_task is not None:
-            await tool_task
+    async with diffuse_mcp.session_manager.run():
+        yield
 
 
 app = FastAPI(title="Diffuse", version="0.1.0", lifespan=lifespan)
 app.include_router(rest_api_router)
 app.include_router(oauth_router)
+app.include_router(agent_tool_router)
 app.add_exception_handler(RestApiError, rest_api_error_handler)
 
 

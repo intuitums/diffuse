@@ -14,31 +14,41 @@ commercial agreement, license key, entitlement file, or registry credential.
 ## Install
 
 1. Copy `env.example` to `.env`, restrict it with `chmod 600 .env`, and fill
-   every required value — including `REVIEW_MODEL`, which ships commented out so
-   that copying this file cannot hand you a review model you never chose.
-   Uncomment the recommendation or name your own; the worker refuses to start
-   until one is set. Configure the GitHub App ID, installation ID, private key,
-   and webhook secret; Diffuse mints and refreshes installation tokens, so do
-   not paste a one-hour token into `GITHUB_TOKEN`. Release bundles already pin
-   `DIFFUSE_IMAGE` to the immutable release digest.
-2. Verify the image signature before starting it:
+   the GitHub App ID, installation ID, private key, and webhook secret; Diffuse
+   mints and refreshes installation tokens, so do not paste a one-hour token
+   into `GITHUB_TOKEN`. CLI-native `REVIEW_RUNTIME=codex` or `claude` does not
+   use `REVIEW_MODEL` or provider API keys. Set `REVIEW_MODEL` only when using
+   transitional `REVIEW_RUNTIME=litellm`. Release bundles already pin
+   `DIFFUSE_IMAGE`, `DIFFUSE_CLAUDE_RUNNER_IMAGE`, and
+   `DIFFUSE_CODEX_RUNNER_IMAGE` to compatible immutable release digests.
+2. Verify each release image signature before starting it:
 
    ```bash
-   image_ref="$(sed -n 's/^DIFFUSE_IMAGE=//p' .env)"
-   cosign verify \
-     --certificate-identity-regexp \
-       '^https://github.com/intuitumxyz/Diffuse/.github/workflows/release.yml@refs/tags/v' \
-     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-     "$image_ref"
+   for image_ref in $(sed -n -E 's/^DIFFUSE(_[A-Z_]+)?_IMAGE=//p' .env); do
+     cosign verify \
+       --certificate-identity-regexp \
+         '^https://github.com/intuitumxyz/Diffuse/.github/workflows/release.yml@refs/tags/v' \
+       --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+       "$image_ref"
+   done
    ```
 
 3. Pull and start the migration-gated stack:
 
    ```bash
-   docker compose --env-file .env pull
-   docker compose --env-file .env up -d
+   docker compose --env-file .env --profile agent-claude --profile agent-codex pull
+   docker compose --env-file .env --profile agent-claude --profile agent-codex up -d
    docker compose ps
    curl --fail http://127.0.0.1:8000/ready
+   ```
+
+   For a CLI-native runtime, connect both runner credentials before requesting a
+   review; provenance can select either one. The vendor performs the login and
+   token refresh, while Diffuse never reads or prints credential material.
+
+   ```bash
+   docker compose --profile agent-codex run --rm agent-runner-codex agent login codex --device-auth
+   docker compose --profile agent-claude run --rm agent-runner-claude agent login claude --console
    ```
 
 4. Create the GitHub webhook, pointing it at

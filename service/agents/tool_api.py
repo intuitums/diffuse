@@ -1,8 +1,9 @@
 """Capability-authorized, index-backed tools for the isolated runner.
 
-Served on an internal listener (not the public API port). The agent-runner has
-no database or operator token; its short-lived session capability is sufficient
-only for the tool and immutable snapshot named in that capability.
+This is intentionally a narrow internal HTTP surface rather than a second
+general-purpose API.  The agent-runner has no database or operator token; its
+short-lived session capability is sufficient only for the tool and immutable
+snapshot named in that capability.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from functools import partial
 from typing import Annotated
 
 import anyio
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from indexer.store import get_conn
@@ -29,16 +30,9 @@ from service.code_query import CodeQueryTarget, search_codebase
 from service.repositories import get_repository
 
 AGENT_API_PREFIX = "/agent/v1"
-#: Fixed internal port. Compose and the runner URL allowlist both pin this value;
-#: it is not an operator override.
-DEFAULT_AGENT_TOOL_PORT = 8011
 MAX_AGENT_SEARCH_LIMIT = 20
 
 router = APIRouter(prefix=AGENT_API_PREFIX, include_in_schema=False)
-
-
-class CapabilityTargetError(ValueError):
-    """The capability's repository/PR/snapshot binding is no longer usable."""
 
 
 class _StrictRequest(BaseModel):
@@ -49,20 +43,6 @@ class SearchCodeRequest(_StrictRequest):
     query: Annotated[str, Field(min_length=1, max_length=2000)]
     path: Annotated[str | None, Field(min_length=1, max_length=1024)] = None
     limit: int = Field(default=8, ge=1, le=MAX_AGENT_SEARCH_LIMIT)
-
-
-def create_tool_app() -> FastAPI:
-    """Minimal app exposing only capability-authorized agent tools."""
-
-    application = FastAPI(
-        title="Diffuse agent tools",
-        version="0.1.0",
-        docs_url=None,
-        redoc_url=None,
-        openapi_url=None,
-    )
-    application.include_router(router)
-    return application
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -106,7 +86,7 @@ def _target_for_capability(conn, capability: SessionCapability) -> CodeQueryTarg
 
     repository = get_repository(conn, capability.scope.repository_id)
     if repository is None or not repository.enabled:
-        raise CapabilityTargetError("The capability repository is unavailable")
+        raise ValueError("The capability repository is unavailable")
 
     with conn.cursor() as cursor:
         cursor.execute(
@@ -132,9 +112,9 @@ def _target_for_capability(conn, capability: SessionCapability) -> CodeQueryTarg
         pull_request = cursor.fetchone()
 
     if not snapshot:
-        raise CapabilityTargetError("The capability snapshot is unavailable")
+        raise ValueError("The capability snapshot is unavailable")
     if not pull_request or str(pull_request[0]).lower() != capability.scope.head_sha:
-        raise CapabilityTargetError("The capability pull request revision is unavailable")
+        raise ValueError("The capability pull request revision is unavailable")
 
     plan = CrossRepositoryContextPlan(
         primary_repository_id=repository.id,
@@ -171,8 +151,7 @@ async def search_code(
 ) -> dict[str, object]:
     try:
         return await anyio.to_thread.run_sync(partial(_search_code, capability, request))
-    except CapabilityTargetError as error:
-        # Binding disappeared or advanced — do not turn that into a broad lookup.
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Agent session is not authorized") from error
     except ValueError as error:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+        # A capability is no longer usable if its precise repository/PR/snapshot
+        # binding disappeared or advanced. Do not turn that into a broad lookup.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Agent session is not authorized") from error

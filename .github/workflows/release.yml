@@ -49,6 +49,8 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/intuitumxyz/diffuse
+  CLAUDE_RUNNER_IMAGE: ghcr.io/intuitumxyz/diffuse-runner-claude
+  CODEX_RUNNER_IMAGE: ghcr.io/intuitumxyz/diffuse-runner-codex
   # The self-host bundle is published as a public OCI artifact next to the image.
   # GHCR package visibility is configured outside Actions. The anonymous-access
   # gate below fails the release if either package is not actually public.
@@ -95,21 +97,35 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          # amd64 builds on the self-hosted box and shares Verify's cache scope.
+          # amd64 builds on the self-hosted runner build-container uses — the label
+          # maps to exactly one runner, whose rootless daemon holds the persistent
+          # `diffuse` builder — so it starts from the layers the merge's own Verify
+          # run just proved, locally, with no cache import leg at all. See
+          # build-container for the measurements that retired the GitHub Actions
+          # cache on the box.
           - platform: linux/amd64
             runner: intuitum-8vcpu-ubuntu-2604
-            cache_scope: diffuse/Dockerfile
+            builder: diffuse
+            cache_from: ""
+            cache_to: ""
           # arm64 STAYS on Blacksmith, and this is the only thing still holding that
           # account open. intuitumserver-1 is x86_64 with no qemu handlers registered;
           # the expensive step in this Dockerfile is PyInstaller, which cannot
           # cross-compile and has to execute on the target architecture, so emulating it
           # would turn a 45-minute build into hours. Moving this leg needs native arm64
-          # hardware, not a config change. Its own cache scope: unlike a Blacksmith
-          # sticky disk, a GitHub Actions cache scope is not partitioned by architecture,
-          # so sharing amd64's would have the two overwrite each other every release.
+          # hardware, not a config change.
+          #
+          # This leg also KEEPS the GitHub Actions cache: Blacksmith's runners are
+          # ephemeral VMs in Blacksmith's datacenter, so there is no persistent daemon
+          # to adopt a builder from, and its path to the cache service is not the
+          # self-hosted upload leg that made `type=gha` untenable on the box. Its own
+          # scope, because a GitHub Actions cache scope is not partitioned by
+          # architecture and an amd64 export would poison an arm64 restore.
           - platform: linux/arm64
             runner: blacksmith-8vcpu-ubuntu-2404-arm
-            cache_scope: diffuse/Dockerfile-arm64
+            builder: ""
+            cache_from: type=gha,scope=diffuse/Dockerfile-arm64
+            cache_to: type=gha,scope=diffuse/Dockerfile-arm64,mode=max
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -125,25 +141,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Layer caching used to be implicit in Blacksmith's sticky disk, which is why this
-      # job carried no cache-from/cache-to and a comment saying adding them would bypass
-      # it. Off Blacksmith that inverts exactly: with no directives every release build
-      # starts cold. `mode=max` because the expensive layer is the hash-pinned
-      # `pip install` in the builder stage, which `mode=min` would not export.
-      #
-      # The amd64 leg deliberately shares verify.yml's build-container scope, because it
-      # builds the same image and should start from the layers Verify already produced.
-      # See the matrix above for why arm64 does not.
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      # amd64 adopts its runner's persistent builder — the same idempotent command as
+      # verify.yml's container jobs; keep the two spellings identical. arm64 is on an
+      # ephemeral Blacksmith VM, so it provisions a throwaway buildx the ordinary way
+      # and leans on the `type=gha` cache declared in the matrix. Attestations below
+      # (`sbom`, `provenance`) need the docker-container driver on both paths; the
+      # persistent builder was created with it, and setup-buildx-action defaults to it.
+      - name: Use the persistent builder
+        if: matrix.builder != ''
+        run: |
+          docker buildx inspect diffuse >/dev/null 2>&1 \
+            || docker buildx create --name diffuse --driver docker-container \
+            || docker buildx inspect diffuse >/dev/null
 
+      - name: Set up Buildx
+        if: matrix.builder == ''
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      # An empty matrix `builder` / `cache_from` / `cache_to` is simply not passed:
+      # the action treats the empty string as unset, so the arm64 leg uses the builder
+      # setup-buildx-action selected and the amd64 leg declares no cache directives.
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
+          builder: ${{ matrix.builder }}
           context: .
           platforms: ${{ matrix.platform }}
-          cache-from: type=gha,scope=${{ matrix.cache_scope }}
-          cache-to: type=gha,scope=${{ matrix.cache_scope }},mode=max
+          cache-from: ${{ matrix.cache_from }}
+          cache-to: ${{ matrix.cache_to }}
           build-args: |
             DIFFUSE_VERSION=${{ github.ref_name }}
             DIFFUSE_REVISION=${{ github.sha }}
@@ -171,6 +197,8 @@ jobs:
     timeout-minutes: 30
     outputs:
       digest: ${{ steps.manifest.outputs.digest }}
+      claude_runner_digest: ${{ steps.runners.outputs.claude_digest }}
+      codex_runner_digest: ${{ steps.runners.outputs.codex_digest }}
     permissions:
       contents: read
       id-token: write   # keyless cosign signing
@@ -241,13 +269,42 @@ jobs:
           DIGEST: ${{ steps.manifest.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
+      # The runner binaries are release artifacts, not a separate vendor update
+      # channel. Build their explicit Dockerfile targets, attach SBOM/provenance,
+      # and re-read the immutable manifest digests that the bundle will pin.
+      - name: Publish signed native runner images
+        id: runners
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          for runtime in claude codex; do
+            image_var="${runtime^^}_RUNNER_IMAGE"
+            image="${!image_var}"
+            docker buildx build --platform linux/amd64,linux/arm64 \
+              --target "runner-${runtime}" \
+              --build-arg "DIFFUSE_VERSION=${RELEASE_TAG}" \
+              --build-arg "DIFFUSE_REVISION=${GITHUB_SHA}" \
+              --build-arg "DIFFUSE_CREATED=${{ needs.validate-tag.outputs.created }}" \
+              --sbom=true --provenance=mode=max --push \
+              --tag "${image}:${RELEASE_TAG}" .
+            digest=$(docker buildx imagetools inspect "${image}:${RELEASE_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            cosign sign --yes "${image}@${digest}"
+            echo "${runtime}_digest=${digest}" >> "$GITHUB_OUTPUT"
+          done
+
       - name: Build self-host deployment bundle
         env:
           DIGEST: ${{ steps.manifest.outputs.digest }}
+          CLAUDE_DIGEST: ${{ steps.runners.outputs.claude_digest }}
+          CODEX_DIGEST: ${{ steps.runners.outputs.codex_digest }}
         run: |
           mkdir -p release/diffuse
           cp LICENSE deploy/README.md deploy/compose.yaml deploy/env.example release/diffuse/
           sed -i "s|^DIFFUSE_IMAGE=.*|DIFFUSE_IMAGE=${IMAGE}@${DIGEST}|" \
+            release/diffuse/env.example
+          sed -i "s|^DIFFUSE_CLAUDE_RUNNER_IMAGE=.*|DIFFUSE_CLAUDE_RUNNER_IMAGE=${CLAUDE_RUNNER_IMAGE}@${CLAUDE_DIGEST}|" \
+            release/diffuse/env.example
+          sed -i "s|^DIFFUSE_CODEX_RUNNER_IMAGE=.*|DIFFUSE_CODEX_RUNNER_IMAGE=${CODEX_RUNNER_IMAGE}@${CODEX_DIGEST}|" \
             release/diffuse/env.example
           cp docs/deployment.md release/diffuse/OPERATIONS.md
           # The per-repository policy reference. README.md and OPERATIONS.md both
@@ -293,6 +350,8 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.ref_name }}
       DIGEST: ${{ needs.publish.outputs.digest }}
+      CLAUDE_DIGEST: ${{ needs.publish.outputs.claude_runner_digest }}
+      CODEX_DIGEST: ${{ needs.publish.outputs.codex_runner_digest }}
     steps:
       - name: Collect the bundle
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
@@ -355,6 +414,8 @@ jobs:
         run: |
           oras logout ghcr.io
           oras manifest fetch "${IMAGE}@${DIGEST}" >/dev/null
+          oras manifest fetch "${CLAUDE_RUNNER_IMAGE}@${CLAUDE_DIGEST}" >/dev/null
+          oras manifest fetch "${CODEX_RUNNER_IMAGE}@${CODEX_DIGEST}" >/dev/null
           oras manifest fetch "${BUNDLE_ARTIFACT}:${RELEASE_TAG}" >/dev/null
 
       # CHANNEL 2 - GitHub Release. Idempotent so a re-run of a release tag
@@ -369,6 +430,8 @@ jobs:
             echo
             echo '```'
             echo "DIFFUSE_IMAGE=${IMAGE}@${DIGEST}"
+            echo "DIFFUSE_CLAUDE_RUNNER_IMAGE=${CLAUDE_RUNNER_IMAGE}@${CLAUDE_DIGEST}"
+            echo "DIFFUSE_CODEX_RUNNER_IMAGE=${CODEX_RUNNER_IMAGE}@${CODEX_DIGEST}"
             echo '```'
             echo
             echo "Self-host bundle sha256:"

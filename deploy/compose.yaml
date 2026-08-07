@@ -66,6 +66,7 @@ services:
       - ${DIFFUSE_ENV_FILE:-.env}
     environment:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
+      DIFFUSE_AGENT_DISPATCH_PRIVATE_KEY: ""
     tmpfs:
       - /tmp:size=64m,mode=1777
     logging:
@@ -92,6 +93,7 @@ services:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
       DIFFUSE_API_TOKEN: ${DIFFUSE_API_TOKEN:?Set DIFFUSE_API_TOKEN in .env}
       DIFFUSE_PUBLIC_URL: ${DIFFUSE_PUBLIC_URL:?Set DIFFUSE_PUBLIC_URL in .env}
+      DIFFUSE_AGENT_DISPATCH_PRIVATE_KEY: ""
     # Overridable for the same reason as the database's, and with the same default:
     # a customer running one instance gets 8000 where deploy/README.md says it will be.
     ports:
@@ -113,7 +115,7 @@ services:
         max-size: "10m"
         max-file: "5"
     stop_grace_period: 30s
-    networks: [backend, agent_mcp, control_egress]
+    networks: [backend, control_egress]
 
   worker:
     image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
@@ -143,14 +145,12 @@ services:
         max-size: "10m"
         max-file: "5"
     stop_grace_period: 30s
-    networks: [backend, control_egress]
+    networks: [backend, runner_control_claude, runner_control_codex, control_egress]
 
-  # Gate B: long-lived credential-isolated agent-runner. The worker never mounts
-  # agent credentials and never executes a CLI. This service is the only Compose
-  # writer of `agent_data`. It deliberately has no `env_file` (no database /
-  # GitHub / API secrets). Opt-in via `docker compose --profile agent ...`.
-  agent-runner:
-    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
+  # Both independently packaged CLIs are deployed because a trusted PR can be
+  # routed to the opposing family. Neither service has application credentials.
+  agent-runner-claude:
+    image: ${DIFFUSE_CLAUDE_RUNNER_IMAGE:?Set DIFFUSE_CLAUDE_RUNNER_IMAGE to the release digest in .env}
     restart: unless-stopped
     init: true
     user: "10001:10001"
@@ -161,29 +161,31 @@ services:
     # `docker compose run … agent login` still overrides this daemon command for
     # operator sign-in.
     command: ["agent-runner"]
-    profiles: ["agent"]
+    profiles: ["agent-claude"]
     healthcheck:
       test: ["CMD", "diffuse", "agent-runner-healthcheck"]
       interval: 5s
       timeout: 5s
       retries: 6
     depends_on:
-      egress-proxy:
+      egress-proxy-claude:
         condition: service_healthy
     environment:
       HOME: /var/lib/diffuse/agent/home
       DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent
+      DIFFUSE_AGENT_RUNTIME: claude
+      DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY: ${DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY:?Set DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY in .env}
+      DIFFUSE_RUNNER_IMAGE_VERSION: ${DIFFUSE_CLAUDE_RUNNER_IMAGE:?Set DIFFUSE_CLAUDE_RUNNER_IMAGE to the release digest in .env}
       # The runner has no direct external network. Route vendor login and future
       # CLI calls through the allowlisted CONNECT proxy instead.
-      HTTP_PROXY: http://egress-proxy:3128
-      HTTPS_PROXY: http://egress-proxy:3128
-      NO_PROXY: app,egress-proxy,localhost,127.0.0.1
-      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_AGENT_MODEL_HOST:-api.anthropic.com}
-      # Internal agent-tool listener on app:8011 (not the published :8000 API).
-      # Gate C supplies per-session capabilities; this URL is allowlisted.
-      DIFFUSE_AGENT_TOOL_URL: http://app:8011/agent/v1
+      HTTP_PROXY: http://egress-proxy-claude:3128
+      HTTPS_PROXY: http://egress-proxy-claude:3128
+      NO_PROXY: agent-tool-gateway,egress-proxy-claude,localhost,127.0.0.1
+      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_CLAUDE_MODEL_HOST:-api.anthropic.com}
+      DIFFUSE_AGENT_EGRESS_PROXY_HOST: egress-proxy-claude
+      DIFFUSE_AGENT_TOOL_URL: http://agent-tool-gateway:8011/agent/v1
     volumes:
-      - agent_data:/var/lib/diffuse/agent
+      - claude_agent_data:/var/lib/diffuse/agent
     tmpfs:
       - /tmp:size=512m,mode=1777
     mem_limit: 1g
@@ -194,61 +196,69 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
-    networks: [agent_mcp, agent_egress]
+    networks: [agent_mcp_claude, agent_egress_claude, runner_control_claude]
 
-  # This one-shot assertion runs as the same identity and on the same networks
-  # a future agent session will use. It deliberately has no `env_file`: the
-  # worker's env file contains control-plane and database credentials.
-  #
-  # Opt-in, via `docker compose --profile agent up`. No agent runtime is
-  # selectable yet, so nothing in the running stack needs this. It was briefly a
-  # `depends_on` of the worker, which meant the entire review pipeline refused
-  # to start unless a live CONNECT to the model API succeeded -- a hard boot
-  # dependency on one vendor's reachability, for operators who may well be
-  # running another provider or none.
-  agent-preflight:
-    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
-    restart: "no"
+  agent-runner-codex:
+    image: ${DIFFUSE_CODEX_RUNNER_IMAGE:?Set DIFFUSE_CODEX_RUNNER_IMAGE to the release digest in .env}
+    restart: unless-stopped
     init: true
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-    command: ["review-compartment-preflight"]
-    profiles: ["agent"]
+    command: ["agent-runner"]
+    profiles: ["agent-codex"]
     healthcheck:
-      disable: true
+      test: ["CMD", "diffuse", "agent-runner-healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
     depends_on:
-      egress-proxy:
+      egress-proxy-codex:
         condition: service_healthy
     environment:
-      HOME: /var/lib/diffuse/agent
+      HOME: /var/lib/diffuse/agent/home
       DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent
-      HTTP_PROXY: http://egress-proxy:3128
-      HTTPS_PROXY: http://egress-proxy:3128
-      NO_PROXY: app,egress-proxy,localhost,127.0.0.1
-      # The allowlist follows whichever provider the operator configured;
-      # hardcoding one vendor made the check meaningless for the others.
-      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_AGENT_MODEL_HOST:-api.anthropic.com}
+      DIFFUSE_AGENT_RUNTIME: codex
+      DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY: ${DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY:?Set DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY in .env}
+      DIFFUSE_RUNNER_IMAGE_VERSION: ${DIFFUSE_CODEX_RUNNER_IMAGE:?Set DIFFUSE_CODEX_RUNNER_IMAGE to the release digest in .env}
+      HTTP_PROXY: http://egress-proxy-codex:3128
+      HTTPS_PROXY: http://egress-proxy-codex:3128
+      NO_PROXY: agent-tool-gateway,egress-proxy-codex,localhost,127.0.0.1
+      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_CODEX_MODEL_HOST:-api.openai.com}
+      DIFFUSE_AGENT_EGRESS_PROXY_HOST: egress-proxy-codex
+      DIFFUSE_AGENT_TOOL_URL: http://agent-tool-gateway:8011/agent/v1
+    volumes:
+      - codex_agent_data:/var/lib/diffuse/agent
     tmpfs:
-      - /tmp:size=64m,mode=1777
-      # DEV-333 replaces this ephemeral mount with its managed credential-home
-      # lifecycle. It is private even for this preflight-only service.
-      - /var/lib/diffuse/agent:size=64m,mode=0700,uid=10001,gid=10001
-    mem_limit: 256m
-    cpus: 0.50
-    pids_limit: 64
+      - /tmp:size=512m,mode=1777
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "5"
-    networks: [agent_mcp, agent_egress]
+    networks: [agent_mcp_codex, agent_egress_codex, runner_control_codex]
 
-  # Same digest-pinned release image as the application, never an unpinned
-  # third-party proxy tag. This is a CONNECT allowlist, not a TLS boundary.
-  egress-proxy:
+  # The gateway has no credentials and exposes a single capability-checked
+  # tools route to runners, while it alone shares an internal network with app.
+  agent-tool-gateway:
+    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command: ["agent-tool-gateway"]
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    networks: [backend, agent_mcp_claude, agent_mcp_codex]
+
+  egress-proxy-claude:
     image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
     restart: unless-stopped
     init: true
@@ -257,9 +267,9 @@ services:
     security_opt:
       - no-new-privileges:true
     command: ["egress-proxy"]
-    profiles: ["agent"]
+    profiles: ["agent-claude"]
     environment:
-      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_AGENT_MODEL_HOST:-api.anthropic.com}
+      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_CLAUDE_MODEL_HOST:-api.anthropic.com}
     healthcheck:
       test: ["CMD", "diffuse", "egress-proxy-healthcheck"]
       interval: 2s
@@ -275,19 +285,57 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
-    networks: [agent_egress, proxy_external]
+    networks: [agent_egress_claude, proxy_external]
+
+  egress-proxy-codex:
+    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command: ["egress-proxy"]
+    profiles: ["agent-codex"]
+    environment:
+      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_CODEX_MODEL_HOST:-api.openai.com}
+    healthcheck:
+      test: ["CMD", "diffuse", "egress-proxy-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 32
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks: [agent_egress_codex, proxy_external]
 
 volumes:
   pgdata:
   repository_data:
-  agent_data:
+  claude_agent_data:
+  codex_agent_data:
 
 networks:
   backend:
     internal: true
-  agent_mcp:
+  agent_mcp_claude:
     internal: true
-  agent_egress:
+  agent_mcp_codex:
+    internal: true
+  runner_control_claude:
+    internal: true
+  runner_control_codex:
+    internal: true
+  agent_egress_claude:
+    internal: true
+  agent_egress_codex:
     internal: true
   proxy_external:
     internal: false

@@ -42,7 +42,7 @@ COMPARTMENT_UID = 10001
 COMPARTMENT_HOME = Path("/var/lib/diffuse/agent")
 DATABASE_HOST = "db"
 DATABASE_PORT = 5432
-EGRESS_PROXY_HOST = "egress-proxy"
+EGRESS_PROXY_HOST = os.environ.get("DIFFUSE_AGENT_EGRESS_PROXY_HOST", "egress-proxy")
 EGRESS_PROXY_PORT = 3128
 #: The one authority the compartment may reach. Configurable because Diffuse
 #: does not require any particular provider -- `REVIEW_MODEL` and
@@ -160,26 +160,16 @@ def _check_proxy_environment() -> None:
     for name in ("HTTP_PROXY", "HTTPS_PROXY"):
         if os.environ.get(name) != PROXY_URL:
             raise AgentCompartmentError(f"{name} must point to the compartment egress proxy")
-    # App traffic must not take the proxy, or the proxy becomes a bypass around
-    # the MCP authorization boundary.  Compose names are explicit, not inferred
-    # from an operator-provided URL.
+    # Tool-gateway traffic must not take the proxy, or the proxy becomes a
+    # bypass around the capability authorization boundary. Compose names are
+    # explicit, not inferred from an operator-provided URL.
     no_proxy = {
         part.strip()
         for part in os.environ.get(NO_PROXY_VARIABLE, "").split(",")
         if part.strip()
     }
-    if not {"app", EGRESS_PROXY_HOST}.issubset(no_proxy):
-        raise AgentCompartmentError("NO_PROXY must include app and egress-proxy")
-
-
-def _check_proxy_is_reachable() -> None:
-    """TCP reachability only — does not require the vendor API to answer."""
-
-    try:
-        with _connect(EGRESS_PROXY_HOST, EGRESS_PROXY_PORT):
-            pass
-    except OSError as error:
-        raise AgentCompartmentError("review compartment cannot reach its egress proxy") from error
+    if not {"agent-tool-gateway", EGRESS_PROXY_HOST}.issubset(no_proxy):
+        raise AgentCompartmentError("NO_PROXY must include agent-tool-gateway and egress proxy")
 
 
 def _check_proxy_connects() -> None:
@@ -197,9 +187,7 @@ def _check_proxy_connects() -> None:
         raise AgentCompartmentError("review compartment egress proxy refused the model API CONNECT")
 
 
-# Boundary checks for the long-lived runner daemon. Vendor CONNECT stays off this
-# list so an upstream model outage cannot crash-loop the compartment process.
-DAEMON_CHECKS: tuple[CompartmentCheck, ...] = (
+CHECKS: tuple[CompartmentCheck, ...] = (
     CompartmentCheck("non-root pinned uid", _check_identity),
     CompartmentCheck("read-only root filesystem", _check_read_only_root),
     CompartmentCheck("credential-free environment", _check_no_credentials),
@@ -208,27 +196,14 @@ DAEMON_CHECKS: tuple[CompartmentCheck, ...] = (
     CompartmentCheck("database isolation", _check_database_is_unreachable),
     CompartmentCheck("direct egress denial", _check_direct_egress_is_denied),
     CompartmentCheck("explicit proxy environment", _check_proxy_environment),
-    CompartmentCheck("egress proxy reachable", _check_proxy_is_reachable),
-)
-
-# Full session / one-shot preflight: prove the allowlisted vendor CONNECT works.
-CHECKS: tuple[CompartmentCheck, ...] = (
-    *DAEMON_CHECKS[:-1],
     CompartmentCheck("allowlisted proxy egress", _check_proxy_connects),
 )
 
 
-def preflight(*, require_model_egress: bool = True) -> None:
-    """Fail closed with the first violated, named compartment property.
+def preflight() -> None:
+    """Fail closed with the first violated, named compartment property."""
 
-    The long-lived agent-runner passes ``require_model_egress=False`` so its
-    readiness tracks the container boundary, not vendor reachability. Session
-    start and the one-shot ``agent-preflight`` service keep the full CONNECT
-    proof.
-    """
-
-    selected = CHECKS if require_model_egress else DAEMON_CHECKS
-    for check in selected:
+    for check in CHECKS:
         try:
             check.verify()
         except AgentCompartmentError as error:
@@ -240,7 +215,7 @@ def preflight(*, require_model_egress: bool = True) -> None:
 def run_preflight() -> None:
     """Entrypoint used by the one-shot Compose preflight service."""
 
-    preflight(require_model_egress=True)
+    preflight()
     print("review compartment preflight passed", file=sys.stderr)
 
 

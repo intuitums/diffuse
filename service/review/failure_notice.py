@@ -15,6 +15,7 @@ from dataclasses import dataclass
 ERROR_CODE_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
 RETRIES_EXHAUSTED_CODE = "review_workflow_exhausted"
 NON_RETRYABLE_CODE = "review_workflow_failed"
+AGENT_AUTH_REQUIRED_CODE = "agent_auth_required"
 RETRIES_EXHAUSTED_SUMMARY = (
     "Diffuse could not complete this review after exhausting its retry policy."
 )
@@ -101,6 +102,25 @@ def terminal_review_failure(
         job_id=job_id,
         error_code=NON_RETRYABLE_CODE,
         summary=NON_RETRYABLE_SUMMARY,
+    )
+
+
+def agent_auth_required_failure(job_id: int, runtime: str) -> TerminalReviewFailure:
+    """A safe, idempotent PR notice for a runner whose vendor login expired."""
+
+    if runtime not in {"claude", "codex"}:
+        raise ValueError("agent auth failure runtime is invalid")
+    reconnect = (
+        f"docker compose --profile agent-{runtime} run --rm "
+        f"agent-runner-{runtime} agent login {runtime}"
+    )
+    return TerminalReviewFailure(
+        job_id=job_id,
+        error_code=AGENT_AUTH_REQUIRED_CODE,
+        summary=(
+            f"Diffuse could not authenticate the {runtime} review runner. "
+            f"An operator must reconnect it with `{reconnect}` and explicitly re-run this review."
+        ),
     )
 
 

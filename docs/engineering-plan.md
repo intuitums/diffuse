@@ -81,11 +81,11 @@ operation layer is delivered through the Linear plan gates; see
   `diffuse agent login|status|write-policy`. Execution moves to the isolated
   agent-runner (Gate B/C), not a worker-spawned CLI.
 - **Read-only agent-runner + capability tools (Gate B).** *In progress.* The
-  long-lived runner starts only after its compartment boundary assertions pass,
-  and `search_code` is served on an unpublished internal listener through a
-  short-lived, repository/PR/snapshot-pinned capability. Session workspace
-  materialization and CLI submission remain Gate C. Builds on the
-  review-compartment / credential-home work already landed.
+  long-lived runner now starts only after its compartment assertions pass, and
+  `search_code` is served through a short-lived, repository/PR/snapshot-pinned
+  capability on the private agent network. Session workspace materialization
+  and CLI submission remain Gate C. Builds on the review-compartment /
+  credential-home work already landed.
 - **Move review execution to CLIs (Gate C).** *Not started.* Replace LiteLLM
   candidate/diagram/verifier calls with the shared session contract; Diffuse
   still validates and publishes.

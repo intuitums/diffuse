@@ -5,9 +5,9 @@
 #   release.yml  tag-driven publish
 # Job ids are verb-led kebab-case so the checks list reads as a sequence of actions.
 #
-# Replaces ci.yml. Logic is ported unchanged except where noted; the container build now
-# uses buildx with a GitHub Actions cache, which is the one place repeat runs were paying
-# full price for an unchanged image.
+# Replaces ci.yml. Logic is ported unchanged except where noted; the container builds
+# use the box's persistent BuildKit builder instead of a GitHub Actions cache — see
+# build-container for the measurements that forced that change.
 #
 # EVERY `uses:` IS PINNED TO A FULL COMMIT SHA, with the tag it resolved from in a
 # trailing comment. See the same note in release.yml for why, and for how to refresh
@@ -259,22 +259,28 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      # Its own cache SCOPE, not `diffuse/Dockerfile`: this builds a different target
-      # from build-container, and sharing one would have them evict each other. The
-      # scope names are carried over unchanged from the Blacksmith cache keys they
-      # replace, so the separation this comment describes still holds.
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      # The same builder NAME as build-container — one spelling to keep in step —
+      # but usually not the same builder: each runner on the box has its own
+      # rootless Docker daemon, and this job's label maps to three runners, so the
+      # step below materialises an independent `diffuse` builder on whichever
+      # runner the job lands. Each warms on its first build there and persists
+      # from then on. Separate daemons also mean nothing this job does can evict
+      # or poison build-container's cache, which lives on another runner. See
+      # build-container for why the Actions cache is gone.
+      - name: Use the persistent builder
+        run: |
+          docker buildx inspect diffuse >/dev/null 2>&1 \
+            || docker buildx create --name diffuse --driver docker-container \
+            || docker buildx inspect diffuse >/dev/null
 
       - name: Build the test image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
+          builder: diffuse
           context: .
           target: test-runner
           load: true
           tags: diffuse-tests:ci
-          cache-from: type=gha,scope=diffuse/Dockerfile-test-runner
-          cache-to: type=gha,scope=diffuse/Dockerfile-test-runner,mode=max
 
       # Proves the point of the stage rather than trusting it: if requirements-dev.txt
       # ever drags a runtime dependency off the locked version again, the tested set
@@ -311,6 +317,10 @@ jobs:
       POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
       DIFFUSE_API_TOKEN: 0123456789abcdef0123456789abcdef
       DIFFUSE_PUBLIC_URL: http://localhost:8000
+      # Compose validates opt-in runner profiles too. This is a well-formed
+      # public key for configuration validation only; it has no corresponding
+      # private key in CI and cannot sign a dispatch envelope.
+      DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY: Yfs8wlT_0BUOdJOjbOpcJ2khTWvDZi4y-K8XZOVxeFE
       # Set here rather than read from deploy/env.example, which now ships this
       # commented out: a customer who copies that file and gets a working review
       # model has been handed the same guess the code default was deleted for.
@@ -330,33 +340,79 @@ jobs:
             docker compose --env-file deploy/env.example \
               --file deploy/compose.yaml config --quiet
 
-      # buildx + a declared layer cache. A bare `docker build` rebuilds every layer on
-      # every run even when the Dockerfile has not changed.
+      # One persistent BuildKit builder on the runner's daemon, no GitHub Actions
+      # cache. Each intuitum runner runs its own rootless Docker daemon, and this
+      # job's label maps to exactly one runner, so a builder created once on that
+      # daemon (`docker buildx create --name diffuse`) and never torn down IS the
+      # cache: its state volume outlives every job, and each build starts from
+      # whatever the last one proved. release.yml's amd64 leg lands on this same
+      # runner and adopts this same builder.
       #
-      # Off Blacksmith the cache has to be named explicitly. Blacksmith gave each
-      # `cache-key` its own sticky disk; the equivalent here is a GitHub Actions cache
-      # scope, which partitions the same way. `mode=max` matters: the expensive layer in
-      # this Dockerfile is the hash-pinned `pip install`, which lives in the builder
-      # stage, and the default `mode=min` would export only the final image's layers and
-      # cache none of it.
+      # Measured before this change, over the previous 40 Verify runs: this job held
+      # steady around 117s, of which ~35s was importing and exporting the `type=gha`
+      # cache — and one run took 911s, because eviction had dropped the pip layer
+      # from the Actions cache and re-uploading that single ~1GB layer to the cache
+      # service ran at ~1.4MB/s for 811 seconds. A cache that lives on the box has no
+      # upload leg, so both the steady 35s and the fifteen-minute tail are gone.
       #
-      # The scope names the Dockerfile being built; release.yml's amd64 build uses the
-      # same one, because it builds this same image and should start from the layers
-      # Verify already produced. Cache export is an optimization, never a reason to
-      # hold the required image validation open: the Actions cache occasionally stalls
-      # while uploading a large PyInstaller layer. Bound it and fail open so a cache
-      # service outage leaves the image build and smoke test authoritative.
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      # It also makes the Dockerfile's `RUN --mount=type=cache` apt/pip mounts real.
+      # Those mounts live in BuildKit state, which `type=gha` never exported and the
+      # per-job builder threw away, so in CI they were empty on every run — a lock
+      # change re-downloaded every wheel from scratch. Now they accumulate.
+      #
+      # Deliberately a `run` step, not docker/setup-buildx-action: adopting an
+      # existing named builder needs one idempotent command, and this workflow runs
+      # on `pull_request`, where every third-party action removed is one fewer
+      # SHA-pin to audit. The three-way `||` handles two first-runs racing to
+      # create the builder: the loser's create fails, the final inspect confirms
+      # the winner's builder exists, and both proceed onto it.
+      #
+      # Shared state across pull requests is not a new trust surface, but name the
+      # real boundary: any job scheduled to this label already executes arbitrary
+      # code as the runner's own user, and that user owns its rootless daemon
+      # outright — DOCKER_HOST is the user's socket. Anything that can run a job
+      # here could always poison anything this daemon holds, cache or no cache.
+      # The isolation that matters on the box — CI cannot reach the product
+      # runtimes, runners cannot reach each other — is per-user rootless daemons
+      # plus the runner units' InaccessiblePaths, and none of it moves with the
+      # layer cache. Disk is bounded by BuildKit's default GC; if the runner ever
+      # runs tight, `docker buildx prune --builder diffuse` on its daemon is the
+      # lever.
+      - name: Use the persistent builder
+        run: |
+          docker buildx inspect diffuse >/dev/null 2>&1 \
+            || docker buildx create --name diffuse --driver docker-container \
+            || docker buildx inspect diffuse >/dev/null
 
       - name: Build production image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
+          builder: diffuse
           context: .
           load: true
           tags: diffuse:test
-          cache-from: type=gha,scope=diffuse/Dockerfile
-          cache-to: type=gha,scope=diffuse/Dockerfile,mode=max,timeout=2m,ignore-error=true
+
+      # The runner targets are published only from release.yml, so building the
+      # application image alone would let a broken CLI package install reach a
+      # release tag. Load and exercise each target here while the application
+      # build cache is warm; the command also proves the image separation that
+      # keeps each credential-bearing runner free of the other CLI.
+      - name: Build and validate native runner images
+        run: |
+          docker buildx build --load --target runner-claude --tag diffuse-runner-claude:test .
+          docker buildx build --load --target runner-codex --tag diffuse-runner-codex:test .
+          docker run --rm --entrypoint /bin/sh diffuse-runner-claude:test -c '
+            test "$(id -u)" = 10001
+            test "$(node -p "process.versions.node.split(\".\")[0]")" -ge 22
+            test ! -e /usr/local/bin/codex
+            claude --version
+          '
+          docker run --rm --entrypoint /bin/sh diffuse-runner-codex:test -c '
+            test "$(id -u)" = 10001
+            test "$(node -p "process.versions.node.split(\".\")[0]")" -ge 22
+            test ! -e /usr/local/bin/claude
+            codex --version
+          '
 
       - name: Validate packaged runtime
         run: |
@@ -417,6 +473,8 @@ jobs:
         working-directory: deploy
         run: |
           sed -e "s|^DIFFUSE_IMAGE=.*|DIFFUSE_IMAGE=diffuse:test|" \
+              -e "s|^DIFFUSE_CLAUDE_RUNNER_IMAGE=.*|DIFFUSE_CLAUDE_RUNNER_IMAGE=diffuse-runner-claude:test|" \
+              -e "s|^DIFFUSE_CODEX_RUNNER_IMAGE=.*|DIFFUSE_CODEX_RUNNER_IMAGE=diffuse-runner-codex:test|" \
               -e "s|^DIFFUSE_ENV_FILE=.*|DIFFUSE_ENV_FILE=ci.env|" \
               -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" \
               -e "s|^DIFFUSE_API_TOKEN=.*|DIFFUSE_API_TOKEN=${DIFFUSE_API_TOKEN}|" \
@@ -432,6 +490,11 @@ jobs:
             exit 1
           fi
           echo "REVIEW_MODEL=${REVIEW_MODEL}" >> ci.env
+
+          # Keep the startup capability check enabled without storing a signing
+          # secret in the repository. This generated CI file is removed in teardown.
+          printf 'DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY=%s\n' \
+            "$(openssl rand -hex 48)" >> ci.env
 
           # Publish the database on an ephemeral host port for this boot only.
           # compose.yaml ships 127.0.0.1:5432 because that is the right default for a
@@ -511,24 +574,20 @@ jobs:
           # Docker copies the image directory's metadata to a fresh empty named
           # volume; without the pinned uid/gid and 0700 mode this fails only on
           # a customer's first agent sign-in.
-          # Gate A moves the mount from worker to the isolated agent-runner.
-          # Every layout receives the same live, non-root volume check, so the
-          # workflow remains valid during the short transition on main.
+          # Each isolated runner gets its own credential volume, so exercise
+          # both current service profiles rather than falling back to worker.
           credential_check='set -eu
             test "$(id -u):$(id -g)" = "10001:10001"
             test "$(stat -c "%u:%g:%a" /var/lib/diffuse/agent)" = "10001:10001:700"
             test -w /var/lib/diffuse/agent
             test "$HOME" = /var/lib/diffuse/agent/home
             test -d "$HOME" && test -w "$HOME"'
-          if docker compose --env-file ci.env --file compose.yaml --profile agent \
-            config --services | grep -Fxq agent-runner; then
+          for runner in claude codex; do
             docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-              --profile agent run --rm --no-deps --entrypoint /bin/sh agent-runner \
+              --profile "agent-${runner}" run --rm --no-deps --entrypoint /bin/sh \
+              "agent-runner-${runner}" \
               -c "$credential_check"
-          else
-            docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-              exec -T worker /bin/sh -c "$credential_check"
-          fi
+          done
 
       - name: Collect stack logs
         if: always()

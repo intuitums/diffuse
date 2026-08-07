@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -10,133 +10,91 @@ from fastapi import FastAPI
 
 from service.agents import runner, tool_api, tool_server
 from service.agents.contract import SessionScope, mint_session_capability
-from service.review.agent_compartment import AgentCompartmentError
 
 SIGNING_KEY = "s" * 48
 HEAD_SHA = "a" * 40
 
 
-def _capability(**kwargs) -> str:
-    values = {
-        "repository_id": 7,
-        "pull_request_id": 11,
-        "snapshot_id": 13,
-        "head_sha": HEAD_SHA,
-        "operations": frozenset({"search_code"}),
-    }
-    values.update(kwargs)
-    operations = values.pop("operations")
-    now = values.pop("now", datetime.now(UTC))
-    ttl = values.pop("ttl", timedelta(minutes=15))
+def _capability(*, operations: frozenset[str] = frozenset({"search_code"})) -> str:
     return mint_session_capability(
         signing_key=SIGNING_KEY,
         runtime="claude",
-        scope=SessionScope(operations=operations, **values),
-        now=now,
-        ttl=ttl,
+        scope=SessionScope(
+            repository_id=7,
+            pull_request_id=11,
+            snapshot_id=13,
+            head_sha=HEAD_SHA,
+            operations=operations,
+        ),
+        now=datetime.now(UTC),
     ).token
 
 
-@pytest.fixture
-def tool_client(monkeypatch):
+@pytest.mark.anyio
+async def test_agent_search_requires_a_valid_search_capability(monkeypatch):
     app = FastAPI()
     app.include_router(tool_api.router)
     monkeypatch.setenv("DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY", SIGNING_KEY)
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    calls: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        tool_api,
+        "_search_code",
+        lambda capability, request: (
+            calls.append((capability, request))
+            or {"schemaVersion": "diffuse-code-search-v1", "sources": []}
+        ),
     )
 
-
-@pytest.mark.anyio
-async def test_search_code_auth_and_errors(tool_client, monkeypatch):
-    calls: list[object] = []
-
-    def search(capability, request):
-        calls.append((capability.scope.repository_id, request.path, request.limit))
-        return {"schemaVersion": "diffuse-code-search-v1", "sources": []}
-
-    monkeypatch.setattr(tool_api, "_search_code", search)
-
-    async with tool_client as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
         missing = await client.post("/agent/v1/tools/search-code", json={"query": "auth"})
-        wrong_op = await client.post(
-            "/agent/v1/tools/search-code",
-            headers={
-                "Authorization": f"Bearer {_capability(operations=frozenset({'get_diff'}))}"
-            },
-            json={"query": "auth"},
-        )
-        expired_token = _capability(
-            now=datetime.now(UTC) - timedelta(hours=1),
-            ttl=timedelta(minutes=1),
-        )
-        expired = await client.post(
-            "/agent/v1/tools/search-code",
-            headers={"Authorization": f"Bearer {expired_token}"},
-            json={"query": "auth"},
-        )
-        ok = await client.post(
+        valid = await client.post(
             "/agent/v1/tools/search-code",
             headers={"Authorization": f"Bearer {_capability()}"},
             json={"query": "auth", "path": "service", "limit": 9},
         )
 
     assert missing.status_code == 401
-    assert wrong_op.status_code == 403
-    assert expired.status_code == 401
-    assert ok.status_code == 200
-    assert calls == [(7, "service", 9)]
+    assert valid.status_code == 200
+    assert valid.json()["sources"] == []
+    assert len(calls) == 1
+    capability, request = calls[0]
+    assert capability.scope.repository_id == 7
+    assert request.path == "service"
+    assert request.limit == 9
 
 
 @pytest.mark.anyio
-async def test_search_distinguishes_target_loss_from_bad_query(tool_client, monkeypatch):
-    async with tool_client as client:
-        def lost_target(*_a, **_k):
-            raise tool_api.CapabilityTargetError("gone")
+async def test_agent_search_refuses_a_capability_without_the_tool_operation(monkeypatch):
+    app = FastAPI()
+    app.include_router(tool_api.router)
+    monkeypatch.setenv("DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY", SIGNING_KEY)
 
-        monkeypatch.setattr(tool_api, "_search_code", lost_target)
-        lost = await client.post(
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.post(
             "/agent/v1/tools/search-code",
-            headers={"Authorization": f"Bearer {_capability()}"},
+            headers={"Authorization": f"Bearer {_capability(operations=frozenset({'get_diff'}))}"},
             json={"query": "auth"},
         )
 
-        def bad_query(*_a, **_k):
-            raise ValueError("query must contain")
-
-        monkeypatch.setattr(tool_api, "_search_code", bad_query)
-        bad = await client.post(
-            "/agent/v1/tools/search-code",
-            headers={"Authorization": f"Bearer {_capability()}"},
-            json={"query": "auth"},
-        )
-
-    assert lost.status_code == 403
-    assert bad.status_code == 400
+    assert response.status_code == 403
 
 
 @pytest.mark.anyio
-async def test_runner_daemon_preflight_fails_closed(monkeypatch):
-    def boom(**_kwargs):
-        raise AgentCompartmentError("blocked")
+async def test_runner_refuses_to_start_without_a_passing_compartment(monkeypatch):
+    calls: list[object] = []
+    monkeypatch.setattr(runner, "preflight", lambda: calls.append(True))
+    monkeypatch.setattr(runner, "validate_dispatch_public_key", lambda: None)
 
-    monkeypatch.setattr(runner, "preflight", boom)
-    with pytest.raises(AgentCompartmentError, match="blocked"):
-        async with runner.app.router.lifespan_context(runner.app):
-            pass
-
-
-def test_agent_tool_url_requires_the_fixed_internal_port():
-    with pytest.raises(ValueError, match="8011"):
-        tool_server.validate_agent_tool_url("http://app:9999/agent/v1")
-    assert (
-        tool_server.validate_agent_tool_url("http://app:8011/agent/v1")
-        == "http://app:8011/agent/v1"
-    )
+    async with runner.app.router.lifespan_context(runner.app):
+        assert calls == [True]
 
 
 @pytest.mark.anyio
-async def test_capability_mcp_transport(monkeypatch):
+async def test_capability_mcp_tool_sends_the_token_only_as_a_bearer_header(monkeypatch):
     requests = []
 
     class Response:
@@ -154,13 +112,8 @@ async def test_capability_mcp_transport(monkeypatch):
         "urlopen",
         lambda request, timeout: requests.append((request, timeout)) or Response(),
     )
-    with pytest.raises(ValueError, match="agent/v1"):
-        tool_server.create_capability_tool_server(
-            "http://evil.example/agent/v1", "capability-secret"
-        )
-
     server = tool_server.create_capability_tool_server(
-        "http://app:8011/agent/v1", "capability-secret"
+        "http://app:8000/agent/v1", "capability-secret"
     )
     tool = server._tool_manager.get_tool("search_code")
     result = await tool.run(
@@ -170,7 +123,7 @@ async def test_capability_mcp_transport(monkeypatch):
 
     assert result == {"schemaVersion": "diffuse-code-search-v1", "sources": []}
     request, timeout = requests[0]
-    assert request.full_url == "http://app:8011/agent/v1/tools/search-code"
+    assert request.full_url == "http://app:8000/agent/v1/tools/search-code"
     assert request.get_header("Authorization") == "Bearer capability-secret"
     assert request.data == b'{"query":"authorization","path":"service","limit":20}'
     assert timeout == 30

@@ -34,6 +34,10 @@ CAPABILITY_OPERATIONS: frozenset[str] = frozenset(
 )
 
 DEFAULT_CAPABILITY_TTL = timedelta(minutes=15)
+#: A caller may choose a shorter session, never a longer-lived bearer token.
+#: Keeping this equal to the documented default makes "short-lived" a contract,
+#: not merely the value most call sites happen to use.
+MAX_CAPABILITY_TTL = DEFAULT_CAPABILITY_TTL
 _TOKEN_VERSION = 1
 
 
@@ -71,8 +75,12 @@ class SessionScope:
         if self.snapshot_id <= 0:
             raise ValueError("snapshot_id must be positive")
         sha = self.head_sha.strip().lower()
-        if len(sha) < 7 or any(character not in "0123456789abcdef" for character in sha):
-            raise ValueError("head_sha must be a hexadecimal git object name")
+        # Pull-request heads in the control plane are full object IDs. Accepting
+        # an abbreviated SHA here minted a token that later failed the exact
+        # database comparison in the capability tool, and would make an
+        # "exact" session pin collision-prone if that comparison changed.
+        if len(sha) != 40 or any(character not in "0123456789abcdef" for character in sha):
+            raise ValueError("head_sha must be a full 40-character hexadecimal git commit")
         object.__setattr__(self, "head_sha", sha)
         unknown = sorted(self.operations - CAPABILITY_OPERATIONS)
         if unknown:
@@ -135,6 +143,10 @@ def mint_session_capability(
         raise ValueError("signing_key must be non-empty")
     if ttl <= timedelta(0):
         raise ValueError("ttl must be positive")
+    if ttl > MAX_CAPABILITY_TTL:
+        raise ValueError(
+            f"ttl must not exceed {int(MAX_CAPABILITY_TTL.total_seconds())} seconds"
+        )
     key = signing_key.encode("utf-8") if isinstance(signing_key, str) else signing_key
     selected_runtime = parse_agent_runtime_name(runtime)
     issued_at = _as_utc(now or datetime.now(UTC))

@@ -35,9 +35,9 @@ the **self-hosted server** process, not a SaaS tier.
 
 | Layer | Today (transitional) | Destination |
 | --- | --- | --- |
-| Review execution on the server | In-process `REVIEW_RUNTIME=litellm` (one-shot structured passes via a model API) | Explicit `claude` or `codex` session on the isolated agent-runner |
-| Worker | Runs LiteLLM reviews; must not gain a new CLI-host path | Mints session capabilities, validates structured results, publishes; never runs a CLI |
-| Agent credentials | Local `diffuse agent login` / Compose `agent-runner` volume (skeleton) | Same volume, mounted only by the agent-runner |
+| Review execution on the server | `litellm` transitional API path | `REVIEW_RUNTIME=codex` or `claude`, sent to an isolated matching runner |
+| Worker | Runs API reviews or dispatches native sessions; never runs a CLI | Mints session capabilities, validates structured results, publishes |
+| Agent credentials | Separate Compose runner volumes | Separate volume mounted only by its own runner |
 | Local `diffuse review` | Same LiteLLM path until adapters move | May use the same session/capability contract against a local or remote runner |
 
 LiteLLM remains selectable until Gate C/E so production reviews keep booting.
@@ -60,24 +60,20 @@ Gate C moves review execution onto it.
 
 ## Compose skeleton (Gate B reference)
 
-Both `docker-compose.yml` and `deploy/compose.yaml` keep an opt-in
-`agent` profile:
+Both `docker-compose.yml` and `deploy/compose.yaml` ship both opt-in runner
+profiles:
 
-- `agent-runner` — credential-isolated, long-lived CLI host. It mounts
-  `agent_data`, does **not** load the worker `env_file`, and refuses to become
-  ready unless its compartment boundary assertions pass (without requiring a
-  live vendor CONNECT). It reaches `search_code` on the app's unpublished
-  internal tool listener (`app:8011`) over `agent_mcp`, authenticated by a
-  short-lived signed capability. Review submission remains Gate C.
-- `agent-preflight` / `egress-proxy` — compartment and allowlisted egress checks
-  already used by the review-compartment work.
+- `agent-runner-claude` / `agent-runner-codex` — independently built, pinned
+  CLI hosts with separate credentials, homes, and egress proxies.
+- `agent-tool-gateway` — credential-free bridge exposing only approved
+  `/agent/v1/tools/*` capability methods to the runners.
 
 The `worker` and `app` services do not mount agent credentials.
 
 ```bash
 # Sign in through the isolated runner (not the worker):
-docker compose --profile agent run --rm agent-runner agent login claude --console
-docker compose --profile agent run --rm agent-runner agent status
+docker compose --profile agent-codex run --rm agent-runner-codex agent login codex --device-auth
+docker compose --profile agent-claude run --rm agent-runner-claude agent login claude --console
 ```
 
 ## Container review boundary
@@ -110,10 +106,13 @@ conversation until Gates C–E re-home those operations.
 `litellm` is an implementation label, not the product. Prefer talking about the
 **transitional API / one-shot runtime** vs **CLI-native agent-runner sessions**.
 
-## Agent CLI host plumbing (landed; execution path not)
+## Agent CLI host plumbing
 
-Planned selectable values: `claude`, `codex`. Neither is in `RUNTIME_NAMES` yet,
-so `REVIEW_RUNTIME` rejects them. What *has* landed:
+`claude` and `codex` are the CLI-native runtime names. `codex` is the default
+for unknown, incomplete, ambiguous, or human-authored work. A high-confidence,
+SCM-verified OpenAI identity routes to Claude; a verified Anthropic identity
+routes to Codex. Commit trailers and author-controlled fields are audit evidence
+only and cannot change the selected runtime.
 
 - `diffuse agent login claude` — runs `claude auth login` into
   `~/.diffuse/agent/claude`. Auth method is Claude's own menu (Claude.ai
@@ -172,11 +171,17 @@ Also landed:
   settings older builds accept and then ignore.
 - Native Windows refused (no OS sandbox Diffuse can rely on)
 - Review-compartment preflight, egress proxy, and credential-home image layout
-- Offline session primitive in `service.agents` (record/replay; no production
-  review caller yet)
+- Signed, durable native sessions: the worker mints a 15-minute scoped
+  capability, signs its dispatch with Ed25519, and atomically accepts only the
+  matching completion (an identical retransmission is harmless; a differing
+  replay is rejected).
 
-What has **not** landed: Gate B's long-lived runner that executes either CLI for
-a review under a session capability, or selectable `REVIEW_RUNTIME=claude|codex`.
+Each Diffuse release publishes app, runner-claude, and runner-codex images.
+Operators pin all three digests from the release bundle and never run a vendor
+CLI updater. If authentication expires, the runner returns `agent_auth_required`;
+Diffuse posts one idempotent, generic reconnect notice and never exposes a device
+code, URL, account identity, token, or vendor error on the pull request. A
+successful reconnect requires an explicit re-run or a new push.
 
 Delivery order (from the plan):
 

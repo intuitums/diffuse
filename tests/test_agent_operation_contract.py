@@ -33,7 +33,7 @@ def _scope(**overrides):
         "repository_id": 7,
         "pull_request_id": 19,
         "snapshot_id": 3,
-        "head_sha": "abc1234",
+        "head_sha": "a" * 40,
         "operations": frozenset({"search_code", "get_diff"}),
     }
     values.update(overrides)
@@ -123,7 +123,7 @@ def test_verify_enforces_operation_and_pin_scope():
         require_operation="search_code",
         require_repository_id=7,
         require_snapshot_id=3,
-        require_head_sha="abc1234",
+        require_head_sha="a" * 40,
         require_runtime=AGENT_RUNTIME_CLAUDE,
     )
     with pytest.raises(CapabilityScopeMismatch, match="does not authorize"):
@@ -168,6 +168,18 @@ def test_verify_refuses_expired_and_tampered_tokens():
             "not-a-capability",
             signing_key=SIGNING_KEY,
             now=issued + timedelta(minutes=1),
+        )
+
+
+def test_scope_requires_a_full_head_sha_and_capabilities_cannot_outlive_the_contract():
+    with pytest.raises(ValueError, match="full 40-character"):
+        _scope(head_sha="abc1234")
+    with pytest.raises(ValueError, match="must not exceed"):
+        mint_session_capability(
+            signing_key=SIGNING_KEY,
+            runtime=AGENT_RUNTIME_CLAUDE,
+            scope=_scope(),
+            ttl=timedelta(minutes=16),
         )
 
 

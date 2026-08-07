@@ -149,9 +149,11 @@ server is a cache of that record, not the record itself.
 ### Model credentials without a long-lived key
 
 Retrieval is graph and lexical search inside PostgreSQL, so indexing needs no
-model credential at all and the only credential a deployment must hold is the
-one its `REVIEW_MODEL` resolves. Running Diffuse with no OpenAI account is
-therefore just a matter of not naming an OpenAI model.
+model credential. CLI-native review needs only the vendor-managed runner
+credentials; transitional `REVIEW_RUNTIME=litellm` additionally needs the
+credential its `REVIEW_MODEL` resolves. Running Diffuse with no OpenAI account
+is therefore just a matter of not naming an OpenAI LiteLLM model or logging in
+the Codex runner.
 
 For the cloud providers, ambient credential chains work and are preferable to a
 stored key: `vertex_ai/…` resolves Google application default credentials and
@@ -254,32 +256,31 @@ repositories.
 ## Agent CLI credentials
 
 The agent credential is a vendor-managed OAuth credential, not a Diffuse API
-key. The release profile stores it in the `agent_data` named volume at
+key. The release profile stores each vendor credential in its own
+`claude_agent_data` or `codex_agent_data` named volume at
 `/var/lib/diffuse/agent`, owned by uid/gid **10001** with mode **0700**. The
 root filesystem is read-only and `/tmp` is ephemeral, so do not redirect
 `DIFFUSE_AGENT_HOME` to either location.
 
-Only the opt-in `agent-runner` Compose service (profile `agent`) mounts this
-volume. The worker and API never receive agent credentials and never execute a
-CLI — see [agent-runtimes.md](agent-runtimes.md). Vendor CLIs refresh an OAuth
-credential in place, so exactly one writer is required.
+Only `agent-runner-claude` (profile `agent-claude`) and `agent-runner-codex`
+(profile `agent-codex`) mount their respective volumes. The worker and API
+never receive agent credentials and never execute a CLI — see
+[agent-runtimes.md](agent-runtimes.md). Vendor CLIs refresh their credentials
+in place, so exactly one writer exists per vendor.
 
 The API and worker also need a separate, high-entropy
-`DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY` before the unpublished agent-tool
-listener (`app:8011`, reachable only on `agent_mcp`) will start. The runner
-never receives that key: it only presents a short-lived signed capability.
-Generate it with `openssl rand -base64 48` and keep it in `.env`,
-alongside—not in—the `agent_data` volume. A short key fails boot; an unset key
-leaves the listener down.
+`DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY` before a runner session can use the
+private capability-tool surface. The runner never receives that key: it only
+presents a short-lived signed capability. Generate it with
+`openssl rand -base64 48` and keep it in `.env`, alongside—not in—the
+`agent_data` volume.
 
 Sign in through the long-lived runner (the command overrides its daemon entry
 point for this one operator action):
 
 ```bash
-docker compose --profile agent run --rm agent-runner agent login claude --console
-# or, for a headless Codex login:
-docker compose --profile agent run --rm agent-runner agent login codex --device-auth
-docker compose --profile agent run --rm agent-runner agent status
+docker compose --profile agent-codex run --rm agent-runner-codex agent login codex --device-auth
+docker compose --profile agent-claude run --rm agent-runner-claude agent login claude --console
 ```
 
 The runner sets `HOME` to a private subdirectory of the credential volume, and
@@ -291,10 +292,10 @@ credential, use the matching vendor logout in the same context, then sign in
 again if needed:
 
 ```bash
-docker compose --profile agent run --rm agent-runner agent logout claude
+docker compose --profile agent-claude run --rm agent-runner-claude agent logout claude
 ```
 
-Do **not** back up `agent_data`. It is a live, revocable vendor credential, not
+Do **not** back up either agent credential volume. It is a live, revocable vendor credential, not
 authoritative Diffuse state; including it in a backup multiplies a long-lived
 refresh token. Recreate it by running the login command again after a restore.
 
