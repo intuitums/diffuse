@@ -12,13 +12,22 @@ from service import runtime
         (["serve"], "_run_api", []),
         (["worker", "--once"], "_run_worker", ["--once"]),
         (["healthcheck"], "_run_healthcheck", []),
+        (["agent-runner"], "_run_agent_runner", []),
+        (["agent-runner-healthcheck"], "_run_agent_runner_healthcheck", []),
         (["repository", "list"], "_run_cli", ["repository", "list"]),
     ],
 )
 def test_runtime_dispatches_commands(monkeypatch, arguments, target, forwarded):
     handlers = {
         name: MagicMock()
-        for name in ("_run_api", "_run_worker", "_run_healthcheck", "_run_cli")
+        for name in (
+            "_run_api",
+            "_run_worker",
+            "_run_healthcheck",
+            "_run_agent_runner",
+            "_run_agent_runner_healthcheck",
+            "_run_cli",
+        )
     }
     for name, handler in handlers.items():
         monkeypatch.setattr(runtime, name, handler)
