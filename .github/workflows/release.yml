@@ -49,6 +49,8 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/intuitumxyz/diffuse
+  CLAUDE_RUNNER_IMAGE: ghcr.io/intuitumxyz/diffuse-runner-claude
+  CODEX_RUNNER_IMAGE: ghcr.io/intuitumxyz/diffuse-runner-codex
   # The self-host bundle is published as a public OCI artifact next to the image.
   # GHCR package visibility is configured outside Actions. The anonymous-access
   # gate below fails the release if either package is not actually public.
@@ -195,6 +197,8 @@ jobs:
     timeout-minutes: 30
     outputs:
       digest: ${{ steps.manifest.outputs.digest }}
+      claude_runner_digest: ${{ steps.runners.outputs.claude_digest }}
+      codex_runner_digest: ${{ steps.runners.outputs.codex_digest }}
     permissions:
       contents: read
       id-token: write   # keyless cosign signing
@@ -265,13 +269,42 @@ jobs:
           DIGEST: ${{ steps.manifest.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
+      # The runner binaries are release artifacts, not a separate vendor update
+      # channel. Build their explicit Dockerfile targets, attach SBOM/provenance,
+      # and re-read the immutable manifest digests that the bundle will pin.
+      - name: Publish signed native runner images
+        id: runners
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          for runtime in claude codex; do
+            image_var="${runtime^^}_RUNNER_IMAGE"
+            image="${!image_var}"
+            docker buildx build --platform linux/amd64,linux/arm64 \
+              --target "runner-${runtime}" \
+              --build-arg "DIFFUSE_VERSION=${RELEASE_TAG}" \
+              --build-arg "DIFFUSE_REVISION=${GITHUB_SHA}" \
+              --build-arg "DIFFUSE_CREATED=${{ needs.validate-tag.outputs.created }}" \
+              --sbom=true --provenance=mode=max --push \
+              --tag "${image}:${RELEASE_TAG}" .
+            digest=$(docker buildx imagetools inspect "${image}:${RELEASE_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            cosign sign --yes "${image}@${digest}"
+            echo "${runtime}_digest=${digest}" >> "$GITHUB_OUTPUT"
+          done
+
       - name: Build self-host deployment bundle
         env:
           DIGEST: ${{ steps.manifest.outputs.digest }}
+          CLAUDE_DIGEST: ${{ steps.runners.outputs.claude_digest }}
+          CODEX_DIGEST: ${{ steps.runners.outputs.codex_digest }}
         run: |
           mkdir -p release/diffuse
           cp LICENSE deploy/README.md deploy/compose.yaml deploy/env.example release/diffuse/
           sed -i "s|^DIFFUSE_IMAGE=.*|DIFFUSE_IMAGE=${IMAGE}@${DIGEST}|" \
+            release/diffuse/env.example
+          sed -i "s|^DIFFUSE_CLAUDE_RUNNER_IMAGE=.*|DIFFUSE_CLAUDE_RUNNER_IMAGE=${CLAUDE_RUNNER_IMAGE}@${CLAUDE_DIGEST}|" \
+            release/diffuse/env.example
+          sed -i "s|^DIFFUSE_CODEX_RUNNER_IMAGE=.*|DIFFUSE_CODEX_RUNNER_IMAGE=${CODEX_RUNNER_IMAGE}@${CODEX_DIGEST}|" \
             release/diffuse/env.example
           cp docs/deployment.md release/diffuse/OPERATIONS.md
           # The per-repository policy reference. README.md and OPERATIONS.md both
@@ -317,6 +350,8 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.ref_name }}
       DIGEST: ${{ needs.publish.outputs.digest }}
+      CLAUDE_DIGEST: ${{ needs.publish.outputs.claude_runner_digest }}
+      CODEX_DIGEST: ${{ needs.publish.outputs.codex_runner_digest }}
     steps:
       - name: Collect the bundle
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
@@ -379,6 +414,8 @@ jobs:
         run: |
           oras logout ghcr.io
           oras manifest fetch "${IMAGE}@${DIGEST}" >/dev/null
+          oras manifest fetch "${CLAUDE_RUNNER_IMAGE}@${CLAUDE_DIGEST}" >/dev/null
+          oras manifest fetch "${CODEX_RUNNER_IMAGE}@${CODEX_DIGEST}" >/dev/null
           oras manifest fetch "${BUNDLE_ARTIFACT}:${RELEASE_TAG}" >/dev/null
 
       # CHANNEL 2 - GitHub Release. Idempotent so a re-run of a release tag
@@ -393,6 +430,8 @@ jobs:
             echo
             echo '```'
             echo "DIFFUSE_IMAGE=${IMAGE}@${DIGEST}"
+            echo "DIFFUSE_CLAUDE_RUNNER_IMAGE=${CLAUDE_RUNNER_IMAGE}@${CLAUDE_DIGEST}"
+            echo "DIFFUSE_CODEX_RUNNER_IMAGE=${CODEX_RUNNER_IMAGE}@${CODEX_DIGEST}"
             echo '```'
             echo
             echo "Self-host bundle sha256:"

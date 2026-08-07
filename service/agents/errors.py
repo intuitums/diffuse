@@ -15,6 +15,10 @@ class AgentSessionTerminalError(ValueError):
     """A configuration or authentication failure no retry can repair."""
 
 
+class AgentSessionAuthRequired(AgentSessionTerminalError):
+    """Vendor refresh/login was rejected; an operator must reconnect."""
+
+
 class AgentSessionTimeout(AgentSessionError):
     """The agent did not exit before the profile's deadline."""
 

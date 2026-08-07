@@ -41,14 +41,19 @@ ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 
 # Variables read by the code that are deliberately NOT operator configuration.
 #
-# Empty today, and that is the honest state: every variable currently read is
-# something an operator may set. Add a name here — with a reason — if the code
-# ever reads a variable it sets for itself (the way `DIFFUSE_GIT_TOKEN` is
-# handed to the askpass subprocess) or one inherited from the ambient
-# environment (`PATH`, `SSL_CERT_FILE`). Do not add a name merely to silence
-# this test: an operator-settable variable that is hard to document is exactly
-# the one worth documenting.
-NOT_OPERATOR_CONFIGURATION: frozenset[str] = frozenset()
+# These are Compose-wired internal addresses and identities, deliberately not
+# installation knobs: changing one can collapse the runner isolation boundary.
+# They belong in the sealed service definitions, not the operator env file.
+NOT_OPERATOR_CONFIGURATION: frozenset[str] = frozenset(
+    {
+        "DIFFUSE_AGENT_EGRESS_PROXY_HOST",
+        "DIFFUSE_AGENT_MODEL_HOST",
+        "DIFFUSE_AGENT_RUNTIME",
+        "DIFFUSE_AGENT_TOOL_UPSTREAM",
+        "DIFFUSE_AGENT_TOOL_URL",
+        "DIFFUSE_RUNNER_IMAGE_VERSION",
+    }
+)
 
 
 def _declared() -> set[str]:

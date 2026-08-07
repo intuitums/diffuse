@@ -268,7 +268,7 @@ CLAUDE_CODE = AgentCli(
     logout_arguments=("auth", "logout"),
     auth_status_arguments=("auth", "status", "--json"),
     auth_status_kind=AUTH_STATUS_JSON,
-    upgrade_hint="claude update",
+    upgrade_hint="installing a newer compatible Diffuse runner release",
 )
 
 #: Codex host plumbing is live for login/status/write-policy. The version floor
@@ -292,7 +292,7 @@ CODEX = AgentCli(
     logout_arguments=("logout",),
     auth_status_arguments=("login", "status"),
     auth_status_kind=AUTH_STATUS_EXIT,
-    upgrade_hint="npm install -g @openai/codex@latest",
+    upgrade_hint="installing a newer compatible Diffuse runner release",
     # `-c` / `--config` and `-p` / `--profile` all reach the same config.toml
     # keys `rendered_codex_config` writes — including
     # `cli_auth_credentials_store = "file"` that keeps the credential inside
@@ -793,7 +793,7 @@ def version_floor_message(cli: AgentCli, version: tuple[int, int, int]) -> str:
     lines.extend(
         f"  {item.setting} (needs {item.minimum_text}) -- {item.consequence}" for item in missing
     )
-    lines.append(f"Upgrade with `{cli.upgrade_hint}`, or set REVIEW_RUNTIME=litellm.")
+    lines.append(f"Upgrade by {cli.upgrade_hint}, or set REVIEW_RUNTIME=litellm.")
     return "\n".join(lines)
 
 

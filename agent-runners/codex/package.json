@@ -1,0 +1,8 @@
+{
+  "name": "diffuse-runner-codex",
+  "private": true,
+  "description": "Pinned Codex CLI distribution for the Diffuse agent runner",
+  "dependencies": {
+    "@openai/codex": "0.147.0"
+  }
+}

@@ -10,6 +10,7 @@ See `docs/agent-runtimes.md` and the Linear document
 
 from service.agents.contract.capability import (
     CAPABILITY_OPERATIONS,
+    MAX_CAPABILITY_TTL,
     CapabilityError,
     CapabilityExpired,
     CapabilityMalformed,
@@ -41,6 +42,7 @@ __all__ = [
     "AGENT_RUNTIME_CODEX",
     "AGENT_RUNTIME_NAMES",
     "CAPABILITY_OPERATIONS",
+    "MAX_CAPABILITY_TTL",
     "RESULT_SCHEMA_VERSION",
     "AgentFinding",
     "AgentRuntimeConfig",
