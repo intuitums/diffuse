@@ -5,9 +5,9 @@
 #   release.yml  tag-driven publish
 # Job ids are verb-led kebab-case so the checks list reads as a sequence of actions.
 #
-# Replaces ci.yml. Logic is ported unchanged except where noted; the container build now
-# uses buildx with a GitHub Actions cache, which is the one place repeat runs were paying
-# full price for an unchanged image.
+# Replaces ci.yml. Logic is ported unchanged except where noted; the container builds
+# use the box's persistent BuildKit builder instead of a GitHub Actions cache — see
+# build-container for the measurements that forced that change.
 #
 # EVERY `uses:` IS PINNED TO A FULL COMMIT SHA, with the tag it resolved from in a
 # trailing comment. See the same note in release.yml for why, and for how to refresh
@@ -259,22 +259,26 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      # Its own cache SCOPE, not `diffuse/Dockerfile`: this builds a different target
-      # from build-container, and sharing one would have them evict each other. The
-      # scope names are carried over unchanged from the Blacksmith cache keys they
-      # replace, so the separation this comment describes still holds.
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      # The SAME builder as build-container, on purpose. When the two jobs held
+      # separate GitHub Actions cache scopes it was because two scopes writing one
+      # key would evict each other; a persistent BuildKit store holds both build
+      # graphs side by side, and the parts the targets share — the pinned base
+      # image, the apt layer, the pip wheel cache mount — dedupe instead of being
+      # paid twice. See build-container for why the Actions cache is gone.
+      - name: Use the persistent builder
+        run: |
+          docker buildx inspect diffuse >/dev/null 2>&1 \
+            || docker buildx create --name diffuse --driver docker-container \
+            || docker buildx inspect diffuse >/dev/null
 
       - name: Build the test image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
+          builder: diffuse
           context: .
           target: test-runner
           load: true
           tags: diffuse-tests:ci
-          cache-from: type=gha,scope=diffuse/Dockerfile-test-runner
-          cache-to: type=gha,scope=diffuse/Dockerfile-test-runner,mode=max
 
       # Proves the point of the stage rather than trusting it: if requirements-dev.txt
       # ever drags a runtime dependency off the locked version again, the tested set
@@ -330,30 +334,49 @@ jobs:
             docker compose --env-file deploy/env.example \
               --file deploy/compose.yaml config --quiet
 
-      # buildx + a declared layer cache. A bare `docker build` rebuilds every layer on
-      # every run even when the Dockerfile has not changed.
+      # One persistent BuildKit builder on the box, no GitHub Actions cache. The
+      # intuitum runners share a single host and a single Docker daemon, so a builder
+      # created once (`docker buildx create --name diffuse`) and never torn down IS
+      # the cache: its state volume outlives every job, and each build starts from
+      # whatever the last one proved.
       #
-      # Off Blacksmith the cache has to be named explicitly. Blacksmith gave each
-      # `cache-key` its own sticky disk; the equivalent here is a GitHub Actions cache
-      # scope, which partitions the same way. `mode=max` matters: the expensive layer in
-      # this Dockerfile is the hash-pinned `pip install`, which lives in the builder
-      # stage, and the default `mode=min` would export only the final image's layers and
-      # cache none of it.
+      # Measured before this change, over the previous 40 Verify runs: this job held
+      # steady around 117s, of which ~35s was importing and exporting the `type=gha`
+      # cache — and one run took 911s, because eviction had dropped the pip layer
+      # from the Actions cache and re-uploading that single ~1GB layer to the cache
+      # service ran at ~1.4MB/s for 811 seconds. A cache that lives on the box has no
+      # upload leg, so both the steady 35s and the fifteen-minute tail are gone.
       #
-      # The scope names the Dockerfile being built; release.yml's amd64 build uses the
-      # same one, because it builds this same image and should start from the layers
-      # Verify already produced.
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      # It also makes the Dockerfile's `RUN --mount=type=cache` apt/pip mounts real.
+      # Those mounts live in BuildKit state, which `type=gha` never exported and the
+      # per-job builder threw away, so in CI they were empty on every run — a lock
+      # change re-downloaded every wheel from scratch. Now they accumulate.
+      #
+      # Deliberately a `run` step, not docker/setup-buildx-action: adopting an
+      # existing named builder needs one idempotent command, and this workflow runs
+      # on `pull_request`, where every third-party action removed is one fewer
+      # SHA-pin to audit. The three-way `||` handles two first-runs racing to
+      # create the builder: the loser's create fails, the final inspect confirms
+      # the winner's builder exists, and both proceed onto it.
+      #
+      # Shared state across pull requests is not a new trust surface: every job on
+      # these runners already talks to the shared daemon (`load: true`, the compose
+      # boot below), so PR code that wanted to poison a neighbour's build never
+      # needed the cache to do it. Disk is bounded by BuildKit's default GC; if the
+      # box ever runs tight, `docker buildx prune` on the host is the lever.
+      - name: Use the persistent builder
+        run: |
+          docker buildx inspect diffuse >/dev/null 2>&1 \
+            || docker buildx create --name diffuse --driver docker-container \
+            || docker buildx inspect diffuse >/dev/null
 
       - name: Build production image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
+          builder: diffuse
           context: .
           load: true
           tags: diffuse:test
-          cache-from: type=gha,scope=diffuse/Dockerfile
-          cache-to: type=gha,scope=diffuse/Dockerfile,mode=max
 
       - name: Validate packaged runtime
         run: |
