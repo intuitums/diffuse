@@ -89,11 +89,12 @@ The following are explicitly **in scope**:
 
 ### Agent-CLI review boundary (destination)
 
-Local `diffuse review` is built to drive a developer-installed agent CLI behind
-Diffuse-owned configuration (`DIFFUSE_AGENT_HOME`, never `~/.claude` /
-`~/.codex`). Host plumbing for Claude and Codex exists today
-(`diffuse agent login claude|codex`); no agent runtime is selectable yet. For
-local review, the intended boundaries are:
+Diffuse's target architecture is control plane + isolated agent-runner: the
+worker never executes a CLI or mounts agent credentials. Session capabilities
+and structured results are defined in `service.agents.contract`. Host plumbing
+for Claude and Codex exists today (`diffuse agent login claude|codex`); no agent
+`REVIEW_RUNTIME` is selectable yet. For local tooling and the future runner, the
+intended boundaries are:
 
 1. **Child environment allowlist** — credentials Diffuse does not name never
    reach the CLI process (`GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, `AWS_*`,
@@ -112,11 +113,11 @@ invariants are in scope.
 
 #### Self-hosted container decision
 
-The self-hosted server may later drive an agent CLI only from a dedicated review
+The self-hosted agent-runner drives an agent CLI only from a dedicated review
 compartment. The invariant is not `sandbox.enabled == true`; it is: **the
-process that reads untrusted content holds no credential and reaches no resource
-whose compromise matters.** The worker and API container do not meet that
-invariant, so neither is an acceptable fallback boundary.
+process that reads untrusted content holds no control-plane credential and
+reaches no resource whose compromise matters.** The worker and API container do
+not meet that invariant, so neither is an acceptable CLI host.
 
 This is measured rather than assumed. On 2026-08-05, on `intuitumserver-1`
 (Ubuntu 26.04), a `debian:trixie-slim` probe image with `bubblewrap` and
