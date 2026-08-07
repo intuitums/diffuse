@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from service.agents.errors import (
+    AgentSessionAuthRequired,
     AgentSessionCoverageCaveat,
     AgentSessionExecutionError,
     AgentSessionMcpError,
     AgentSessionOutputError,
     AgentSessionRateLimited,
-    AgentSessionTerminalError,
 )
 from service.agents.profiles import SessionProfile
 
@@ -179,5 +179,5 @@ def _raise_envelope_failure(raw: dict[str, Any]) -> None:
     if any(marker in lowered for marker in RATE_LIMIT_MARKERS):
         raise AgentSessionRateLimited(detail)
     if CREDENTIAL_MARKERS.search(lowered):
-        raise AgentSessionTerminalError(f"{detail}; run `diffuse agent login claude`")
+        raise AgentSessionAuthRequired("Claude authentication is required")
     raise AgentSessionExecutionError(detail)

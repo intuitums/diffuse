@@ -87,6 +87,7 @@ async def test_agent_search_refuses_a_capability_without_the_tool_operation(monk
 async def test_runner_refuses_to_start_without_a_passing_compartment(monkeypatch):
     calls: list[object] = []
     monkeypatch.setattr(runner, "preflight", lambda: calls.append(True))
+    monkeypatch.setattr(runner, "validate_dispatch_public_key", lambda: None)
 
     async with runner.app.router.lifespan_context(runner.app):
         assert calls == [True]

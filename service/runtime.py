@@ -167,6 +167,17 @@ def _run_agent_runner_healthcheck(arguments: Sequence[str]) -> None:
             raise RuntimeError(f"Agent runner readiness returned HTTP {response.status}")
 
 
+def _run_agent_tool_gateway(arguments: Sequence[str]) -> None:
+    if arguments:
+        raise ValueError("The agent-tool-gateway command does not accept positional arguments")
+    import uvicorn
+
+    from service.agents.tool_gateway import app
+
+    _logging_level, uvicorn_level = _log_level()
+    uvicorn.run(app, host=DEFAULT_BIND_HOST, port=8011, log_level=uvicorn_level)
+
+
 def _run_cli(arguments: Sequence[str]) -> None:
     from service.cli.review import main as cli_main
 
@@ -194,6 +205,8 @@ def main(arguments: Sequence[str] | None = None) -> None:
             _run_agent_runner(selected)
         elif command == "agent-runner-healthcheck":
             _run_agent_runner_healthcheck(selected)
+        elif command == "agent-tool-gateway":
+            _run_agent_tool_gateway(selected)
         else:
             # The CLI owns its own exit codes and error formatting.
             _run_cli([command, *selected])

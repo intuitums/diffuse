@@ -17,6 +17,7 @@ from service.github.api import normalize_manual_review_request
 from service.github.review import post_github_review_failure_notice
 from service.review.failure_notice import (
     TerminalReviewFailure,
+    agent_auth_required_failure,
     format_failure_notice,
     redact_credentials,
     terminal_review_failure,
@@ -64,6 +65,15 @@ def test_failure_notice_names_the_error_code_and_job_id():
     # The job id still has to be visible; support needs it to find the logs.
     assert "`4821`" in body
     assert body.count("\n\n") == 4
+
+
+def test_auth_failure_notice_has_only_the_generic_reconnect_command():
+    body = format_failure_notice(agent_auth_required_failure(4821, "claude"))
+
+    assert "agent_auth_required" in body
+    assert "agent-runner-claude agent login claude" in body
+    assert "device code" not in body.lower()
+    assert "http" not in body.lower()
 
 
 def test_failure_notice_is_recognized_as_diffuse_generated():

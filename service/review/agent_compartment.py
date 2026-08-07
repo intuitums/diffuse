@@ -42,7 +42,7 @@ COMPARTMENT_UID = 10001
 COMPARTMENT_HOME = Path("/var/lib/diffuse/agent")
 DATABASE_HOST = "db"
 DATABASE_PORT = 5432
-EGRESS_PROXY_HOST = "egress-proxy"
+EGRESS_PROXY_HOST = os.environ.get("DIFFUSE_AGENT_EGRESS_PROXY_HOST", "egress-proxy")
 EGRESS_PROXY_PORT = 3128
 #: The one authority the compartment may reach. Configurable because Diffuse
 #: does not require any particular provider -- `REVIEW_MODEL` and
@@ -160,16 +160,16 @@ def _check_proxy_environment() -> None:
     for name in ("HTTP_PROXY", "HTTPS_PROXY"):
         if os.environ.get(name) != PROXY_URL:
             raise AgentCompartmentError(f"{name} must point to the compartment egress proxy")
-    # App traffic must not take the proxy, or the proxy becomes a bypass around
-    # the MCP authorization boundary.  Compose names are explicit, not inferred
-    # from an operator-provided URL.
+    # Tool-gateway traffic must not take the proxy, or the proxy becomes a
+    # bypass around the capability authorization boundary. Compose names are
+    # explicit, not inferred from an operator-provided URL.
     no_proxy = {
         part.strip()
         for part in os.environ.get(NO_PROXY_VARIABLE, "").split(",")
         if part.strip()
     }
-    if not {"app", EGRESS_PROXY_HOST}.issubset(no_proxy):
-        raise AgentCompartmentError("NO_PROXY must include app and egress-proxy")
+    if not {"agent-tool-gateway", EGRESS_PROXY_HOST}.issubset(no_proxy):
+        raise AgentCompartmentError("NO_PROXY must include agent-tool-gateway and egress proxy")
 
 
 def _check_proxy_connects() -> None:

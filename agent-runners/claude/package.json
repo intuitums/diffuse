@@ -1,0 +1,8 @@
+{
+  "name": "diffuse-runner-claude",
+  "private": true,
+  "description": "Pinned Claude Code distribution for the Diffuse agent runner",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.224"
+  }
+}

@@ -8,6 +8,11 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from service.agents.contract.runtime import (
+    AGENT_RUNTIME_CLAUDE,
+    AGENT_RUNTIME_CODEX,
+    parse_agent_runtime_name,
+)
 from service.model_providers import model_family as resolve_model_family
 
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
@@ -190,6 +195,77 @@ class ReviewModelPlan:
             )
         )
         return hashlib.sha256(value.encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class ReviewRuntimePlan:
+    """A capability-safe CLI runner selection for one pull request.
+
+    The default is an operator policy. Provenance may only move away from it
+    when the SCM supplies strong enough evidence that the change came from the
+    same model family; an author-controlled trailer can never choose a runner.
+    """
+
+    runtime: str
+    reason_code: str
+    detected_family: str | None
+
+    def __post_init__(self) -> None:
+        parse_agent_runtime_name(self.runtime)
+        if not re.fullmatch(r"[a-z0-9_]{1,64}", self.reason_code):
+            raise ValueError("Review runtime routing reason is invalid")
+        if self.detected_family is not None and self.detected_family not in MODEL_FAMILIES:
+            raise ValueError("Unsupported provenance model family")
+
+
+def select_review_runtime_plan(
+    provenance: PullRequestProvenance,
+    *,
+    default_runtime: str = AGENT_RUNTIME_CODEX,
+    minimum_confidence: float = PROVENANCE_CONFIDENCE_DEFAULT,
+) -> ReviewRuntimePlan:
+    """Select the independent CLI family for a review.
+
+    Codex is the normal default. A confidently OpenAI/Codex-authored pull
+    request is reviewed by Claude and a confidently Anthropic/Claude-authored
+    pull request by Codex. Unknown, incomplete, mixed, and weak attribution
+    deliberately retain the configured default rather than letting guesswork
+    alter billing or reviewer independence.
+    """
+
+    selected_default = parse_agent_runtime_name(default_runtime)
+    if not 0 <= minimum_confidence <= 1:
+        raise ValueError("Provenance confidence threshold must be between zero and one")
+    origin = (
+        provenance.model_family
+        if provenance.confidence >= minimum_confidence
+        else None
+    )
+    opposing = {
+        "openai": AGENT_RUNTIME_CLAUDE,
+        "anthropic": AGENT_RUNTIME_CODEX,
+    }.get(origin)
+    if opposing is not None:
+        return ReviewRuntimePlan(
+            runtime=opposing,
+            reason_code=f"opposing_{origin}_runner",
+            detected_family=origin,
+        )
+    if provenance.classification in {
+        "agent_unknown_family",
+        "ai_assisted_unknown_family",
+        "mixed_ai",
+    }:
+        reason = "ambiguous_agent_default_runner"
+    elif provenance.model_family is not None:
+        reason = "low_confidence_default_runner"
+    else:
+        reason = "default_runner"
+    return ReviewRuntimePlan(
+        runtime=selected_default,
+        reason_code=reason,
+        detected_family=provenance.model_family,
+    )
 
 
 def _identity_signal(

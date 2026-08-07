@@ -155,6 +155,7 @@ COPY tests ./tests
 # release-provenance assertions.
 COPY evals ./evals
 COPY deploy ./deploy
+COPY agent-runners ./agent-runners
 COPY .env.example ./.env.example
 COPY docker-compose.yml ./docker-compose.yml
 COPY .github ./.github
@@ -189,7 +190,7 @@ RUN printf '%s\n' \
 
 ENTRYPOINT ["/usr/local/bin/run-tests"]
 
-FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS runtime
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS runtime-base
 
 ARG DIFFUSE_VERSION=0.1.0
 ARG DIFFUSE_REVISION=unknown
@@ -259,3 +260,41 @@ HEALTHCHECK --interval=15s --timeout=5s --retries=5 --start-period=30s \
 
 ENTRYPOINT ["diffuse"]
 CMD ["serve"]
+
+# Each runner is a separately selected final target so a credential-isolated
+# Claude process never carries the Codex executable (or vice versa). The CLI
+# packages are installed from committed lockfiles, not downloaded at startup;
+# the root filesystem and Claude updater disable make a Diffuse release the
+# only update channel.
+FROM runtime-base AS runner-claude
+USER root
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+COPY agent-runners/claude/package.json agent-runners/claude/package-lock.json /opt/diffuse/agent-cli/
+RUN npm ci --prefix /opt/diffuse/agent-cli --omit=dev --ignore-scripts --no-audit --no-fund \
+    && ln -s /opt/diffuse/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
+    && claude --version
+ENV DISABLE_AUTOUPDATER=1 \
+    PATH=/opt/diffuse/agent-cli/node_modules/.bin:${PATH}
+USER diffuse
+
+FROM runtime-base AS runner-codex
+USER root
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+COPY agent-runners/codex/package.json agent-runners/codex/package-lock.json /opt/diffuse/agent-cli/
+RUN npm ci --prefix /opt/diffuse/agent-cli --omit=dev --ignore-scripts --no-audit --no-fund \
+    && ln -s /opt/diffuse/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
+    && codex --version
+ENV PATH=/opt/diffuse/agent-cli/node_modules/.bin:${PATH}
+USER diffuse
+
+# Keep the application image as Docker's default target. Release automation
+# explicitly selects the two runner targets above.
+FROM runtime-base AS app

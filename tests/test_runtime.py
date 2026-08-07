@@ -14,6 +14,7 @@ from service import runtime
         (["healthcheck"], "_run_healthcheck", []),
         (["agent-runner"], "_run_agent_runner", []),
         (["agent-runner-healthcheck"], "_run_agent_runner_healthcheck", []),
+        (["agent-tool-gateway"], "_run_agent_tool_gateway", []),
         (["repository", "list"], "_run_cli", ["repository", "list"]),
     ],
 )
@@ -26,6 +27,7 @@ def test_runtime_dispatches_commands(monkeypatch, arguments, target, forwarded):
             "_run_healthcheck",
             "_run_agent_runner",
             "_run_agent_runner_healthcheck",
+            "_run_agent_tool_gateway",
             "_run_cli",
         )
     }
