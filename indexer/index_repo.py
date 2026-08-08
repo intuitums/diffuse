@@ -13,16 +13,20 @@ from repository_policy.discovery import discover_repository_policy
 from repository_policy.store import write_repository_policy
 
 from .chunker import chunk_repo
+from .file_index import index_repository_files
 from .graph import extract_repository_graph
 from .store import (
     activate_snapshot,
     begin_index_snapshot,
     copy_unchanged_chunks,
+    copy_unchanged_files,
     get_conn,
+    get_existing_file_hashes,
     get_existing_hashes,
     mark_snapshot_failed,
     touch_snapshot,
     upsert_chunks,
+    upsert_repository_files,
     validate_snapshot_ready,
     write_symbol_graph,
 )
@@ -113,12 +117,16 @@ def index_repo(
             print(f"Chunking {repo_name}@{commit_sha[:12]} ...")
             chunks = chunk_repo(root, symbols=graph.symbols)
             print(f"  {len(chunks)} chunks found")
+            print("Indexing repository files for literal grep ...")
+            files = index_repository_files(root)
+            print(f"  {len(files)} searchable files found")
             if progress_callback:
                 progress_callback()
 
             with conn:
                 touch_snapshot(conn, handle.snapshot_id)
                 existing = get_existing_hashes(conn, handle.previous_snapshot_id)
+                existing_files = get_existing_file_hashes(conn, handle.previous_snapshot_id)
             changed = [
                 chunk
                 for chunk in chunks
@@ -131,8 +139,21 @@ def index_repo(
                 if existing.get((chunk.file_path, chunk.start_line, chunk.end_line))
                 == chunk.content_hash
             ]
+            changed_files = [
+                file
+                for file in files
+                if existing_files.get(file.file_path) != file.content_hash
+            ]
+            unchanged_file_paths = [
+                file.file_path
+                for file in files
+                if existing_files.get(file.file_path) == file.content_hash
+            ]
 
-            print(f"  {len(changed)} chunks changed/new; {len(unchanged_keys)} reusable")
+            print(
+                f"  {len(changed)} chunks changed/new; {len(unchanged_keys)} reusable; "
+                f"{len(changed_files)} files changed/new; {len(unchanged_file_paths)} reusable"
+            )
             if progress_callback:
                 progress_callback()
 
@@ -144,7 +165,14 @@ def index_repo(
                     handle.snapshot_id,
                     unchanged_keys,
                 )
+                copy_unchanged_files(
+                    conn,
+                    handle.previous_snapshot_id,
+                    handle.snapshot_id,
+                    unchanged_file_paths,
+                )
                 upsert_chunks(conn, handle.snapshot_id, changed)
+                upsert_repository_files(conn, handle.snapshot_id, changed_files)
                 write_symbol_graph(
                     conn,
                     handle.snapshot_id,
@@ -160,6 +188,7 @@ def index_repo(
                     expected_relationships=len(graph.relationships),
                     expected_policy_layers=len(policy.layers),
                     expected_guidance_documents=len(policy.guidance_documents),
+                    expected_files=len(files),
                 )
                 activated = activate_snapshot(conn, handle.snapshot_id)
             if progress_callback:
@@ -173,8 +202,9 @@ def index_repo(
     state = "active" if activated else "superseded by a newer index request"
     print(
         f"Done. Snapshot {handle.snapshot_id} for {repo_name}@{commit_sha[:12]} is {state} "
-        f"({len(chunks)} chunks, {len(changed)} written, "
-        f"{len(unchanged_keys)} reused, {len(graph.symbols)} symbols)."
+        f"({len(chunks)} chunks, {len(changed)} written, {len(unchanged_keys)} reused; "
+        f"{len(files)} grep files, {len(changed_files)} written, "
+        f"{len(unchanged_file_paths)} reused; {len(graph.symbols)} symbols)."
     )
 
 

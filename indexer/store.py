@@ -13,6 +13,7 @@ import psycopg2.extras
 from repository_policy.models import EMPTY_POLICY_FINGERPRINT, validate_repo_path
 
 from .chunker import Chunk
+from .file_index import IndexedFile
 from .graph import CodeRelationship, CodeSymbol
 from .index_version import INDEX_FORMAT_VERSION
 
@@ -50,6 +51,11 @@ def _path_prefix_filter(
         f"({column} = %s OR {column} LIKE %s ESCAPE '\\')",
         [normalized, f"{escaped}/%"],
     )
+
+
+def _like_literal_pattern(value: str) -> str:
+    """Escape SQL LIKE metacharacters so grep remains a literal search."""
+    return value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
 
 def begin_index_snapshot(
@@ -479,6 +485,85 @@ def upsert_chunks(
         )
 
 
+def get_existing_file_hashes(
+    conn,
+    snapshot_id: int | None,
+) -> dict[str, str]:
+    if snapshot_id is None:
+        return {}
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT file_path, content_hash
+            FROM repository_files
+            WHERE snapshot_id = %s
+            """,
+            (snapshot_id,),
+        )
+        return {str(row[0]): str(row[1]) for row in cursor.fetchall()}
+
+
+def copy_unchanged_files(
+    conn,
+    source_snapshot_id: int | None,
+    target_snapshot_id: int,
+    file_paths: list[str],
+) -> None:
+    if source_snapshot_id is None or not file_paths:
+        return
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO repository_files (
+                snapshot_id,
+                file_path,
+                content_hash,
+                content
+            )
+            SELECT
+                %s,
+                source.file_path,
+                source.content_hash,
+                source.content
+            FROM repository_files AS source
+            WHERE source.snapshot_id = %s
+              AND source.file_path = ANY(%s)
+            ON CONFLICT (snapshot_id, file_path) DO NOTHING
+            """,
+            (target_snapshot_id, source_snapshot_id, file_paths),
+        )
+
+
+def upsert_repository_files(
+    conn,
+    snapshot_id: int,
+    files: list[IndexedFile],
+) -> None:
+    if not files:
+        return
+    with conn.cursor() as cursor:
+        psycopg2.extras.execute_values(
+            cursor,
+            """
+            INSERT INTO repository_files (
+                snapshot_id,
+                file_path,
+                content_hash,
+                content
+            )
+            VALUES %s
+            ON CONFLICT (snapshot_id, file_path)
+            DO UPDATE SET
+                content_hash = EXCLUDED.content_hash,
+                content = EXCLUDED.content
+            """,
+            [
+                (snapshot_id, file.file_path, file.content_hash, file.content)
+                for file in files
+            ],
+        )
+
+
 def write_symbol_graph(
     conn,
     snapshot_id: int,
@@ -565,6 +650,7 @@ def validate_snapshot_ready(
     expected_relationships: int,
     expected_policy_layers: int = 0,
     expected_guidance_documents: int = 0,
+    expected_files: int = 0,
 ) -> None:
     with conn.cursor() as cursor:
         cursor.execute(
@@ -578,9 +664,17 @@ def validate_snapshot_ready(
                     SELECT count(*)
                     FROM repository_guidance_documents
                     WHERE snapshot_id = %s
-                )
+                ),
+                (SELECT count(*) FROM repository_files WHERE snapshot_id = %s)
             """,
-            (snapshot_id, snapshot_id, snapshot_id, snapshot_id, snapshot_id),
+            (
+                snapshot_id,
+                snapshot_id,
+                snapshot_id,
+                snapshot_id,
+                snapshot_id,
+                snapshot_id,
+            ),
         )
         actual = tuple(int(value) for value in cursor.fetchone())
     expected = (
@@ -589,13 +683,80 @@ def validate_snapshot_ready(
         expected_relationships,
         expected_policy_layers,
         expected_guidance_documents,
+        expected_files,
     )
     if actual != expected:
         raise RuntimeError(
             "Snapshot validation failed: "
-            "expected chunks/symbols/relationships/policy layers/guidance documents="
+            "expected chunks/symbols/relationships/policy layers/guidance documents/files="
             f"{expected}, got {actual}"
         )
+
+
+def search_grep(
+    conn,
+    repo: str,
+    query: str,
+    *,
+    top_k: int = 8,
+    path_prefix: str | None = None,
+    snapshot_id: int | None = None,
+) -> list[dict]:
+    """Return literal, line-oriented matches from an immutable file snapshot.
+
+    The ``pg_trgm`` index narrows candidate files before PostgreSQL expands
+    their lines, keeping this a real grep path rather than a chunk scan.  A
+    minimum of three characters is necessary for that index to be selective.
+    """
+    if not 1 <= top_k <= 50:
+        raise ValueError("top_k must be between 1 and 50")
+    if (
+        not isinstance(query, str)
+        or not 3 <= len(query) <= 512
+        or "\0" in query
+        or "\n" in query
+        or "\r" in query
+    ):
+        raise ValueError("grep query must contain 3 to 512 non-newline characters")
+    if snapshot_id is None:
+        snapshot_id = _active_snapshot_id(conn, repo)
+    if snapshot_id is None:
+        return []
+
+    pattern = _like_literal_pattern(query)
+    clauses = [
+        "file.snapshot_id = %s",
+        "file.content LIKE '%%' || %s || '%%' ESCAPE '\\'",
+    ]
+    parameters: list[object] = [snapshot_id, pattern]
+    path_clause, path_parameters = _path_prefix_filter("file.file_path", path_prefix)
+    if path_clause:
+        clauses.append(path_clause)
+        parameters.extend(path_parameters)
+    parameters.extend((pattern, top_k))
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+        cursor.execute(
+            f"""
+            WITH matched_files AS (
+                SELECT file_path, content
+                FROM repository_files AS file
+                WHERE {" AND ".join(clauses)}
+            )
+            SELECT
+                matched_files.file_path,
+                lines.line_number::INTEGER AS start_line,
+                lines.line_number::INTEGER AS end_line,
+                lines.content
+            FROM matched_files
+            CROSS JOIN LATERAL unnest(string_to_array(matched_files.content, E'\\n'))
+                WITH ORDINALITY AS lines(content, line_number)
+            WHERE lines.content LIKE '%%' || %s || '%%' ESCAPE '\\'
+            ORDER BY matched_files.file_path, lines.line_number
+            LIMIT %s
+            """,
+            parameters,
+        )
+        return list(cursor.fetchall())
 
 
 def search_lexical(

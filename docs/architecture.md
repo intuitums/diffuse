@@ -182,6 +182,9 @@ score, and provenance.
 
 The foundation stores a weighted PostgreSQL `tsvector` beside each immutable
 chunk: paths and symbol names receive the highest weight, followed by content.
+It also stores each safe indexed source file once per snapshot behind a
+trigram index, so an explicit `grep:` code query yields literal, line-oriented
+matches without weakening the graph-and-lexical retrieval path.
 Review retrieval extracts only bounded code identifiers from changed lines,
 excludes changed files from reference candidates, and uses weighted reciprocal
 rank fusion across the graph and lexical channels. Combined channel provenance

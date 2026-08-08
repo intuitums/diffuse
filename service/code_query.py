@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import closing
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import quote
 
+from indexer.store import get_conn, search_grep
 from retriever.context_models import CrossRepositoryContextPlan
 from retriever.retrieve import (
     RetrievedContext,
@@ -17,6 +19,7 @@ from retriever.retrieve import (
 
 CODE_SEARCH_SCHEMA_VERSION = "diffuse-code-search-v1"
 MAX_SOURCE_CONTENT_CHARS = 8000
+GREP_PREFIX = "grep:"
 
 
 @dataclass(frozen=True)
@@ -308,6 +311,74 @@ def _retrieve(
     )
 
 
+def _grep_literal(query: str) -> str | None:
+    """Recognize the explicit literal-search mode without changing Q&A search."""
+    if not query.casefold().startswith(GREP_PREFIX):
+        return None
+    literal = query[len(GREP_PREFIX) :].strip()
+    if not literal:
+        raise ValueError("grep query is required after 'grep:'")
+    return literal
+
+
+def _retrieve_grep(
+    target: CodeQueryTarget,
+    *,
+    query: str,
+    path_prefix: str | None,
+    limit: int,
+) -> tuple[str, tuple[_CodeSource, ...], str]:
+    literal = _grep_literal(query)
+    assert literal is not None
+    if not 1 <= limit <= 20:
+        raise ValueError("limit must be between 1 and 20")
+
+    contexts: list[RetrievedContext] = []
+    snapshots = _snapshot_identities(target)
+    with closing(get_conn()) as conn:
+        for repository_name, (snapshot_id, _commit_sha) in snapshots.items():
+            rows = search_grep(
+                conn,
+                repository_name,
+                literal,
+                top_k=limit,
+                path_prefix=path_prefix,
+                snapshot_id=snapshot_id,
+            )
+            contexts.extend(
+                RetrievedContext(
+                    file_path=str(row["file_path"]),
+                    symbol_name=None,
+                    start_line=int(row["start_line"]),
+                    end_line=int(row["end_line"]),
+                    content=str(row["content"]),
+                    retrieval_reason="grep",
+                    relevance_score=1.0,
+                    repository_full_name=repository_name,
+                )
+                for row in rows
+            )
+    contexts.sort(
+        key=lambda context: (
+            context.repository_full_name != target.repository_name,
+            context.repository_full_name or "",
+            context.file_path,
+            context.start_line,
+        )
+    )
+    sources = _sources(target, tuple(contexts[:limit]))
+    return (
+        literal,
+        sources,
+        _query_fingerprint(
+            target,
+            query=literal,
+            path_prefix=path_prefix,
+            sources=sources,
+        ),
+    )
+
+
 def search_codebase(
     target: CodeQueryTarget,
     *,
@@ -315,12 +386,23 @@ def search_codebase(
     path_prefix: str | None = None,
     limit: int = 8,
 ) -> dict[str, object]:
-    query, sources, fingerprint = _retrieve(
-        target,
-        query=query,
-        path_prefix=path_prefix,
-        limit=limit,
-    )
+    normalized_query = normalize_code_query(query)
+    if _grep_literal(normalized_query) is not None:
+        query, sources, fingerprint = _retrieve_grep(
+            target,
+            query=normalized_query,
+            path_prefix=path_prefix,
+            limit=limit,
+        )
+        search_mode = "grep"
+    else:
+        query, sources, fingerprint = _retrieve(
+            target,
+            query=normalized_query,
+            path_prefix=path_prefix,
+            limit=limit,
+        )
+        search_mode = "context"
     return {
         "schemaVersion": CODE_SEARCH_SCHEMA_VERSION,
         "query": query,
@@ -328,6 +410,7 @@ def search_codebase(
         "repository": _repository_json(target),
         "sources": [_source_json(target, source) for source in sources],
         "resultCount": len(sources),
+        "searchMode": search_mode,
         "provenance": {
             "contextPlanFingerprint": target.context_plan.fingerprint,
             "queryFingerprint": fingerprint,
