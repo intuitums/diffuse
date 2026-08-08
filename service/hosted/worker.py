@@ -9,6 +9,7 @@ import os
 import socket
 import sys
 import time
+from collections.abc import Callable
 from contextlib import closing
 from functools import partial
 
@@ -129,12 +130,14 @@ from service.review.provenance import (
     select_review_model_plan,
     select_review_runtime_plan,
 )
+from service.review.report_assembly import all_files_disabled_report, reviewable_diff
 from service.review.request import ReviewRequest
 from service.review.runtimes import (
     LITELLM_RUNTIME,
     hosted_review_runtime_name,
     resolve_review_runtime,
 )
+from service.review.workspace import SourceArtifact, build_source_artifact
 from service.scm import (
     FeedbackSyncEvent,
     PullRequestEvent,
@@ -143,7 +146,7 @@ from service.scm import (
     normalize_base_url,
     scm_api_timeout_seconds,
 )
-from service.storage.agent_session import create_agent_session
+from service.storage.agent_session import abandon_agent_session, create_agent_session
 from service.storage.check import (
     MAX_COMPLETION_ATTEMPTS,
     CheckRunHandle,
@@ -736,9 +739,16 @@ def _create_native_agent_session(
     runtime: str,
     snapshot_id: int,
     head_sha: str,
+    progress_callback: Callable[[], None],
 ) -> NativeSessionDispatch:
     if job.pull_request_id is None:
         raise NonRetryableError("Native review job does not reference a pull request")
+    # The checkout/archive can be the most expensive local step before runner
+    # dispatch. Prove this worker still owns the job both before doing that
+    # work and before writing a session another worker could dispatch.
+    progress_callback()
+    source_artifact = _build_native_workspace_artifact(job, head_sha=head_sha)
+    progress_callback()
     grant = mint_session_capability(
         signing_key=session_capability_signing_key(),
         runtime=runtime,
@@ -762,8 +772,30 @@ def _create_native_agent_session(
         runtime=handle.runtime,
         capability=grant.token,
         capability_id=handle.capability_id,
+        source_artifact=source_artifact,
         expires_at=handle.expires_at,
     )
+
+
+def _build_native_workspace_artifact(
+    job: WorkflowJob,
+    *,
+    head_sha: str,
+) -> SourceArtifact:
+    """Archive the exact review revision without exposing mirror credentials.
+
+    The runner is on a private worker-control network but deliberately has no
+    repository volume, SCM token, or direct GitHub egress.  The worker alone
+    checks out the revision already bound into the durable session scope and
+    hands it to the runner as a signed, bounded source artifact.
+    """
+
+    with closing(get_conn()) as conn:
+        repository = get_repository(conn, job.repository_id)
+    if repository is None or not repository.enabled:
+        raise NonRetryableError("Native review repository is unavailable for workspace delivery")
+    with RepositoryMirror(repository).checkout(head_sha) as checkout:
+        return build_source_artifact(checkout)
 
 
 def _generate_and_persist_review(
@@ -780,6 +812,8 @@ def _generate_and_persist_review(
     snapshot_id: int | None = None,
     head_sha: str | None = None,
 ) -> None:
+    agent_session: NativeSessionDispatch | None = None
+
     def report_progress() -> None:
         if not _heartbeat_and_check_current(job.id, worker_id):
             raise ReviewSupersededError(
@@ -788,8 +822,28 @@ def _generate_and_persist_review(
 
     try:
         selected_runtime = runtime_name or hosted_review_runtime_name()
-        agent_session = None
         if selected_runtime != LITELLM_RUNTIME:
+            complete_diff = parse_unified_diff(diff_text)
+            reviewable, ignored_file_count = reviewable_diff(complete_diff, policy)
+            if complete_diff.files and not reviewable.files:
+                # Match the one-shot runtime's early policy exit. Apart from
+                # avoiding a pointless CLI charge, this keeps a path-disabled
+                # review from granting the runner a source artifact at all.
+                report = all_files_disabled_report(
+                    diff_file_count=len(complete_diff.files),
+                    ignored_file_count=ignored_file_count,
+                    policy=policy,
+                )
+                report_progress()
+                with closing(get_conn()) as conn, conn:
+                    persist_review_report(
+                        conn,
+                        review_run_id,
+                        report,
+                        touched_paths=touched_paths,
+                        path_aliases=path_aliases,
+                    )
+                return
             if snapshot_id is None or head_sha is None:
                 raise NonRetryableError("Native review session is missing immutable scope")
             agent_session = _create_native_agent_session(
@@ -797,6 +851,7 @@ def _generate_and_persist_review(
                 runtime=selected_runtime,
                 snapshot_id=snapshot_id,
                 head_sha=head_sha,
+                progress_callback=report_progress,
             )
         report = generate_review(
             diff_text,
@@ -838,6 +893,14 @@ def _generate_and_persist_review(
             )
     except ReviewSupersededError:
         with closing(get_conn()) as conn, conn:
+            if agent_session is not None:
+                abandon_agent_session(
+                    conn,
+                    session_id=agent_session.session_id,
+                    runtime=agent_session.runtime,
+                    capability_id=agent_session.capability_id,
+                    status="cancelled",
+                )
             if not mark_review_superseded(conn, review_run_id, worker_id=worker_id):
                 # The lease is already gone, so another worker owns this review run
                 # now. Superseding it here would delete the findings that worker is
@@ -850,6 +913,14 @@ def _generate_and_persist_review(
         raise
     except Exception:
         with closing(get_conn()) as conn, conn:
+            if agent_session is not None:
+                abandon_agent_session(
+                    conn,
+                    session_id=agent_session.session_id,
+                    runtime=agent_session.runtime,
+                    capability_id=agent_session.capability_id,
+                    status="failed",
+                )
             mark_review_failed(conn, review_run_id)
         raise
 

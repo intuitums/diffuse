@@ -1,10 +1,10 @@
 """Runtime checks for the container that will execute untrusted agent sessions.
 
-This module deliberately has no review-runtime registration.  The compartment is
-the boundary that makes a future hosted agent runtime possible, not a way to
-turn one on before its adapter, credential lifecycle, and evaluation gates are
-ready.  `preflight` is run as the compartment's own Compose service, where it
-checks the kernel-visible properties that a YAML review cannot prove.
+This module deliberately has no review-runtime registration. The compartment is
+the boundary the hosted native runner selects only after its adapter and
+credential lifecycle have completed their own validation. `preflight` is run as
+the compartment's own Compose service and reasserted before each native
+session, checking kernel-visible properties that a YAML review cannot prove.
 
 The egress proxy below is intentionally a small CONNECT-only relay.  It is not
 a TLS inspection boundary: CONNECT exposes the requested authority, not the

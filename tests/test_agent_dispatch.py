@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,6 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from service.agents.dispatch import (
+    MAX_DISPATCH_DIFF_CHARS,
     PRIVATE_KEY_VARIABLE,
     PUBLIC_KEY_VARIABLE,
     DispatchEnvelope,
@@ -17,6 +19,7 @@ from service.agents.dispatch import (
     sign_dispatch,
     verify_dispatch,
 )
+from service.review.workspace import DEFAULT_WORKSPACE_LIMITS, SourceArtifact
 
 
 def _base64url(raw: bytes) -> str:
@@ -54,6 +57,7 @@ def _envelope(expires_at: datetime) -> DispatchEnvelope:
         capability="opaque-capability",
         capability_id="capability-1",
         diff_text="diff --git a/a.py b/a.py",
+        source_artifact=SourceArtifact(b"test source archive", manifest_digest="0" * 64),
         expires_at=expires_at,
     )
 
@@ -65,6 +69,7 @@ def test_dispatch_signature_binds_runtime_scope_and_expiry(dispatch_keys):
 
     assert actual.runtime == "codex"
     assert actual.capability == "opaque-capability"
+    assert actual.source_artifact.archive == b"test source archive"
 
 
 def test_dispatch_rejects_tampering_and_expired_envelopes(dispatch_keys):
@@ -78,3 +83,37 @@ def test_dispatch_rejects_tampering_and_expired_envelopes(dispatch_keys):
     expired = sign_dispatch(_envelope(datetime.now(UTC) - timedelta(seconds=1)))
     with pytest.raises(DispatchEnvelopeError, match="expired"):
         verify_dispatch(expired)
+
+
+def test_dispatch_requires_the_canonical_workspace_digest(dispatch_keys):
+    envelope = _envelope(datetime.now(UTC) + timedelta(minutes=5))
+
+    with pytest.raises(DispatchEnvelopeError, match="workspace manifest digest"):
+        sign_dispatch(
+            replace(
+                envelope,
+                source_artifact=SourceArtifact(b"source without a manifest"),
+            )
+        )
+
+
+def test_dispatch_refuses_a_diff_outside_the_native_review_window(dispatch_keys):
+    envelope = _envelope(datetime.now(UTC) + timedelta(minutes=5))
+
+    with pytest.raises(DispatchEnvelopeError, match="diff exceeds"):
+        sign_dispatch(replace(envelope, diff_text="x" * (MAX_DISPATCH_DIFF_CHARS + 1)))
+
+
+def test_dispatch_refuses_an_oversized_source_archive_before_encoding(dispatch_keys):
+    envelope = _envelope(datetime.now(UTC) + timedelta(minutes=5))
+
+    with pytest.raises(DispatchEnvelopeError, match="source archive exceeds"):
+        sign_dispatch(
+            replace(
+                envelope,
+                source_artifact=SourceArtifact(
+                    b"x" * (DEFAULT_WORKSPACE_LIMITS.max_archive_bytes + 1),
+                    manifest_digest="0" * 64,
+                ),
+            )
+        )

@@ -63,6 +63,22 @@ product identity and does not justify retaining provider-routing, public MCP,
 conversation, Q&A, or policy-engine features. Whether to retire it is decided
 only after the CLI review path has pilot evidence.
 
+### Current private transport foundation
+
+The worker creates a deterministic, bounded source artifact from the exact
+checked-out head and signs both its transport digest and canonical workspace
+digest into the private dispatch. The runner validates and materializes that
+artifact as a read-only workspace before starting the CLI; it never clones,
+mounts a repository mirror, or receives SCM credentials. The in-envelope
+foundation is limited to a 16 MiB source archive, a 128 MiB extracted tree, and
+one active review per 1 GiB runner while larger delivery moves to object-backed
+transport.
+
+Scoped private context access is bound to the repository, pull request,
+snapshot, head, review attempt, and capability lifetime. These implementation
+seams preserve the isolation boundary but are not evidence that the planned
+v1 investigation outcome is shipped.
+
 Current code still uses legacy names such as `REVIEW_RUNTIME`, “agent runner,”
 and “session capability.” These are migration seams, not public terminology.
 The supported v1 configuration name is `REVIEW_ENGINE`; implementation changes
