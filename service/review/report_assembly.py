@@ -372,7 +372,7 @@ def review_presentation(
         "footer_included": policy.footer_included,
         "update_description": policy.update_description,
         "summary_comment_enabled": policy.summary_comment_enabled,
-        "fix_with_agent_enabled": policy.fix_with_agent_enabled,
+        "fix_with_agent_enabled": False,
         "diagram_collapsible": policy.diagram_collapsible,
         "diagram_default_open": policy.diagram_default_open,
     }

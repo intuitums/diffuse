@@ -108,6 +108,24 @@ general-purpose agent platform.
 3. **Excision.** Delete MCP and auto-approval code paths, configuration,
    tests, documentation, and public routes. Do not destructively drop their
    database data until an explicit migration decision.
+
+## Deferred destructive migrations
+
+Public MCP/REST/auto-approval runtime code is excised from v1, but the following
+tables and columns remain in the schema pending a separate approved migration:
+
+- `api_tokens`, `api_token_repositories`, `api_idempotency_keys`
+- OAuth / session tables introduced in migration `0006`
+- `review_auto_approvals`
+- `review_runs.fix_with_agent_enabled`
+- `custom_contexts.created_by_token_id`
+
+Do not drop these in an opportunistic cleanup. Retaining them keeps existing
+installations loadable while operators schedule an explicit data-removal
+migration.
+
+## Delivery order (continued)
+
 4. **Review-runner contract.** Replace generic agent/session/capability naming
    with investigation/runner contracts; retain the isolation boundary.
 5. **Single-engine end-to-end path.** Ship a complete Codex path first, with
