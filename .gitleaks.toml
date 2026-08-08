@@ -1,4 +1,4 @@
-# Secret scanning configuration for the `scan-secrets` job in verify.yml.
+# Secret scanning configuration for the `scan-secrets` job in ci.yml.
 #
 # The repository is public and every deployment credential is operator-supplied,
 # so the cost of one committed key is an incident for whoever is running Diffuse,
@@ -26,7 +26,7 @@ keywords = ["sk-ant-"]
 [[allowlists]]
 description = """
 Placeholder credentials with an obviously synthetic body. `0123456789abcdef` is
-the dummy Postgres password and API token that verify.yml boots the stack with.
+the dummy Postgres password and API token that ci.yml boots the stack with.
 """
 regexTarget = "match"
 regexes = [

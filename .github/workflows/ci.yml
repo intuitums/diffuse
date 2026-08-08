@@ -1,13 +1,9 @@
 # Verify — the gate every change passes before it can land.
 #
 # Naming convention shared with intuitumxyz/leo:
-#   verify.yml   this file: runs on pull requests and on pushes to the default branch
+#   ci.yml       this file: runs on pull requests and on pushes to the default branch
 #   release.yml  tag-driven publish
 # Job ids are verb-led kebab-case so the checks list reads as a sequence of actions.
-#
-# Replaces ci.yml. Logic is ported unchanged except where noted; the container builds
-# use the box's persistent BuildKit builder instead of a GitHub Actions cache — see
-# build-container for the measurements that forced that change.
 #
 # EVERY `uses:` IS PINNED TO A FULL COMMIT SHA, with the tag it resolved from in a
 # trailing comment. See the same note in release.yml for why, and for how to refresh

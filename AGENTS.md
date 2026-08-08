@@ -11,7 +11,7 @@
 ## Cursor Cloud specific instructions
 
 Diffuse is a self-hostable code-review platform. Standard setup/run/test commands live in
-`README.md`, `DEVELOPMENT.md`, `docker-compose.yml`, `.github/workflows/verify.yml`, and
+`README.md`, `DEVELOPMENT.md`, `docker-compose.yml`, `.github/workflows/ci.yml`, and
 `pyproject.toml`. This section only records the non-obvious, environment-specific things a
 cloud agent needs.
 
@@ -87,7 +87,7 @@ own `git commit`/`git push`.)
 server — not just the worker — refuses to boot unless `REVIEW_MODEL` is set and its credential
 is resolvable. That check is offline: it confirms the model identifier and a resolvable
 credential *name*, and never calls the provider. A placeholder key therefore satisfies startup;
-only real review calls fail on a bad one. The committed CI smoke test (`verify.yml`
+only real review calls fail on a bad one. The committed CI smoke test (`ci.yml`
 `build-container`) relies on exactly this, booting with `REVIEW_MODEL=anthropic/claude-sonnet-5`
 and a fake provider key.
 
