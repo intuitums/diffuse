@@ -9,6 +9,7 @@ import os
 import socket
 import sys
 import time
+from collections.abc import Callable
 from contextlib import closing
 from functools import partial
 
@@ -753,12 +754,16 @@ def _create_native_agent_session(
     runtime: str,
     snapshot_id: int,
     head_sha: str,
+    progress_callback: Callable[[], None],
 ) -> NativeSessionDispatch:
     if job.pull_request_id is None:
         raise NonRetryableError("Native review job does not reference a pull request")
-    # Build before persisting the session so a rejected repository tree cannot
-    # leave a durable dispatch that no runner can ever complete.
+    # The checkout/archive can be the most expensive local step before runner
+    # dispatch. Prove this worker still owns the job both before doing that
+    # work and before writing a session another worker could dispatch.
+    progress_callback()
     source_artifact = _build_native_workspace_artifact(job, head_sha=head_sha)
+    progress_callback()
     grant = mint_session_capability(
         signing_key=session_capability_signing_key(),
         runtime=runtime,
@@ -861,6 +866,7 @@ def _generate_and_persist_review(
                 runtime=selected_runtime,
                 snapshot_id=snapshot_id,
                 head_sha=head_sha,
+                progress_callback=report_progress,
             )
         report = generate_review(
             diff_text,
