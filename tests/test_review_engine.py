@@ -436,7 +436,6 @@ def test_repository_policy_can_disable_diagram_generation(monkeypatch):
                                 "hide_footer": True,
                                 "update_description": True,
                                 "summary_comment": False,
-                                "fix_with_agent": False,
                             },
                         }
                     ),

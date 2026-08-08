@@ -315,7 +315,6 @@ jobs:
     timeout-minutes: 40
     env:
       POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
-      DIFFUSE_API_TOKEN: 0123456789abcdef0123456789abcdef
       DIFFUSE_PUBLIC_URL: http://localhost:8000
       # Compose validates opt-in runner profiles too. This is a well-formed
       # public key for configuration validation only; it has no corresponding
@@ -477,7 +476,6 @@ jobs:
               -e "s|^DIFFUSE_CODEX_RUNNER_IMAGE=.*|DIFFUSE_CODEX_RUNNER_IMAGE=diffuse-runner-codex:test|" \
               -e "s|^DIFFUSE_ENV_FILE=.*|DIFFUSE_ENV_FILE=ci.env|" \
               -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" \
-              -e "s|^DIFFUSE_API_TOKEN=.*|DIFFUSE_API_TOKEN=${DIFFUSE_API_TOKEN}|" \
               -e "s|^DIFFUSE_PUBLIC_URL=.*|DIFFUSE_PUBLIC_URL=${DIFFUSE_PUBLIC_URL}|" \
               env.example > ci.env
 

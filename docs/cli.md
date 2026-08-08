@@ -1,18 +1,18 @@
 # CLI
 
 > **Transitional CLI reference.** Public token, MCP, handoff, and generic-agent
-> commands described here are being removed. The only v1 CLI-adjacent concern is
-> private operator configuration for an isolated Codex or Claude Code review
-> runner; see [agent-runtimes.md](agent-runtimes.md).
+> commands described historically are removed from v1. The only v1 CLI-adjacent
+> concern is private operator configuration for an isolated Codex or Claude Code
+> review runner; see [agent-runtimes.md](agent-runtimes.md).
 
 `diffuse` is the command-line interface to a self-hosted installation. Its
 subcommands onboard and manage indexed repositories (`repository`) and
 cross-repository context clusters (`cluster`), inspect and moderate
-feedback-derived rules (`learning`), create and revoke scoped service tokens
-(`token`), inspect and migrate the PostgreSQL schema (`database`), inspect or
-verify the configured review model (`model`), sign in to and inspect agent CLIs
-Diffuse can host (`agent`), score a labeled review-quality evaluation set
-(`evaluate`), and review the current local branch (`review`).
+feedback-derived rules (`learning`), inspect and migrate the PostgreSQL schema
+(`database`), inspect or verify the configured review model (`model`), sign in
+to and inspect agent CLIs Diffuse can host (`agent`), score a labeled
+review-quality evaluation set (`evaluate`), and review the current local branch
+(`review`).
 
 The production image's `diffuse` entrypoint is a superset of the packaged CLI:
 alongside the subcommands below it takes `serve`, `worker`, and `healthcheck`,
@@ -41,8 +41,7 @@ diffuse agent status
 diffuse evaluate evals/baseline.example.json
 ```
 
-`diffuse token` is legacy public-surface plumbing and is not part of v1. New
-deployments must not issue service tokens.
+`diffuse token` has been removed. Service-token minting is not part of v1.
 
 ## Review runtimes
 

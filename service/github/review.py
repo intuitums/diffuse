@@ -74,7 +74,6 @@ def _finding_comment(
     *,
     include_confidence: bool = True,
     include_fix_guidance: bool = True,
-    review_run_id: int | None = None,
 ) -> str:
     badge = _security_badge(finding)
     parts = [
@@ -94,23 +93,10 @@ def _finding_comment(
     parts.append(metadata)
     if include_fix_guidance and finding.suggested_fix:
         parts.append(f"**Suggested fix:**\n\n{_safe_markdown(finding.suggested_fix)}")
-    handoff = ""
-    if include_fix_guidance and review_run_id is not None:
-        handoff = _output_section(
-            "Fix with your agent",
-            (
-                "Use the Diffuse MCP tool "
-                f"`get_fix_handoff` with `codeReviewId=review_{review_run_id}` and "
-                f"`findingFingerprint={finding.fingerprint}`."
-            ),
-            collapsible=True,
-            default_open=False,
-        )
     marker = f"<!-- diffuse-finding:{finding.fingerprint} -->"
-    suffix = f"{handoff}\n\n{marker}" if handoff else marker
-    content_limit = MAX_INLINE_BODY_CHARS - len(suffix) - 2
+    content_limit = MAX_INLINE_BODY_CHARS - len(marker) - 2
     content = "\n\n".join(parts)[:content_limit].rstrip()
-    return f"{content}\n\n{suffix}"
+    return f"{content}\n\n{marker}"
 
 
 def _output_section(
@@ -258,19 +244,6 @@ def format_review_body(
                     default_open=report.issues_table_section_default_open,
                 )
             )
-        if report.fix_with_agent_enabled:
-            parts.append(
-                _output_section(
-                    "Fix all with your agent",
-                    (
-                        "Use the Diffuse MCP tool "
-                        f"`get_fix_all_handoff` with `codeReviewId=review_{review_run_id}`. "
-                        "The handoff refuses stale review revisions."
-                    ),
-                    collapsible=True,
-                    default_open=False,
-                )
-            )
         if not inline_comments_attached or not report.inline_comments_enabled:
             if report.inline_comments_enabled:
                 parts.append(f"\n{_safe_markdown(inline_fallback_message)}")
@@ -400,8 +373,6 @@ def _inline_findings(
 def _inline_comments(
     report: ReviewReport,
     continuity: ReviewContinuity | None,
-    *,
-    review_run_id: int,
 ) -> list[dict[str, object]]:
     return [
         {
@@ -411,8 +382,7 @@ def _inline_comments(
             "body": _finding_comment(
                 finding,
                 include_confidence=report.confidence_score_section_included,
-                include_fix_guidance=report.fix_with_agent_enabled,
-                review_run_id=review_run_id,
+                include_fix_guidance=True,
             ),
         }
         for finding in _inline_findings(report, continuity)
@@ -719,7 +689,6 @@ async def _publish_with_client(
     comments = _inline_comments(
         report,
         continuity,
-        review_run_id=review_run_id,
     )
     if not comments and (
         report.update_description or not report.summary_comment_enabled

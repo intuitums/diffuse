@@ -58,3 +58,10 @@ def test_v1_rejects_automatic_pull_request_approval_configuration():
         RepositoryConfig.model_validate(
             {"version": 1, "auto_approval": {"enabled": True}}
         )
+
+
+def test_v1_rejects_fix_with_agent_configuration():
+    with pytest.raises(ValueError, match="fix_with_agent has been removed"):
+        RepositoryConfig.model_validate(
+            {"version": 1, "review": {"fix_with_agent": True}}
+        )
