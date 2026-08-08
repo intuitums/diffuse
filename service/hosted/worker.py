@@ -38,11 +38,6 @@ from retriever.retrieve import (
 )
 from service.agents.capability_auth import session_capability_signing_key
 from service.agents.contract import SessionScope, mint_session_capability
-from service.approval_publication import (
-    ApprovalNotCurrentError,
-    PublishedApproval,
-)
-from service.auto_approval import AutoApprovalDecision, evaluate_auto_approval
 from service.conversation_engine import (
     CONVERSATION_PROMPT_VERSION,
     build_conversation_retrieval_diff,
@@ -61,9 +56,6 @@ from service.github.api import (
     fetch_pull_request_update_diff,
 )
 from service.github.app import validate_app_configuration
-from service.github.approval import (
-    publish_github_approval,
-)
 from service.github.check import (
     complete_github_check_run,
     ensure_github_check_run,
@@ -152,13 +144,6 @@ from service.scm import (
     scm_api_timeout_seconds,
 )
 from service.storage.agent_session import create_agent_session
-from service.storage.approval import (
-    AutoApprovalHandle,
-    begin_auto_approval,
-    mark_auto_approval_cancelled,
-    mark_auto_approval_failed,
-    mark_auto_approval_published,
-)
 from service.storage.check import (
     MAX_COMPLETION_ATTEMPTS,
     CheckRunHandle,
@@ -913,53 +898,6 @@ def _mark_native_publication_failed(publication_id: int) -> None:
         mark_publication_failed(conn, publication_id)
 
 
-def _begin_native_auto_approval(
-    review_run_id: int,
-    event: PullRequestEvent,
-    policy_fingerprint: str,
-    decision: AutoApprovalDecision,
-) -> AutoApprovalHandle:
-    with closing(get_conn()) as conn, conn:
-        return begin_auto_approval(
-            conn,
-            review_run_id=review_run_id,
-            scm_provider=event.provider,
-            head_sha=event.head_sha,
-            policy_fingerprint=policy_fingerprint,
-            decision=decision,
-        )
-
-
-def _mark_native_auto_approval_published(
-    approval_id: int,
-    published: PublishedApproval,
-) -> None:
-    with closing(get_conn()) as conn, conn:
-        mark_auto_approval_published(
-            conn,
-            approval_id,
-            external_id=published.external_id,
-            external_url=published.external_url,
-        )
-
-
-def _mark_native_auto_approval_failed(approval_id: int) -> None:
-    with closing(get_conn()) as conn, conn:
-        mark_auto_approval_failed(conn, approval_id)
-
-
-def _mark_native_auto_approval_cancelled(
-    approval_id: int,
-    error_code: str,
-) -> None:
-    with closing(get_conn()) as conn, conn:
-        mark_auto_approval_cancelled(
-            conn,
-            approval_id,
-            error_code=error_code,
-        )
-
-
 def _mark_native_review_superseded(review_run_id: int, worker_id: str) -> bool:
     with closing(get_conn()) as conn, conn:
         return mark_review_superseded(conn, review_run_id, worker_id=worker_id)
@@ -1522,23 +1460,6 @@ async def _complete_native_check(
     )
 
 
-async def _publish_native_auto_approval(
-    event: PullRequestEvent,
-    *,
-    review_run_id: int,
-    decision: AutoApprovalDecision,
-) -> PublishedApproval:
-    if event.provider == "github":
-        publisher = publish_github_approval
-    else:
-        raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
-    return await publisher(
-        event,
-        review_run_id=review_run_id,
-        decision=decision,
-    )
-
-
 async def _complete_existing_job_check(
     job: WorkflowJob,
     event: PullRequestEvent,
@@ -2014,54 +1935,6 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
     if not await anyio.to_thread.run_sync(partial(_heartbeat_and_check_current, job.id, worker_id)):
         await anyio.to_thread.run_sync(partial(_supersede, job.id, worker_id))
         return
-    if report.publication_enabled and policy.auto_approval_requested:
-        approval_decision = evaluate_auto_approval(
-            policy,
-            event,
-            diff_text,
-            report,
-            unresolved_findings=continuity.open_findings,
-        )
-        approval = await anyio.to_thread.run_sync(
-            partial(
-                _begin_native_auto_approval,
-                review_run.id,
-                event,
-                policy.fingerprint,
-                approval_decision,
-            )
-        )
-        if not approval.is_terminal:
-            try:
-                published_approval = await _publish_native_auto_approval(
-                    event,
-                    review_run_id=review_run.id,
-                    decision=approval_decision,
-                )
-            except ApprovalNotCurrentError as error:
-                await anyio.to_thread.run_sync(
-                    partial(
-                        _mark_native_auto_approval_cancelled,
-                        approval.id,
-                        error.code,
-                    )
-                )
-            except Exception:
-                await anyio.to_thread.run_sync(
-                    partial(
-                        _mark_native_auto_approval_failed,
-                        approval.id,
-                    )
-                )
-                raise
-            else:
-                await anyio.to_thread.run_sync(
-                    partial(
-                        _mark_native_auto_approval_published,
-                        approval.id,
-                        published_approval,
-                    )
-                )
     completed = await anyio.to_thread.run_sync(partial(_complete, job.id, worker_id))
     if not completed:
         raise RuntimeError("Workflow lease was lost before completion")
