@@ -99,7 +99,7 @@ jobs:
         include:
           # amd64 builds on the self-hosted runner build-container uses — the label
           # maps to exactly one runner, whose rootless daemon holds the persistent
-          # `diffuse` builder — so it starts from the layers the merge's own Verify
+          # `diffuse` builder — so it starts from the layers the merge's own CI
           # run just proved, locally, with no cache import leg at all. See
           # build-container for the measurements that retired the GitHub Actions
           # cache on the box.

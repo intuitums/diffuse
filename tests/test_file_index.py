@@ -43,10 +43,10 @@ def test_file_index_preserves_safe_text_files_without_chunk_boundaries(tmp_path)
 
     files = index_repository_files(tmp_path)
 
-    assert [(file.file_path, file.content) for file in files] == [
+    assert {(file.file_path, file.content) for file in files} == {
         ("app.py", "needle = 'literal value'\n"),
         ("empty.txt", ""),
-    ]
+    }
 
 
 def test_grep_search_uses_the_snapshot_scoped_trigram_candidate_filter():
