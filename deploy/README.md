@@ -95,10 +95,11 @@ image. Anywhere the documentation shows `diffuse <command>`, the Compose form is
 docker compose --env-file .env run --rm worker <command>
 ```
 
-For example, `diffuse token add` becomes
-`docker compose --env-file .env run --rm worker token add`. The available
-subcommands are `review`, `repository`, `cluster`, `learning`, `token`,
-`database`, `evaluate`, and `model`; each accepts `--help`.
+For example, `diffuse repository list` becomes
+`docker compose --env-file .env run --rm worker repository list`. The available
+subcommands are `review`, `repository`, `cluster`, `learning`,
+`database`, `evaluate`, and `model`; each accepts `--help`. The former
+`token` subcommand has been removed from v1.
 
 ## Obtaining this bundle and later ones
 

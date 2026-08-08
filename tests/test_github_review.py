@@ -96,30 +96,28 @@ def test_review_body_renders_validated_diagram_with_section_presentation():
     assert report.diagram.mermaid in body
 
 
-def test_review_output_advertises_revision_safe_agent_handoffs():
+def test_review_output_does_not_advertise_agent_handoffs():
+    report = _report()
+
+    body = format_review_body(42, "a" * 40, report)
+    inline = _finding_comment(report.findings[0])
+
+    assert "get_fix_all_handoff" not in body
+    assert "get_fix_handoff" not in body
+    assert "Fix all with your agent" not in body
+    assert "Fix with your agent" not in inline
+    assert "get_fix_handoff" not in inline
+    assert "**Suggested fix:**" in inline
+    assert "Call validate(value) first." in inline
+
+
+def test_review_output_can_hide_suggested_fix_guidance():
     report = _report()
 
     body = format_review_body(42, "a" * 40, report)
     inline = _finding_comment(
         report.findings[0],
-        review_run_id=42,
-    )
-
-    assert "`get_fix_all_handoff`" in body
-    assert "`codeReviewId=review_42`" in body
-    assert "refuses stale review revisions" in body
-    assert "`get_fix_handoff`" in inline
-    assert "`findingFingerprint=" + ("f" * 64) + "`" in inline
-
-
-def test_review_output_can_hide_agent_fix_guidance():
-    report = _report().model_copy(update={"fix_with_agent_enabled": False})
-
-    body = format_review_body(42, "a" * 40, report)
-    inline = _finding_comment(
-        report.findings[0],
         include_fix_guidance=False,
-        review_run_id=42,
     )
 
     assert "get_fix_all_handoff" not in body
@@ -129,20 +127,16 @@ def test_review_output_can_hide_agent_fix_guidance():
     assert inline.endswith(f"<!-- diffuse-finding:{'f' * 64} -->")
 
 
-def test_agent_handoffs_are_collapsed_below_the_actionable_content():
+def test_suggested_fix_appears_below_actionable_content():
     report = _report()
 
-    body = format_review_body(42, "a" * 40, report)
-    inline = _finding_comment(report.findings[0], review_run_id=42)
+    inline = _finding_comment(report.findings[0])
 
-    assert "<summary><strong>Fix all with your agent</strong></summary>" in body
-    assert "<details open>\n<summary><strong>Fix all with your agent" not in body
-    assert body.index("| Severity | Finding |") < body.index("`get_fix_all_handoff`")
-    assert "<summary><strong>Fix with your agent</strong></summary>" in inline
-    assert "<details open>\n<summary><strong>Fix with your agent" not in inline
-    assert inline.index("**Evidence:**") < inline.index("`get_fix_handoff`")
-    assert inline.index("**Suggested fix:**") < inline.index("`get_fix_handoff`")
+    assert "**Suggested fix:**" in inline
+    assert inline.index("**Evidence:**") < inline.index("**Suggested fix:**")
     assert inline.endswith(f"<!-- diffuse-finding:{'f' * 64} -->")
+    assert "get_fix_handoff" not in inline
+    assert "Fix with your agent" not in inline
 
 
 def _table_cell_count(row: str) -> int:
@@ -212,7 +206,7 @@ def test_review_body_can_be_reduced_to_recovery_markers():
     )
 
 
-def test_long_inline_finding_preserves_handoff_and_identity_marker():
+def test_long_inline_finding_preserves_identity_marker():
     finding = _report().findings[0].model_copy(
         update={
             "body": "b" * 6000,
@@ -221,10 +215,10 @@ def test_long_inline_finding_preserves_handoff_and_identity_marker():
         }
     )
 
-    inline = _finding_comment(finding, review_run_id=42)
+    inline = _finding_comment(finding)
 
     assert len(inline) <= 10_000
-    assert "`get_fix_handoff`" in inline
+    assert "get_fix_handoff" not in inline
     assert inline.endswith(f"<!-- diffuse-finding:{'f' * 64} -->")
 
 

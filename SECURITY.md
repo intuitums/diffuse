@@ -63,29 +63,29 @@ The following are explicitly **in scope**:
   despite `--strict-mcp-config`, or running below the version floor so
   sandbox settings are silently ignored.
 - **Credential exposure.** Any path that leaks the GitHub App private key,
-  an installation token, the OAuth client secret, `DIFFUSE_API_TOKEN`, or a
-  repository-scoped service token into a clone URL sent to an unintended
-  origin, into model input, into published review output, into logs, or into an
-  image layer.
-- **Authorization bypass.** Reading or writing another repository's index,
-  findings, analytics, or custom context across a repository-scoped token
-  boundary; escalating a read scope to a generation or write scope; acting on a
-  repository the token is not assigned to.
+  an installation token, or other live operator credentials into a clone URL
+  sent to an unintended origin, into model input, into published review
+  output, into logs, or into an image layer. Historical `DIFFUSE_API_TOKEN`
+  / repository-scoped service-token surfaces are removed from v1; leftover
+  schema rows are not a live auth boundary.
+- **Authorization bypass.** Reading or writing another repository's index or
+  findings outside the repository the authenticated installation or operator
+  session is authorized for.
 - **Webhook authentication flaws.** The one webhook route, `POST
   /webhook/github`, authenticates a delivery solely by an HMAC-SHA-256
   `X-Hub-Signature-256` header, and deduplicates by a durable unique
   `(provider, base URL, delivery id)` record. Signature-verification bypass,
   replaying a delivery past that record, or forging an instance origin are all
   in scope.
-- **OAuth and session flaws** in the browser sign-in path (`/auth/cli`,
-  `/auth/github/callback`, `/setup`), including state fixation or reuse,
-  session-token exposure, and open redirects. These routes are mounted and
-  reachable even though no request authenticator consumes the session they
-  mint yet; they still spend the client secret and write identity rows.
-- **MCP and REST API flaws**, including DNS-rebinding protection bypass and
-  authentication bypass.
 - **Database migration integrity** failures that allow unverified SQL to be
   applied.
+
+Public MCP, public REST (`/api/v1`), browser OAuth/session routes
+(`/auth/cli`, `/auth/github/callback`, `/setup`), and service-token minting
+are removed from the v1 surface. Do not report them as live product
+vulnerabilities; residual schema or historical docs are not an invitation to
+treat those routes as mounted. Private worker-to-runner transport remains in
+scope.
 
 ### Agent-CLI review boundary
 
