@@ -1,4 +1,4 @@
-# Verify — the gate every change passes before it can land.
+# CI — the gate every change passes before it can land.
 #
 # Naming convention shared with intuitumxyz/leo:
 #   ci.yml       this file: runs on pull requests and on pushes to the default branch
@@ -10,7 +10,7 @@
 # a pin. Pinning here as well as there is deliberate: this workflow runs on
 # `pull_request`, so an attacker who can move an upstream tag would otherwise get code
 # execution on every contributor's branch as well as on the default branch.
-name: Verify
+name: CI
 
 on:
   pull_request:
@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: verify-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -343,7 +343,7 @@ jobs:
       # whatever the last one proved. release.yml's amd64 leg lands on this same
       # runner and adopts this same builder.
       #
-      # Measured before this change, over the previous 40 Verify runs: this job held
+      # Measured before this change, over the previous 40 CI runs: this job held
       # steady around 117s, of which ~35s was importing and exporting the `type=gha`
       # cache — and one run took 911s, because eviction had dropped the pip layer
       # from the Actions cache and re-uploading that single ~1GB layer to the cache
