@@ -28,6 +28,8 @@ from service.agents.replay import SessionTranscript, record, replay
 from service.review.agent_environment import CREDENTIAL_ENVIRONMENT
 from service.review.agent_host import (
     CLAUDE_CODE,
+    CONTAINER_COMPARTMENT_PROFILE,
+    assert_compartment,
     write_sandbox_settings,
 )
 
@@ -101,6 +103,43 @@ def test_the_session_settings_narrow_reads_to_the_worktree(tmp_path, owned_polic
     assert sandbox["filesystem"]["allowRead"] == [str(worktree)]
     assert sandbox["failIfUnavailable"] is True
     assert sandbox["allowUnsandboxedCommands"] is False
+
+
+def test_compartment_session_renders_its_ephemeral_profile_without_local_policy(
+    monkeypatch, tmp_path
+):
+    """The credential volume is not also required to hold a local policy."""
+
+    monkeypatch.setenv("DIFFUSE_AGENT_HOME", str(tmp_path / "agent-home"))
+    executable = tmp_path / "claude"
+    executable.write_text("")
+    monkeypatch.setattr(session, "resolve_executable", lambda _cli: executable)
+    observed: dict[str, object] = {}
+    assertion = assert_compartment(CONTAINER_COMPARTMENT_PROFILE, lambda: None)
+
+    def runner(argv, environment, _cwd, _timeout):
+        settings = Path(argv[argv.index("--settings") + 1])
+        observed["settings"] = json.loads(settings.read_text())
+        observed["environment"] = environment
+        return session.SessionRun(0, _envelope('{"answer":"ok"}'), "")
+
+    value, _, _ = session.run_structured(
+        CLAUDE_CODE,
+        Answer,
+        system_prompt="system",
+        user_prompt="user",
+        workspace=tmp_path,
+        tools=None,
+        profile=REVIEW,
+        sandbox_profile=CONTAINER_COMPARTMENT_PROFILE,
+        compartment=assertion,
+        runner=runner,
+    )
+
+    assert value == Answer(answer="ok")
+    assert observed["settings"] == {"sandbox": {"enabled": False}}
+    for name in CREDENTIAL_ENVIRONMENT:
+        assert name not in observed["environment"]
 
 
 def test_argv_is_a_pure_function_of_profile_workspace_and_schema(tmp_path):
@@ -367,6 +406,40 @@ def test_max_turns_retries_once_with_raised_budget(executable, tmp_path):
     assert budgets == ["24", "48"]
     # Both attempts, because the vendor billed for both: 3 + 3 and 5 + 5.
     assert (prompt_tokens, completion_tokens) == (6, 10)
+
+
+def test_total_session_timeout_bounds_a_raised_turn_retry(executable, monkeypatch, tmp_path):
+    """A native session's retry shares its capability/request time budget."""
+
+    monotonic_values = iter((0.0, 0.0, 480.1))
+    monkeypatch.setattr(session.time, "monotonic", lambda: next(monotonic_values))
+    budgets: list[str] = []
+    timeouts: list[int] = []
+
+    def runner(argv, _environment, _cwd, timeout):
+        budgets.append(argv[argv.index("--max-turns") + 1])
+        timeouts.append(timeout)
+        if len(budgets) == 1:
+            return session.SessionRun(
+                1, _envelope("", is_error=True, subtype="error_max_turns"), ""
+            )
+        return session.SessionRun(0, _envelope({"answer": "covered"}), "")
+
+    value, _, _ = session.run_structured(
+        CLAUDE_CODE,
+        Answer,
+        system_prompt="s",
+        user_prompt="u",
+        workspace=tmp_path,
+        tools=None,
+        profile=REVIEW,
+        total_timeout_seconds=600,
+        runner=runner,
+    )
+
+    assert value.answer == "covered"
+    assert budgets == ["24", "48"]
+    assert timeouts == [600, 120]
 
 
 def test_a_rate_limit_survives_a_non_zero_exit(executable, tmp_path):
