@@ -6,6 +6,7 @@ import psycopg2
 import pytest
 
 from indexer.chunker import Chunk, chunk_repo
+from indexer.file_index import IndexedFile
 from indexer.graph import (
     CodeRelationship,
     CodeSymbol,
@@ -17,10 +18,14 @@ from indexer.store import (
     active_snapshot_id,
     begin_index_snapshot,
     copy_unchanged_chunks,
+    copy_unchanged_files,
+    get_existing_file_hashes,
     get_existing_hashes,
     search_graph_related_chunks,
+    search_grep,
     search_lexical,
     upsert_chunks,
+    upsert_repository_files,
     validate_snapshot_ready,
     write_symbol_graph,
 )
@@ -69,6 +74,10 @@ def _chunk(name: str, start_line: int, end_line: int) -> Chunk:
     )
 
 
+def _file(content: str) -> IndexedFile:
+    return IndexedFile(file_path="app.py", content=content)
+
+
 def test_snapshot_activation_reuse_and_graph_lexical_retrieval():
     database_url = os.environ["POSTGRES_TEST_DATABASE_URL"]
     caller = _symbol("integration-caller-key", "caller", 1, 2)
@@ -81,6 +90,7 @@ def test_snapshot_activation_reuse_and_graph_lexical_retrieval():
         line=2,
     )
     chunks = [_chunk("caller", 1, 2), _chunk("callee", 4, 5)]
+    files = [_file("def caller():\n    return callee()\n\ndef callee():\n    return True\n")]
 
     with closing(psycopg2.connect(database_url)) as connection:
         first = begin_index_snapshot(
@@ -89,6 +99,7 @@ def test_snapshot_activation_reuse_and_graph_lexical_retrieval():
             "a" * 40,
         )
         upsert_chunks(connection, first.snapshot_id, chunks)
+        upsert_repository_files(connection, first.snapshot_id, files)
         write_symbol_graph(
             connection,
             first.snapshot_id,
@@ -101,6 +112,7 @@ def test_snapshot_activation_reuse_and_graph_lexical_retrieval():
             expected_chunks=2,
             expected_symbols=2,
             expected_relationships=1,
+            expected_files=1,
         )
         assert activate_snapshot(connection, first.snapshot_id)
         assert (
@@ -132,6 +144,10 @@ def test_snapshot_activation_reuse_and_graph_lexical_retrieval():
         assert len(lexical_rows) == 1
         assert lexical_rows[0]["symbol_name"] == "callee"
         assert float(lexical_rows[0]["lexical_rank"]) > 0
+        grep_rows = search_grep(connection, "integration/repo", "return callee()")
+        assert [(row["file_path"], row["start_line"], row["content"]) for row in grep_rows] == [
+            ("app.py", 2, "    return callee()")
+        ]
         assert (
             search_lexical(
                 connection,
@@ -148,12 +164,20 @@ def test_snapshot_activation_reuse_and_graph_lexical_retrieval():
             "b" * 40,
         )
         hashes = get_existing_hashes(connection, second.previous_snapshot_id)
+        file_hashes = get_existing_file_hashes(connection, second.previous_snapshot_id)
         assert len(hashes) == 2
+        assert len(file_hashes) == 1
         copy_unchanged_chunks(
             connection,
             second.previous_snapshot_id,
             second.snapshot_id,
             list(hashes),
+        )
+        copy_unchanged_files(
+            connection,
+            second.previous_snapshot_id,
+            second.snapshot_id,
+            list(file_hashes),
         )
         write_symbol_graph(
             connection,
@@ -167,6 +191,7 @@ def test_snapshot_activation_reuse_and_graph_lexical_retrieval():
             expected_chunks=2,
             expected_symbols=2,
             expected_relationships=1,
+            expected_files=1,
         )
         assert activate_snapshot(connection, second.snapshot_id)
 
