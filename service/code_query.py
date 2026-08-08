@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import quote
 
-from indexer.store import active_snapshot_id_for_repository
 from repository_policy.resolve import neutralize_prompt_delimiters
 from retriever.context_models import CrossRepositoryContextPlan
 from retriever.retrieve import (
@@ -17,14 +16,12 @@ from retriever.retrieve import (
     normalize_code_query,
     retrieve_query_context_from_plan,
 )
-from service.cross_repository import resolve_cross_repository_context_plan
 from service.models.code_query import (
     CodeQueryCitation,
     CodeQueryClaim,
     CodeQueryModelResponse,
 )
 from service.review.engine import _call_structured, review_model
-from service.storage.mcp import McpRemote, resolve_mcp_repository
 
 CODE_QUERY_PROMPT_VERSION = "grounded-code-query-v1"
 CODE_SEARCH_SCHEMA_VERSION = "diffuse-code-search-v1"
@@ -76,64 +73,6 @@ def _positive_int(name: str, default: int) -> int:
 def code_query_model() -> str:
     value = os.environ.get("CODE_QUERY_MODEL", "").strip()
     return value or review_model()
-
-
-def resolve_code_query_target(
-    conn,
-    *,
-    repository_id: int | None = None,
-    repository_name: str | None = None,
-    remote: McpRemote | None = None,
-    default_branch: str | None = None,
-    remote_url: str | None = None,
-    include_related: bool = False,
-    authorized_repository_ids: frozenset[int] | None = None,
-) -> CodeQueryTarget:
-    repository = resolve_mcp_repository(
-        conn,
-        authorized_repository_ids=authorized_repository_ids,
-        repository_id=repository_id,
-        repository_name=repository_name,
-        remote=remote,
-        default_branch=default_branch,
-        remote_url=remote_url,
-    )
-    if not repository["enabled"]:
-        raise ValueError("Repository is not enabled for code queries")
-    repository_id = int(repository["id"])
-    snapshot_id = active_snapshot_id_for_repository(conn, repository_id)
-    plan = resolve_cross_repository_context_plan(
-        conn,
-        primary_repository_id=repository_id,
-        primary_snapshot_id=snapshot_id,
-        explicit_repositories=(),
-    )
-    related = plan.related_snapshots if include_related else ()
-    if authorized_repository_ids is not None:
-        related = tuple(
-            item
-            for item in related
-            if item.repository_id in authorized_repository_ids
-        )
-    plan = CrossRepositoryContextPlan(
-        primary_repository_id=plan.primary_repository_id,
-        primary_repository_full_name=plan.primary_repository_full_name,
-        primary_snapshot_id=plan.primary_snapshot_id,
-        primary_commit_sha=plan.primary_commit_sha,
-        related_snapshots=related,
-    )
-    branch = repository["default_branch"]
-    if not branch:
-        raise ValueError("Repository has no default branch for code queries")
-    return CodeQueryTarget(
-        repository_id=repository_id,
-        repository_name=repository["full_name"],
-        remote=repository["scm_provider"],
-        remote_url=repository["scm_base_url"],
-        default_branch=branch,
-        include_related=include_related,
-        context_plan=plan,
-    )
 
 
 def code_query_target_for_plan(

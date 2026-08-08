@@ -2,9 +2,8 @@
 
 The runner deliberately never receives this key: it presents an opaque bearer
 capability to the control plane, which verifies the signature before serving a
-tool.  Keeping the signing key separate from ``DIFFUSE_API_TOKEN`` limits the
-blast radius of either credential and lets an operator rotate agent sessions
-without rotating their recovery API credential.
+tool. Its dedicated signing key lets an operator rotate runner sessions without
+changing GitHub App or vendor credentials.
 """
 
 from __future__ import annotations

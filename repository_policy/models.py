@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Bumping this is mandatory whenever the policy models or policy_fingerprint
 # change shape. The version feeds INDEX_FORMAT_VERSION, so existing snapshots
@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # RepositoryPolicySnapshot.__post_init__ raises, and that ValueError is
 # classified non-retryable -- so every configured repository's next review fails
 # terminally instead of taking the documented reindex path.
-POLICY_SCHEMA_VERSION = "repository-policy-v13-auto-approval-allowlist"
+POLICY_SCHEMA_VERSION = "repository-policy-v14-auto-approval-removed"
 REVIEW_PASS_NAMES = ("correctness", "security", "performance", "tests")
 ReviewPassName = Literal["correctness", "security", "performance", "tests"]
 SeverityName = Literal["critical", "high", "medium", "low"]
@@ -409,6 +409,16 @@ class AutoApprovalSettingsPatch(StrictPolicyModel):
     filters: AutoApprovalFiltersPatch = Field(
         default_factory=AutoApprovalFiltersPatch
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_auto_approval(cls, value):
+        if value not in (None, {}):
+            raise ValueError(
+                "auto_approval has been removed: Diffuse v1 never submits "
+                "GitHub APPROVE reviews"
+            )
+        return value
 
 
 class RepositoryConfig(StrictPolicyModel):
