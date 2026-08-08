@@ -74,30 +74,38 @@ operation layer is delivered through the Linear plan gates; see
   references the `agent-runner` skeleton; worker no longer mounts agent
   credentials.
 - **`ReviewRuntime` seam at `generate_review`.** *Done (transitional).*
-  `LiteLLMRuntime` is the only selectable implementation
-  (`REVIEW_RUNTIME=litellm`) until Gate C.
+  `LiteLLMRuntime` remains the default implementation (`REVIEW_RUNTIME=litellm`);
+  hosted `claude` and `codex` selections dispatch through the isolated runner
+  while Gate C is proven in a controlled pilot.
 - **Agent CLI host plumbing.** *Done for Claude and Codex.* Config dir, sandbox
   policy, version floor (measured for Claude; not yet set for Codex),
   `diffuse agent login|status|write-policy`. Execution moves to the isolated
   agent-runner (Gate B/C), not a worker-spawned CLI.
 - **Read-only agent-runner + capability tools (Gate B).** *In progress.* The
-  long-lived runner now starts only after its compartment assertions pass, and
-  `search_code` is served through a short-lived, repository/PR/snapshot-pinned
-  capability on the private agent network. Session workspace materialization
-  and CLI submission remain Gate C. Builds on the review-compartment /
-  credential-home work already landed.
-- **Move review execution to CLIs (Gate C).** *Not started.* Replace LiteLLM
-  candidate/diagram/verifier calls with the shared session contract; Diffuse
-  still validates and publishes.
+  long-lived runner starts only after its compartment assertions pass. The
+  worker creates a bounded, deterministic archive from its exact mirror
+  checkout, binds it into the signed dispatch, and the runner materializes it
+  as a read-only workspace without SCM credentials. `search_code` is served
+  through a short-lived, repository/PR/snapshot-pinned capability on the
+  private agent network, and every real call is recorded on the current review
+  attempt. The in-envelope pilot is deliberately one review per runner with a
+  16 MiB archive / 128 MiB expanded-tree ceiling until delivery is
+  object-backed. Builds on the review-compartment / credential-home work
+  already landed.
+- **Move review execution to CLIs (Gate C).** *In progress.* `REVIEW_RUNTIME`
+  can dispatch Codex or Claude to the isolated matching runner; the control
+  plane still validates the structured result through the shared changed-line,
+  policy, confidence, severity, publication-cap, and fingerprint rules before
+  it publishes. Complete the end-to-end Compose proof and controlled pilot,
+  then replace the transitional LiteLLM candidate/diagram/verifier path.
 - **`ReviewRequest` + internal tool provider.** *Done (preflight).* Runtimes
   take a `ReviewRequest` (diff, policy, optional worktree / context plan /
   tools). `ReviewToolProvider.search_code` wraps the same `search_codebase`
   MCP uses and records every call (memory or Postgres). Local `diffuse review`
   builds tools onto the request; the one-shot runtime still ignores them.
-- **Tool-call log.** *Done (schema).* `review_tool_calls` (migration 0011)
-  records every call so an agentic investigation stays replayable. The
-  Postgres recorder is ready; the runner path is what must write rows on a real
-  review run.
+- **Tool-call log.** *Done for `search_code`.* `review_tool_calls` (migration
+  0011) records every remote native-session lookup with its session-bound
+  review attempt, so an agentic investigation stays replayable.
 - **Retrievers as tools.** `search_code` and `ask_codebase` are exposed over MCP
   to external agents but unused by Diffuse's own one-shot runtime, which receives
   a pre-fused blob capped at 18 chunks and 24,000 characters. The agent-runner

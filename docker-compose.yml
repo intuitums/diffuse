@@ -169,7 +169,8 @@ services:
   # Gate B: long-lived credential-isolated agent-runner. The worker never mounts
   # agent credentials and never executes a CLI. This service is the only Compose
   # writer of `agent_data`. It deliberately has no `env_file` (no database /
-  # GitHub / API secrets). Opt-in via `docker compose --profile agent ...`.
+  # GitHub / API secrets). Opt in with the matching
+  # `docker compose --profile agent-claude` or `--profile agent-codex`.
   agent-runner-claude:
     image: ${DIFFUSE_CLAUDE_RUNNER_IMAGE:-diffuse-runner-claude:local}
     restart: unless-stopped
@@ -205,7 +206,7 @@ services:
       DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_CLAUDE_MODEL_HOST:-api.anthropic.com}
       DIFFUSE_AGENT_EGRESS_PROXY_HOST: egress-proxy-claude
       # The runner can reach only this capability-checked control-plane surface
-      # over the private agent_mcp network. Gate C supplies per-session use.
+      # over the private agent_mcp network, with one signed session capability.
       DIFFUSE_AGENT_TOOL_URL: http://agent-tool-gateway:8011/agent/v1
     volumes:
       - claude_agent_data:/var/lib/diffuse/agent
@@ -283,54 +284,6 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777
     networks: [backend, agent_mcp_claude, agent_mcp_codex]
-
-  # Mirrors deploy/compose.yaml. The preflight has an explicit, credential-free
-  # environment; do not add the worker's env_file here.
-  #
-  # Opt-in, via `docker compose --profile agent up`. No agent runtime is
-  # selectable yet, so nothing in the running stack needs this. It was briefly a
-  # `depends_on` of the worker, which meant the entire review pipeline refused
-  # to start unless a live CONNECT to the model API succeeded -- a hard boot
-  # dependency on one vendor's reachability, for operators who may well be
-  # running another provider or none.
-  agent-preflight:
-    image: ${DIFFUSE_IMAGE:-diffuse:local}
-    restart: "no"
-    init: true
-    user: "10001:10001"
-    read_only: true
-    cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
-    command: ["review-compartment-preflight"]
-    profiles: ["agent-claude"]
-    healthcheck:
-      disable: true
-    depends_on:
-      egress-proxy-claude:
-        condition: service_healthy
-    environment:
-      HOME: /var/lib/diffuse/agent
-      DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent
-      HTTP_PROXY: http://egress-proxy-claude:3128
-      HTTPS_PROXY: http://egress-proxy-claude:3128
-      NO_PROXY: agent-tool-gateway,egress-proxy-claude,localhost,127.0.0.1
-      # The allowlist follows whichever provider the operator configured;
-      # hardcoding one vendor made the check meaningless for the others.
-      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_CLAUDE_MODEL_HOST:-api.anthropic.com}
-      DIFFUSE_AGENT_EGRESS_PROXY_HOST: egress-proxy-claude
-    tmpfs:
-      - /tmp:size=64m,mode=1777
-      - /var/lib/diffuse/agent:size=64m,mode=0700,uid=10001,gid=10001
-    mem_limit: 256m
-    cpus: 0.50
-    pids_limit: 64
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-    networks: [agent_mcp_claude, agent_egress_claude]
 
   egress-proxy-claude:
     image: ${DIFFUSE_IMAGE:-diffuse:local}

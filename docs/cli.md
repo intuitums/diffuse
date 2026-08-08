@@ -45,14 +45,15 @@ diffuse evaluate evals/baseline.example.json
 `REVIEW_RUNTIME` selects what produces a review. See
 [agent-runtimes.md](agent-runtimes.md) for the full split.
 
-- **`litellm` (default, only selectable value today)** — transitional one-shot
-  structured passes against `REVIEW_MODEL`. Used by the self-hosted API/worker
-  and by `diffuse review` until Gate C moves review onto the isolated
-  agent-runner. Pass/chunk/verifier variables in
+- **`litellm` (default)** — transitional one-shot structured passes against
+  `REVIEW_MODEL`. Used by the self-hosted API/worker and by `diffuse review`.
+  Pass/chunk/verifier variables in
   [`.env.example`](../.env.example) apply to this runtime only.
-- **`claude` / `codex` (destination)** — CLI-native sessions on the isolated
-  agent-runner under a short-lived session capability. The worker never
-  executes those CLIs. **Not selectable yet** (Gate B/C).
+- **`claude` / `codex` (controlled-pilot path)** — `REVIEW_RUNTIME=claude` or
+  `codex` sends a self-hosted worker review to the isolated matching runner
+  under a short-lived session capability. The worker never executes those
+  CLIs. Local `diffuse review` still uses `litellm` until it can use the same
+  session contract.
 
 `diffuse agent` manages host plumbing for those CLIs:
 
