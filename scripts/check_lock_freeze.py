@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare a `pip freeze` dump to `requirements.lock`; exit non-zero on drift.
 
-Used by verify.yml's `test-container` job so the test image is proven to
+Used by ci.yml's `test-container` job so the test image is proven to
 contain the shipped dependency set rather than trusted to. Missing packages
 count as drift — skipping them would let an incomplete install pass as long
 as whatever did install matched its pin.

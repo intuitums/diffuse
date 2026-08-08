@@ -131,7 +131,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # version installed above, so pip leaves those alone rather than upgrading them.
 # `pip check` only confirms the resulting graph is consistent — it would still
 # pass if a range pulled a locked package forward. The freeze comparison in
-# verify.yml's `test-container` job is what catches that.
+# ci.yml's `test-container` job is what catches that.
 COPY requirements.lock requirements.txt requirements-dev.txt pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --require-hashes -r requirements.lock \
@@ -160,7 +160,7 @@ COPY .env.example ./.env.example
 COPY docker-compose.yml ./docker-compose.yml
 COPY .github ./.github
 # CI helper imported by tests/test_check_lock_freeze.py (and invoked from the
-# host in verify.yml). Without it the container suite fails at collection with
+# host in ci.yml). Without it the container suite fails at collection with
 # `No module named 'scripts'`, which reads like a packaging bug and is not one.
 COPY scripts ./scripts
 # This file, read as text: test_release_artifacts_ship_the_license asserts that
