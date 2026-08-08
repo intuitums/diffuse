@@ -15,7 +15,7 @@ from repository_policy.resolve import (
     resolve_review_policy,
 )
 from retriever.retrieve import RetrievedContext
-from service import code_query, conversation_engine, learning_engine
+from service import conversation_engine, learning_engine
 from service.diff_parser import parse_unified_diff
 from service.hosted.workflow import NonRetryableError
 from service.models.conversation import ConversationTurn
@@ -1042,25 +1042,6 @@ def _render_conversation_prompt(text: str) -> str:
     )
 
 
-def _render_code_query_prompt(text: str) -> str:
-    source = code_query._CodeSource(
-        source_id="source-1",
-        repository_name="owner/repo",
-        snapshot_id=11,
-        commit_sha="a" * 40,
-        file_path="app.py",
-        symbol_name="lookup",
-        start_line=1,
-        end_line=2,
-        content=text,
-        content_truncated=False,
-        retrieval_reason="lexical",
-        relevance_score=0.5,
-        source_url="https://github.example.com/owner/repo/blob/app.py",
-    )
-    return code_query._answer_user_prompt(text, (source,))
-
-
 def _render_rule_learning_prompt(text: str) -> str:
     evidence = RuleLearningEvidence(
         event_id=11,
@@ -1104,7 +1085,6 @@ PROMPT_BUILDERS = {
     "review_verification": _render_verification_prompt,
     "review_diagram": _render_diagram_prompt,
     "thread_conversation": _render_conversation_prompt,
-    "codebase_question": _render_code_query_prompt,
     "rule_learning": _render_rule_learning_prompt,
     "repository_policy": _render_policy_prompt,
 }
@@ -1124,7 +1104,7 @@ def test_no_prompt_builder_lets_untrusted_text_close_its_region(builder: str):
     """Untrusted text must never close the block that contains it, in any prompt.
 
     DEV-224 fixed this one builder at a time and was closed on a call-site count,
-    which missed the conversation, codebase-answer, rule-learning, and verification
+    which missed the conversation, rule-learning, and verification
     prompts entirely: the same indexed `AGENTS.md`, the same PR comment, and the same
     diff reach all of them. A forged closing tag puts the attacker's directive outside
     the untrusted region as the model parses it, dressed as a trusted operator note —
