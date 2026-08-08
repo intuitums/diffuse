@@ -160,3 +160,39 @@ def test_native_session_is_retired_when_generation_fails(monkeypatch):
         ("a32b1c5d-3c15-4462-a9fe-f191775b3459", "codex", "capability-1", "failed")
     ]
     assert failed == [41]
+
+
+def test_native_session_is_not_persisted_after_artifact_supersession(monkeypatch):
+    """A superseded checkout may waste local work but cannot dispatch a runner."""
+
+    progress_calls = 0
+
+    def report_progress():
+        nonlocal progress_calls
+        progress_calls += 1
+        if progress_calls == 2:
+            raise worker.ReviewSupersededError("newer revision")
+
+    monkeypatch.setattr(
+        worker,
+        "_build_native_workspace_artifact",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        worker,
+        "create_agent_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not persist a superseded session")
+        ),
+    )
+
+    with pytest.raises(worker.ReviewSupersededError, match="newer revision"):
+        worker._create_native_agent_session(
+            _job(),
+            runtime="codex",
+            snapshot_id=13,
+            head_sha="b" * 40,
+            progress_callback=report_progress,
+        )
+
+    assert progress_calls == 2
