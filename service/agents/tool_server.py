@@ -29,7 +29,7 @@ def create_tool_server(provider: ReviewToolProvider) -> FastMCP:
     def search_code(
         query: str, path_prefix: str | None = None, limit: int = 8
     ) -> dict[str, object]:
-        """Search only the review's pinned immutable index snapshots."""
+        """Search pinned snapshots; prefix a literal with ``grep:`` for fast exact matches."""
 
         return provider.search_code(query, path_prefix=path_prefix, limit=limit)
 
@@ -45,7 +45,7 @@ def create_bridge_tool_server(bridge_url: str) -> FastMCP:
     def search_code(
         query: str, path_prefix: str | None = None, limit: int = 8
     ) -> dict[str, object]:
-        """Search only the parent review's pinned immutable index snapshots."""
+        """Search pinned snapshots; prefix a literal with ``grep:`` for fast exact matches."""
 
         # Clamped here as well as in the bridge. This side keeps the agent's own
         # error message useful; the bridge's copy is the one that is load-bearing,
@@ -89,7 +89,7 @@ def create_capability_tool_server(tool_url: str, capability: str) -> FastMCP:
     def search_code(
         query: str, path_prefix: str | None = None, limit: int = 8
     ) -> dict[str, object]:
-        """Search only the review's capability-pinned immutable index snapshot."""
+        """Search pinned snapshots; prefix a literal with ``grep:`` for fast exact matches."""
 
         payload = json.dumps(
             {
