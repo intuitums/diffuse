@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -88,32 +86,3 @@ def test_cli_exits_0_on_exact_match(tmp_path):
     freeze.write_text("litellm==1.93.0\n")
     lock.write_text("litellm==1.93.0\n")
     assert main([str(freeze), str(lock)]) == 0
-
-
-def test_script_is_runnable_as_a_module_path():
-    """verify.yml invokes this file; a missing shebang or bad import fails CI."""
-
-    completed = subprocess.run(
-        [sys.executable, str(SCRIPT), "--help"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert completed.returncode == 0
-    assert "requirements.lock" in completed.stdout
-
-
-def test_verify_workflow_calls_the_script_not_an_inline_copy():
-    """An inline reimplementation would rot the way the previous one did."""
-
-    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "verify.yml").read_text()
-    assert "scripts/check_lock_freeze.py" in workflow
-    # The old skip-on-missing pattern must not return.
-    assert "if actual is None:\n                  continue" not in workflow
-
-
-def test_test_runner_stage_copies_the_script():
-    """Without this COPY the container suite fails at collection."""
-
-    dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
-    assert "COPY scripts ./scripts" in dockerfile

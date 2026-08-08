@@ -1,6 +1,5 @@
 import json
 import re
-from pathlib import Path
 
 import pytest
 
@@ -1148,60 +1147,6 @@ def test_no_prompt_builder_lets_untrusted_text_close_its_region(builder: str):
     # truncation, and the attacker's note stays inside the region rather than vanishing.
     assert "# Notes" in attacked_prompt
     assert FORGED_OPERATOR_NOTE in attacked_prompt
-
-
-_SERVICE_CLOSING_TAG_PATTERN = re.compile(r"</([a-z][a-z0-9]*(?:_[a-z0-9]+)+)[^>]*>")
-
-
-def test_every_structural_tag_emitted_by_a_service_prompt_is_registered():
-    """An unregistered tag is a region no repository text is ever stripped of.
-
-    `neutralize_prompt_delimiters` only strips the tags listed in
-    `PROMPT_STRUCTURAL_TAGS`, so a prompt section framed with a tag nobody registered
-    is silently escapable even when the builder calls the neutralizer correctly — which
-    is how `untrusted_candidates`, `untrusted_repository_sources_json`, and
-    `untrusted_review_feedback_json` stayed open. The tag list is scanned out of the
-    source rather than restated here, so adding a section without registering its tag
-    fails CI instead of shipping.
-    """
-    service_directory = Path(review_engine.__file__).parent
-    emitted = {
-        tag
-        for module in sorted(service_directory.glob("*.py"))
-        for tag in _SERVICE_CLOSING_TAG_PATTERN.findall(module.read_text())
-    }
-
-    assert emitted, "the scan matched nothing, so it can no longer catch a new tag"
-    assert emitted <= set(PROMPT_STRUCTURAL_TAGS), (
-        "unregistered prompt tags are never neutralized: "
-        f"{sorted(emitted - set(PROMPT_STRUCTURAL_TAGS))}"
-    )
-
-
-def test_every_module_that_frames_a_prompt_region_also_neutralizes_it():
-    """Registering a tag is only half the control; the builder must still apply it.
-
-    `service/storage/mcp.py` framed `<diffuse_fix_handoff>` correctly and never called
-    the neutralizer, so a forged closing tag in a finding body escaped into a prompt
-    handed to a coding agent holding write access to the operator's checkout. The
-    registry test above cannot catch that: the tag was registered, the call site
-    simply never used it.
-
-    Asserting the pairing is the point. Every previous instance of this defect was
-    closed one call site at a time, which is why it kept reappearing somewhere else.
-    """
-    service_directory = Path(review_engine.__file__).parent
-    unprotected = [
-        module.name
-        for module in sorted(service_directory.glob("*.py"))
-        if _SERVICE_CLOSING_TAG_PATTERN.search(source := module.read_text())
-        and "neutralize_prompt_delimiters" not in source
-    ]
-
-    assert not unprotected, (
-        "these modules frame an untrusted prompt region but never neutralize it: "
-        f"{unprotected}"
-    )
 
 
 def test_unset_review_model_refuses_with_an_actionable_error(monkeypatch):

@@ -12,8 +12,6 @@ from functools import partial
 
 import anyio
 from fastapi import FastAPI, Header, HTTPException, Request, Response, status
-from fastapi.exception_handlers import request_validation_exception_handler
-from fastapi.exceptions import RequestValidationError
 
 from indexer.store import get_conn
 from service.agents.tool_api import router as agent_tool_router
@@ -25,17 +23,6 @@ from service.github.api import (
     normalize_review_conversation_event,
     normalize_review_feedback_comment_event,
     verify_signature,
-)
-from service.hosted.oauth_api import (
-    router as oauth_router,
-)
-from service.hosted.rest_api import (
-    RestApiError,
-    rest_api_error_handler,
-    rest_validation_error_handler,
-)
-from service.hosted.rest_api import (
-    router as rest_api_router,
 )
 from service.hosted.worker import validate_worker_configuration
 from service.hosted.workflow import (
@@ -49,7 +36,6 @@ from service.hosted.workflow import (
     enqueue_review_event,
     record_webhook_rejection,
 )
-from service.mcp_server import diffuse_mcp, mcp_http_app
 from service.review.description import is_managed_review_description_change
 from service.scm import (
     PullRequestEvent,
@@ -133,22 +119,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         partial(validate_worker_configuration, verify_native_runners=False)
     )
     await anyio.to_thread.run_sync(_verify_database_schema)
-    async with diffuse_mcp.session_manager.run():
-        yield
+    yield
 
 
-app = FastAPI(title="Diffuse", version="0.1.0", lifespan=lifespan)
-app.include_router(rest_api_router)
-app.include_router(oauth_router)
+app = FastAPI(
+    title="Diffuse",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.include_router(agent_tool_router)
-app.add_exception_handler(RestApiError, rest_api_error_handler)
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_error_handler(request: Request, error: RequestValidationError):
-    if request.url.path.startswith("/api/v1"):
-        return await rest_validation_error_handler(request, error)
-    return await request_validation_exception_handler(request, error)
 
 # Keep the original public name for callers upgrading from the first foundation.
 verify_github_signature = verify_signature
@@ -505,8 +487,3 @@ async def readiness(response: Response):
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {"status": "not_ready", "reason": "database_schema"}
     return {"status": "ready"}
-
-
-# Keep the catch-all mount last so webhook, health, and documentation routes
-# retain precedence.
-app.mount("/", mcp_http_app)

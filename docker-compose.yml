@@ -108,7 +108,6 @@ services:
       - ${DIFFUSE_ENV_FILE:-.env}
     environment:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
-      DIFFUSE_API_TOKEN: ${DIFFUSE_API_TOKEN:?Set DIFFUSE_API_TOKEN in .env}
       DIFFUSE_PUBLIC_URL: ${DIFFUSE_PUBLIC_URL:?Set DIFFUSE_PUBLIC_URL in .env}
       # The API verifies capability tools but must not be able to mint a
       # worker-to-runner dispatch envelope.
