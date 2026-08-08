@@ -2,7 +2,7 @@
 
 A review is reproducible today because the context it read is a pure function of
 its pinned snapshots and its diff. An agentic reviewer picks its own queries, so
-that stops being true the moment it can call `search_code` or `ask_codebase` for
+that stops being true the moment it can call `search_code` for
 itself: the snapshots say what it *could* read, and only this log says what it
 did read. Nothing here is derivable after the fact, which is why recording is not
 optional and why a call that failed is still a row.

@@ -1,7 +1,9 @@
 # Engineering plan
 
 > **Superseded plan.** The former Gate A–F agent-platform sequence is no longer
-> the delivery authority. The active order is in [v1-scope.md](v1-scope.md):
+> the delivery authority. Public MCP, REST, `ask_codebase`, and auto-approval
+> are excised from v1 — treat any present-tense mention of those surfaces below
+> as historical. The active order is in [v1-scope.md](v1-scope.md):
 > documentation reset, public-surface excision, one CLI review engine,
 > verification, measured bounded team, then feedback-backed guidance. Retain
 > only isolation work that fits that boundary.
@@ -106,16 +108,15 @@ operation layer is delivered through the Linear plan gates; see
   then replace the transitional LiteLLM candidate/diagram/verifier path.
 - **`ReviewRequest` + internal tool provider.** *Done (preflight).* Runtimes
   take a `ReviewRequest` (diff, policy, optional worktree / context plan /
-  tools). `ReviewToolProvider.search_code` wraps the same `search_codebase`
-  MCP uses and records every call (memory or Postgres). Local `diffuse review`
+  tools). `ReviewToolProvider.search_code` wraps `search_codebase`
+  and records every call (memory or Postgres). Local `diffuse review`
   builds tools onto the request; the one-shot runtime still ignores them.
 - **Tool-call log.** *Done for `search_code`.* `review_tool_calls` (migration
   0011) records every remote native-session lookup with its session-bound
   review attempt, so an agentic investigation stays replayable.
-- **Retrievers as tools.** `search_code` and `ask_codebase` are exposed over MCP
-  to external agents but unused by Diffuse's own one-shot runtime, which receives
-  a pre-fused blob capped at 18 chunks and 24,000 characters. The agent-runner
-  capability tools should consume them. *Blocked on Gate B/C, on the
+- **Retrievers as tools.** `search_code` remains an internal review tool.
+  Public MCP exposure and `ask_codebase` are removed from v1. The agent-runner
+  capability tools should consume `search_code`. *Blocked on Gate B/C, on the
   reproducibility trade-off, and — for measurement — on the retrieval corpus.*
 - **Extend the harness to exercise retrieval.** *Blocked on the retrieval corpus.*
 - **Retire one-shot pass scaffolding** (`REVIEW_PASSES` fan-out, diff chunking,
@@ -167,11 +168,12 @@ repositories. That gap has no answer yet.
 
 ## Self-hosted server surface
 
-`service/hosted/` holds the webhook ingress, durable queue, worker, REST/MCP
-HTTP app, and related server modules. They are the fleet/fork-PR path and are
-**not** obsolete. The isolated agent-runner (Gate B) sits beside them; the
-worker remains the control-plane job executor and never hosts a CLI.
-Edges into this package are listed in `service/hosted/__init__.py`.
+`service/hosted/` holds the webhook ingress, durable queue, worker, and private
+runner transport. They are the fleet/fork-PR path and are **not** obsolete.
+Public REST/MCP are not part of this package's v1 surface. The isolated
+agent-runner (Gate B) sits beside them; the worker remains the control-plane
+job executor and never hosts a CLI. Edges into this package are listed in
+`service/hosted/__init__.py`.
 
 What the CLI still must absorb over time (without deleting the server): running
 learning inference without only enqueueing a job, and a clear home for

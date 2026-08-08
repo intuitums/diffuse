@@ -158,15 +158,15 @@ than restating this; this is the whole recipe.
 
 `docker-compose.yml` already defines a suitable PostgreSQL service. Compose
 interpolates the entire file even when you start a single service, so `.env`
-must exist and must supply `POSTGRES_PASSWORD` **and** `DIFFUSE_API_TOKEN`
-(`DIFFUSE_PUBLIC_URL` already has a value in `.env.example`). Without them
+must exist and must supply `POSTGRES_PASSWORD`
+(`DIFFUSE_PUBLIC_URL` already has a value in `.env.example`). Without it
 Compose refuses to start with
-`required variable DIFFUSE_API_TOKEN is missing a value`.
+`required variable POSTGRES_PASSWORD is missing a value`.
 
 ```bash
 cp .env.example .env
-# Edit .env and set POSTGRES_PASSWORD and DIFFUSE_API_TOKEN.
-# Both are in the "REQUIRED" block at the top of the file.
+# Edit .env and set POSTGRES_PASSWORD.
+# It is in the "REQUIRED" block at the top of the file.
 # Use URL-safe values, for example: openssl rand -hex 32
 #
 # REVIEW_MODEL ships commented out, so that copying this file cannot hand you a

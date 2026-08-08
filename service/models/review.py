@@ -196,7 +196,7 @@ class ReviewReport(StrictModel):
     footer_included: bool = True
     update_description: bool = False
     summary_comment_enabled: bool = True
-    fix_with_agent_enabled: bool = True
+    fix_with_agent_enabled: bool = False
     findings: list[ReviewFinding] = Field(default_factory=list, max_length=50)
     diff_file_count: int = Field(ge=0)
     reviewed_file_count: int = Field(ge=0)

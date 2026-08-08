@@ -28,8 +28,10 @@ GitHub Check only. It never authorizes a pull request.
 
 ## Deliberate v1 limits
 
-- Diffuse never submits a GitHub `APPROVE` review. Any non-empty
-  `auto_approval` setting is rejected.
+- Diffuse never submits a GitHub `APPROVE` review. Any `auto_approval` setting
+  is rejected with a clear error.
+- `review.fix_with_agent` has been removed; Diffuse v1 does not publish agent
+  handoffs. Suggested-fix text may still appear on findings when present.
 - Nested `.diffuse/config.json` files, custom context, cross-repository
   context, automatic learned rules, and autonomous fixes are not supported v1
   configuration. Transitional code may still parse some of those fields while

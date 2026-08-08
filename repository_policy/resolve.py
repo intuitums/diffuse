@@ -12,7 +12,6 @@ from typing import Literal
 
 from .models import (
     REVIEW_PASS_NAMES,
-    AutoApprovalRiskName,
     GuidanceDocument,
     RepositoryPolicySnapshot,
     RepositoryRule,
@@ -36,7 +35,6 @@ PROMPT_STRUCTURAL_TAGS = (
     "untrusted_candidates",
     "untrusted_review_feedback_json",
     "diffuse_finding_json",
-    "diffuse_fix_handoff",
     "repository_review_policy_json",
     "diffuse_security_policy_json",
     "changed_paths_json",
@@ -46,12 +44,6 @@ _STRUCTURAL_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 NEUTRALIZED_DELIMITER = "[diffuse removed a forged prompt delimiter]"
-_AUTO_APPROVAL_RISK_ORDER: dict[AutoApprovalRiskName, int] = {
-    "low": 0,
-    "medium": 1,
-    "high": 2,
-    "critical": 3,
-}
 _SEVERITY_ORDER = {
     "critical": 0,
     "high": 1,
@@ -258,46 +250,6 @@ def _scope_matches(directory: str, patterns: tuple[str, ...], path: str) -> bool
     return any(path_matches(pattern, relative) for pattern in patterns)
 
 
-def _ordered_union(
-    current: tuple[str, ...],
-    additions: tuple[str, ...] | None,
-) -> tuple[str, ...]:
-    if not additions:
-        return current
-    return tuple(dict.fromkeys((*current, *additions)))
-
-
-def _append_constraint_group(
-    current: tuple[tuple[str, ...], ...],
-    patterns: tuple[str, ...] | None,
-) -> tuple[tuple[str, ...], ...]:
-    if not patterns:
-        return current
-    return (*current, patterns)
-
-
-def _append_allow_group(
-    current: tuple[tuple[str, ...], ...],
-    patterns: tuple[str, ...] | None,
-) -> tuple[tuple[str, ...], ...]:
-    # Omitting `allow_paths` and writing `[]` mean the same thing for a write action:
-    # this scope approves nothing. Skipping `None` used to let a nested scope that
-    # named paths grant what a parent that only set `enabled: true` never consented
-    # to; an unmatchable empty group is how either form survives a sibling grant.
-    if patterns is None:
-        patterns = ()
-    return (*current, patterns)
-
-
-def _rooted_globs(
-    directory: str,
-    patterns: tuple[str, ...] | None,
-) -> tuple[str, ...] | None:
-    if patterns is None or not directory:
-        return patterns
-    return tuple(f"{directory}/{pattern}" for pattern in patterns)
-
-
 def neutralize_prompt_delimiters(text: str) -> str:
     """Strip prompt-structural tags from repository-authored text.
 
@@ -391,35 +343,6 @@ class ResolvedTriggerPolicy:
 
 
 @dataclass(frozen=True)
-class ResolvedAutoApprovalPolicy:
-    enabled: bool = False
-    risk_ceiling: AutoApprovalRiskName = "low"
-    # One group per configured scope, each already rooted at the scope that wrote it, and
-    # every group has to cover a path before that path may be approved. There is
-    # deliberately no flat union counterpart: unioning the groups would widen the
-    # allowlist instead of narrowing it, and a caller reaching for the familiar flat
-    # field would be reading the most permissive answer while believing it strict.
-    allow_path_groups: tuple[tuple[str, ...], ...] = ()
-    exclude_paths: tuple[str, ...] = ()
-    include_authors: tuple[str, ...] = ()
-    exclude_authors: tuple[str, ...] = ()
-    include_branches: tuple[str, ...] = ()
-    exclude_branches: tuple[str, ...] = ()
-    labels: tuple[str, ...] = ()
-    disabled_labels: tuple[str, ...] = ()
-    include_keywords: tuple[str, ...] = ()
-    exclude_keywords: tuple[str, ...] = ()
-    file_change_limit: int | None = None
-    include_repositories: tuple[str, ...] = ()
-    exclude_repositories: tuple[str, ...] = ()
-    include_author_groups: tuple[tuple[str, ...], ...] = ()
-    include_branch_groups: tuple[tuple[str, ...], ...] = ()
-    label_groups: tuple[tuple[str, ...], ...] = ()
-    include_keyword_groups: tuple[tuple[str, ...], ...] = ()
-    include_repository_groups: tuple[tuple[str, ...], ...] = ()
-
-
-@dataclass(frozen=True)
 class ResolvedOutputSectionPolicy:
     included: bool = True
     collapsible: bool = False
@@ -438,7 +361,6 @@ class ResolvedPathPolicy:
     respond_to_comments: bool
     update_description: bool
     summary_comment: bool
-    fix_with_agent: bool
     summary_section: ResolvedOutputSectionPolicy
     issues_table_section: ResolvedOutputSectionPolicy
     confidence_score_section: ResolvedOutputSectionPolicy
@@ -449,7 +371,6 @@ class ResolvedPathPolicy:
     context_repositories: tuple[str, ...]
     preventative_security: bool
     preventative_security_minimum_confidence: float
-    auto_approval: ResolvedAutoApprovalPolicy
     triggers: ResolvedTriggerPolicy
     rules: tuple[ResolvedRule, ...]
     guidance_documents: tuple[GuidanceDocument, ...]
@@ -535,14 +456,6 @@ class ResolvedReviewPolicy:
             if item.reviewable
         )
 
-    @property
-    def fix_with_agent_enabled(self) -> bool:
-        return all(
-            item.fix_with_agent
-            for item in self.paths
-            if item.reviewable
-        )
-
     def _output_section(self, attribute: str) -> ResolvedOutputSectionPolicy:
         values = tuple(
             getattr(item, attribute)
@@ -607,14 +520,6 @@ class ResolvedReviewPolicy:
                 if item.reviewable
                 for repository in item.context_repositories
             )
-        )
-
-    @property
-    def auto_approval_requested(self) -> bool:
-        return any(
-            item.auto_approval.enabled
-            for item in self.paths
-            if item.reviewable
         )
 
     @property
@@ -816,7 +721,6 @@ def apply_approved_learned_rules(
                 respond_to_comments=path_policy.respond_to_comments,
                 update_description=path_policy.update_description,
                 summary_comment=path_policy.summary_comment,
-                fix_with_agent=path_policy.fix_with_agent,
                 summary_section=path_policy.summary_section,
                 issues_table_section=path_policy.issues_table_section,
                 confidence_score_section=path_policy.confidence_score_section,
@@ -829,7 +733,6 @@ def apply_approved_learned_rules(
                 preventative_security_minimum_confidence=(
                     path_policy.preventative_security_minimum_confidence
                 ),
-                auto_approval=path_policy.auto_approval,
                 triggers=path_policy.triggers,
                 rules=learned_for_path + path_policy.rules,
                 guidance_documents=path_policy.guidance_documents,
@@ -1121,7 +1024,6 @@ def resolve_review_policy(
         respond_to_comments = True
         update_description = False
         summary_comment = True
-        fix_with_agent = True
         summary_section = ResolvedOutputSectionPolicy()
         issues_table_section = ResolvedOutputSectionPolicy()
         confidence_score_section = ResolvedOutputSectionPolicy()
@@ -1132,10 +1034,6 @@ def resolve_review_policy(
         context_repositories: tuple[str, ...] = ()
         preventative_security = False
         preventative_security_minimum_confidence = 0.9
-        auto_approval = ResolvedAutoApprovalPolicy()
-        auto_approval_enabled_seen = False
-        auto_approval_disabled_seen = False
-        auto_approval_risk_ceiling: AutoApprovalRiskName | None = None
         triggers = ResolvedTriggerPolicy()
         rule_values: dict[str, ResolvedRule] = {}
         rule_enabled: dict[str, bool] = {}
@@ -1160,8 +1058,6 @@ def resolve_review_policy(
                 update_description = review.update_description
             if review.summary_comment is not None:
                 summary_comment = review.summary_comment
-            if review.fix_with_agent is not None:
-                fix_with_agent = review.fix_with_agent
             for attribute, patch in (
                 ("summary_section", review.summary_section),
                 ("issues_table_section", review.issues_table_section),
@@ -1212,112 +1108,6 @@ def resolve_review_policy(
                 preventative_security_minimum_confidence = (
                     security.preventative_minimum_confidence
                 )
-            approval_patch = layer.config.auto_approval
-            approval_filters = approval_patch.filters
-            if approval_patch.enabled is True:
-                auto_approval_enabled_seen = True
-            elif approval_patch.enabled is False:
-                auto_approval_disabled_seen = True
-            if (
-                approval_patch.risk_ceiling is not None
-                and (
-                    auto_approval_risk_ceiling is None
-                    or _AUTO_APPROVAL_RISK_ORDER[approval_patch.risk_ceiling]
-                    < _AUTO_APPROVAL_RISK_ORDER[auto_approval_risk_ceiling]
-                )
-            ):
-                auto_approval_risk_ceiling = approval_patch.risk_ceiling
-            rooted_allowances = _rooted_globs(
-                layer.directory_path,
-                approval_filters.allow_paths,
-            )
-            rooted_exclusions = _rooted_globs(
-                layer.directory_path,
-                approval_filters.exclude_paths,
-            )
-            file_change_limit = auto_approval.file_change_limit
-            if approval_filters.file_change_limit is not None:
-                file_change_limit = (
-                    approval_filters.file_change_limit
-                    if file_change_limit is None
-                    else min(file_change_limit, approval_filters.file_change_limit)
-                )
-            auto_approval = ResolvedAutoApprovalPolicy(
-                enabled=(
-                    auto_approval_enabled_seen
-                    and not auto_approval_disabled_seen
-                ),
-                risk_ceiling=auto_approval_risk_ceiling or "low",
-                allow_path_groups=_append_allow_group(
-                    auto_approval.allow_path_groups,
-                    rooted_allowances,
-                ),
-                exclude_paths=_ordered_union(
-                    auto_approval.exclude_paths,
-                    rooted_exclusions,
-                ),
-                include_authors=_ordered_union(
-                    auto_approval.include_authors,
-                    approval_filters.include_authors,
-                ),
-                exclude_authors=_ordered_union(
-                    auto_approval.exclude_authors,
-                    approval_filters.exclude_authors,
-                ),
-                include_branches=_ordered_union(
-                    auto_approval.include_branches,
-                    approval_filters.include_branches,
-                ),
-                exclude_branches=_ordered_union(
-                    auto_approval.exclude_branches,
-                    approval_filters.exclude_branches,
-                ),
-                labels=_ordered_union(
-                    auto_approval.labels,
-                    approval_filters.labels,
-                ),
-                disabled_labels=_ordered_union(
-                    auto_approval.disabled_labels,
-                    approval_filters.disabled_labels,
-                ),
-                include_keywords=_ordered_union(
-                    auto_approval.include_keywords,
-                    approval_filters.include_keywords,
-                ),
-                exclude_keywords=_ordered_union(
-                    auto_approval.exclude_keywords,
-                    approval_filters.exclude_keywords,
-                ),
-                file_change_limit=file_change_limit,
-                include_repositories=_ordered_union(
-                    auto_approval.include_repositories,
-                    approval_filters.include_repositories,
-                ),
-                exclude_repositories=_ordered_union(
-                    auto_approval.exclude_repositories,
-                    approval_filters.exclude_repositories,
-                ),
-                include_author_groups=_append_constraint_group(
-                    auto_approval.include_author_groups,
-                    approval_filters.include_authors,
-                ),
-                include_branch_groups=_append_constraint_group(
-                    auto_approval.include_branch_groups,
-                    approval_filters.include_branches,
-                ),
-                label_groups=_append_constraint_group(
-                    auto_approval.label_groups,
-                    approval_filters.labels,
-                ),
-                include_keyword_groups=_append_constraint_group(
-                    auto_approval.include_keyword_groups,
-                    approval_filters.include_keywords,
-                ),
-                include_repository_groups=_append_constraint_group(
-                    auto_approval.include_repository_groups,
-                    approval_filters.include_repositories,
-                ),
-            )
             trigger_patch = layer.config.triggers
             triggers = ResolvedTriggerPolicy(
                 automatic=(
@@ -1437,7 +1227,6 @@ def resolve_review_policy(
                 respond_to_comments=respond_to_comments,
                 update_description=update_description,
                 summary_comment=summary_comment,
-                fix_with_agent=fix_with_agent,
                 summary_section=summary_section,
                 issues_table_section=issues_table_section,
                 confidence_score_section=confidence_score_section,
@@ -1450,7 +1239,6 @@ def resolve_review_policy(
                 preventative_security_minimum_confidence=(
                     preventative_security_minimum_confidence
                 ),
-                auto_approval=auto_approval,
                 triggers=triggers,
                 rules=tuple(
                     rule
@@ -1477,7 +1265,6 @@ def resolve_review_policy(
                 "respond_to_comments": item.respond_to_comments,
                 "update_description": item.update_description,
                 "summary_comment": item.summary_comment,
-                "fix_with_agent": item.fix_with_agent,
                 "summary_section": {
                     "included": item.summary_section.included,
                     "collapsible": item.summary_section.collapsible,
@@ -1502,40 +1289,6 @@ def resolve_review_policy(
                 "preventative_security_minimum_confidence": (
                     item.preventative_security_minimum_confidence
                 ),
-                "auto_approval": {
-                    "enabled": item.auto_approval.enabled,
-                    "risk_ceiling": item.auto_approval.risk_ceiling,
-                    "allow_path_groups": item.auto_approval.allow_path_groups,
-                    "exclude_paths": item.auto_approval.exclude_paths,
-                    "include_authors": item.auto_approval.include_authors,
-                    "exclude_authors": item.auto_approval.exclude_authors,
-                    "include_branches": item.auto_approval.include_branches,
-                    "exclude_branches": item.auto_approval.exclude_branches,
-                    "labels": item.auto_approval.labels,
-                    "disabled_labels": item.auto_approval.disabled_labels,
-                    "include_keywords": item.auto_approval.include_keywords,
-                    "exclude_keywords": item.auto_approval.exclude_keywords,
-                    "file_change_limit": item.auto_approval.file_change_limit,
-                    "include_repositories": (
-                        item.auto_approval.include_repositories
-                    ),
-                    "exclude_repositories": (
-                        item.auto_approval.exclude_repositories
-                    ),
-                    "include_author_groups": (
-                        item.auto_approval.include_author_groups
-                    ),
-                    "include_branch_groups": (
-                        item.auto_approval.include_branch_groups
-                    ),
-                    "label_groups": item.auto_approval.label_groups,
-                    "include_keyword_groups": (
-                        item.auto_approval.include_keyword_groups
-                    ),
-                    "include_repository_groups": (
-                        item.auto_approval.include_repository_groups
-                    ),
-                },
                 "triggers": {
                     "automatic": item.triggers.automatic,
                     "review_drafts": item.triggers.review_drafts,
