@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
 import subprocess
+import time
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -44,7 +46,10 @@ from service.agents.profiles import SessionProfile
 from service.agents.replay import SessionTranscript
 from service.agents.tool_server import AGENT_TOOL_URL_VARIABLE, SESSION_CAPABILITY_VARIABLE
 from service.review.agent_host import (
+    LOCAL_CLI_SANDBOX_PROFILE,
     AgentCli,
+    CompartmentAssertion,
+    SandboxProfile,
     agent_environment,
     agent_scratch_directory,
     resolve_executable,
@@ -54,7 +59,14 @@ from service.review.agent_host import (
 from service.review.tools import ReviewToolProvider
 
 
-def write_session_settings(path: Path, *, cli: AgentCli, worktree: Path) -> Path:
+def write_session_settings(
+    path: Path,
+    *,
+    cli: AgentCli,
+    worktree: Path,
+    sandbox_profile: SandboxProfile = LOCAL_CLI_SANDBOX_PROFILE,
+    compartment: CompartmentAssertion | None = None,
+) -> Path:
     """Render the owned sandbox policy for one review's worktree.
 
     The persisted policy under `CLAUDE_CONFIG_DIR` is worktree-independent, and
@@ -66,7 +78,11 @@ def write_session_settings(path: Path, *, cli: AgentCli, worktree: Path) -> Path
     one definition of the policy and this only narrows what may be read.
     """
 
-    document = sandbox_settings(worktree)
+    document = sandbox_settings(
+        worktree,
+        profile=sandbox_profile,
+        compartment=compartment,
+    )
     path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
     path.chmod(0o600)
     return path
@@ -122,31 +138,44 @@ def run_structured[T: BaseModel](
     workspace: Path,
     tools: ReviewToolProvider | None,
     profile: SessionProfile,
+    sandbox_profile: SandboxProfile = LOCAL_CLI_SANDBOX_PROFILE,
+    compartment: CompartmentAssertion | None = None,
     capability: str | None = None,
     tool_url: str | None = None,
+    total_timeout_seconds: int | None = None,
     runner: Runner = subprocess_runner,
 ) -> tuple[T, int, int]:
     """Run one structured CLI turn and mirror `_call_structured`'s return shape.
 
-    No caller is wired to this primitive yet.  `runner` is deliberately an
-    argument rather than a module-global test hook: a cassette or fake can
+    The isolated native runner calls this primitive. `runner` is deliberately
+    an argument rather than a module-global test hook: a cassette or fake can
     exercise every branch without a CLI, credential, network, or subprocess.
     """
 
     executable = resolve_executable(cli)
     schema = response_model.model_json_schema()
-    # The persisted policy carries `failIfUnavailable`, so a session that runs
-    # without it silently degrades to no sandbox on a host missing bubblewrap.
-    # Refuse a stale one too: it was written at login and is read on every
-    # review after, so drift leaves a weaker boundary on disk than Diffuse
-    # intends with nothing saying so.
-    if not sandbox_settings_are_current(cli):
+    # The persisted policy carries `failIfUnavailable`, so a local session that
+    # runs without it silently degrades to no CLI sandbox on a host missing
+    # bubblewrap. Refuse a stale one too: it was written at login and is read
+    # on every review after, so drift leaves a weaker boundary on disk than
+    # Diffuse intends with nothing saying so.
+    #
+    # A compartment session deliberately does not consume that persisted local
+    # policy. Its vendor credential lives in the owned config directory, while
+    # the per-execution `--settings` file is rendered from the compartment
+    # profile after a fresh preflight. Requiring the local document to be
+    # current there would couple credential availability to a boundary that the
+    # container does not use. `sandbox_settings` still refuses to render the
+    # compartment profile without its matching assertion.
+    if sandbox_profile.cli_sandbox_enabled and not sandbox_settings_are_current(cli):
         raise AgentSessionTerminalError(
             f"{cli.display_name}'s Diffuse-owned sandbox policy is missing or out of "
             f"date; run `diffuse agent write-policy {cli.runtime}` before a session"
         )
     if (capability is None) != (tool_url is None):
         raise ValueError("capability and tool_url must be supplied together")
+    if total_timeout_seconds is not None and total_timeout_seconds <= 0:
+        raise ValueError("total_timeout_seconds must be positive when supplied")
     bridge_context = (
         McpBridge(tools) if tools is not None and profile.tool_allowlist else _NullBridge()
     )
@@ -159,6 +188,8 @@ def run_structured[T: BaseModel](
             Path(config_directory) / "settings.json",
             cli=cli,
             worktree=workspace,
+            sandbox_profile=sandbox_profile,
+            compartment=compartment,
         )
         # Always written, even with no bridge. `--mcp-config` plus
         # `--strict-mcp-config` is what stops Claude reading the `.mcp.json` of
@@ -193,6 +224,7 @@ def run_structured[T: BaseModel](
             profile=profile,
             environment=environment,
             runner=runner,
+            total_timeout_seconds=total_timeout_seconds,
         )
 
 
@@ -222,7 +254,16 @@ def _run_once_or_raised_budget[T: BaseModel](
     profile: SessionProfile,
     environment: dict[str, str],
     runner: Runner,
+    total_timeout_seconds: int | None = None,
 ) -> tuple[T, int, int]:
+    deadline = (
+        time.monotonic() + total_timeout_seconds
+        if total_timeout_seconds is not None
+        else None
+    )
+    first_profile = _profile_with_remaining_timeout(profile, deadline)
+    if first_profile is None:
+        raise AgentSessionTimeout("Agent session deadline elapsed before it started")
     try:
         return _run_once(
             executable,
@@ -234,7 +275,7 @@ def _run_once_or_raised_budget[T: BaseModel](
             workspace=workspace,
             settings=settings,
             mcp_config=mcp_config,
-            profile=profile,
+            profile=first_profile,
             environment=environment,
             runner=runner,
         )
@@ -244,6 +285,15 @@ def _run_once_or_raised_budget[T: BaseModel](
         # vendor actually bills; reporting only the retry understates it by
         # however far the first attempt got.
         spent_prompt, spent_completion = exhausted.usage
+        retry_profile = _profile_with_remaining_timeout(
+            profile.with_raised_budget(), deadline
+        )
+        if retry_profile is None:
+            raise AgentSessionCoverageCaveat(
+                "Agent exhausted its turn budget before the session deadline",
+                prompt_tokens=spent_prompt,
+                completion_tokens=spent_completion,
+            ) from exhausted
         try:
             value, prompt_tokens, completion_tokens = _run_once(
                 executable,
@@ -255,7 +305,7 @@ def _run_once_or_raised_budget[T: BaseModel](
                 workspace=workspace,
                 settings=settings,
                 mcp_config=mcp_config,
-                profile=profile.with_raised_budget(),
+                profile=retry_profile,
                 environment=environment,
                 runner=runner,
             )
@@ -270,6 +320,30 @@ def _run_once_or_raised_budget[T: BaseModel](
             prompt_tokens + spent_prompt,
             completion_tokens + spent_completion,
         )
+
+
+def _profile_with_remaining_timeout(
+    profile: SessionProfile,
+    deadline: float | None,
+) -> SessionProfile | None:
+    """Constrain one subprocess attempt to a session-wide deadline.
+
+    The normal CLI path intentionally permits one raised-turn retry, with a
+    full timeout for each invocation.  Isolated native sessions have a signed
+    capability and HTTP deadline, so their whole session must fit within one
+    bounded window instead.  A retry receives only the time not spent by the
+    first attempt.
+    """
+
+    if deadline is None:
+        return profile
+    remaining_seconds = deadline - time.monotonic()
+    if remaining_seconds <= 0:
+        return None
+    return replace(
+        profile,
+        timeout_seconds=min(profile.timeout_seconds, math.ceil(remaining_seconds)),
+    )
 
 
 def _run_once[T: BaseModel](

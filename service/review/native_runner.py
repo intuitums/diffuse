@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from contextlib import closing
@@ -12,8 +11,20 @@ from datetime import datetime
 import httpx
 
 from service.agents.dispatch import DispatchEnvelope, sign_dispatch
-from service.models.review import ReviewFinding, ReviewReport
+from service.agents.profiles import REVIEW
+from service.diff_parser import parse_unified_diff
+from service.models.review import CandidateFinding, ReviewReport, VerificationDecision
+from service.review.report_assembly import (
+    all_files_disabled_report,
+    deduplicate_candidates,
+    review_confidence_score,
+    review_presentation,
+    reviewable_diff,
+    risk_floor,
+    verified_findings,
+)
 from service.review.request import ReviewRequest
+from service.review.workspace import SourceArtifact
 from service.storage.agent_session import accept_agent_session_completion
 
 
@@ -23,11 +34,17 @@ class NativeSessionDispatch:
     runtime: str
     capability: str
     capability_id: str
+    source_artifact: SourceArtifact
     expires_at: datetime
 
 
 class NativeRunnerError(RuntimeError):
     """The selected independent runner cannot safely complete a review."""
+
+
+# The CLI gets its full REVIEW timeout.  Artifact validation, temporary
+# workspace setup, and result transport occur outside that subprocess budget.
+NATIVE_RUNNER_REQUEST_TIMEOUT_SECONDS = REVIEW.timeout_seconds + 120
 
 
 class NativeRunnerRuntime:
@@ -54,6 +71,7 @@ class NativeRunnerRuntime:
                 capability=session.capability,
                 capability_id=session.capability_id,
                 diff_text=request.diff_text,
+                source_artifact=session.source_artifact,
                 expires_at=session.expires_at,
             )
         )
@@ -61,7 +79,7 @@ class NativeRunnerRuntime:
             response = httpx.post(
                 f"{url}/v1/reviews",
                 json={"envelope": envelope},
-                timeout=610,
+                timeout=NATIVE_RUNNER_REQUEST_TIMEOUT_SECONDS,
             )
         except httpx.HTTPError as error:
             raise NativeRunnerError(f"{self._runtime} runner is unavailable") from error
@@ -117,24 +135,65 @@ def validate_native_runners() -> None:
 
 
 def _report_from_runner(payload: dict[str, object], request: ReviewRequest) -> ReviewReport:
-    findings = []
-    for item in payload["findings"]:  # type: ignore[index]
-        finding = dict(item)  # type: ignore[arg-type]
-        material = json.dumps(finding, sort_keys=True, separators=(",", ":")).encode()
-        finding["fingerprint"] = hashlib.sha256(material).hexdigest()
-        findings.append(ReviewFinding.model_validate(finding))
-    changed_paths = {
-        line[4:] for line in request.diff_text.splitlines() if line.startswith("+++ b/")
+    complete_diff = parse_unified_diff(request.diff_text)
+    reviewable, ignored_file_count = reviewable_diff(complete_diff, request.policy)
+    if complete_diff.files and not reviewable.files:
+        return all_files_disabled_report(
+            diff_file_count=len(complete_diff.files),
+            ignored_file_count=ignored_file_count,
+            policy=request.policy,
+        )
+
+    # The runner is an investigator, not a publisher.  Its self-reported
+    # findings must cross exactly the same immutable boundaries as candidates
+    # from the transitional runtime: policy scope, changed-line anchoring,
+    # confidence/severity floors, deduplication, publication cap, and stable
+    # continuity fingerprint.  Creating a synthetic "keep" decision is
+    # intentional: a native session supplies one confidence value rather than
+    # the API runtime's candidate/verifier pair, and `verified_findings` owns
+    # every other publication invariant.
+    candidates = [
+        CandidateFinding.model_validate(item)
+        for item in payload["findings"]  # type: ignore[index]
+    ]
+    candidates = deduplicate_candidates(candidates, reviewable, request.policy)
+    decisions = {
+        f"candidate-{index}": VerificationDecision(
+            candidate_id=f"candidate-{index}",
+            keep=True,
+            confidence=candidate.confidence,
+            rationale="Native agent session self-reported this finding.",
+        )
+        for index, candidate in enumerate(candidates)
     }
+    findings = verified_findings(candidates, decisions, set(), request.policy)
+    risk_score = (
+        min(10, max(float(payload["risk_score"]), risk_floor(findings))) if findings else 0
+    )
+    summary = (
+        str(payload["summary"])
+        if findings
+        else "No high-confidence actionable issues were found."
+    )
     return ReviewReport(
-        summary=str(payload["summary"]),
-        risk_score=float(payload["risk_score"]),
-        confidence_score=3,
+        summary=summary,
+        risk_score=risk_score,
+        confidence_score=review_confidence_score(
+            risk_score=risk_score,
+            finding_count=len(findings),
+            diff_file_count=len(complete_diff.files),
+            reviewed_file_count=len(reviewable.files),
+            ignored_file_count=ignored_file_count,
+        ),
         findings=findings,
-        diff_file_count=len(changed_paths),
-        reviewed_file_count=len(changed_paths),
-        ignored_file_count=0,
+        diff_file_count=len(complete_diff.files),
+        reviewed_file_count=len(reviewable.files),
+        ignored_file_count=ignored_file_count,
+        inline_comments_enabled=(
+            not request.policy.summary_only if request.policy is not None else True
+        ),
         context_chunk_count=0,
         prompt_tokens=int(payload.get("prompt_tokens", 0)),
         completion_tokens=int(payload.get("completion_tokens", 0)),
+        **review_presentation(request.policy),
     )

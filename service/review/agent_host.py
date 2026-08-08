@@ -34,10 +34,10 @@ not try to weaken Docker until Bubblewrap happens to work: it turns the CLI
 sandbox off and makes the later review-compartment preflight the boundary. That
 requirement is enforced rather than documented -- rendering the profile needs a
 `CompartmentAssertion`, and `assert_compartment` is the only thing that produces
-one -- because a boolean saying a check is required is not a check. The
-preflight itself is deliberately not implemented here; no agent runtime is
-selectable yet. See SECURITY.md for the measured matrix and the invariant the
-preflight must assert.
+one -- because a boolean saying a check is required is not a check. This module
+deliberately does not run that preflight: the isolated runner obtains the fresh
+assertion before every session. See SECURITY.md for the measured matrix and the
+invariant it asserts.
 """
 
 from __future__ import annotations
@@ -488,7 +488,8 @@ def sandbox_settings(
     namespace. `sandbox.enabled: false` is never safe on its own, so this
     refuses to render it without a `CompartmentAssertion` for the same profile:
     the replacement boundary has to have been checked, not merely intended. The
-    only current caller uses the local profile.
+    local CLI review uses the local profile; the isolated native runner passes
+    a freshly asserted container profile for each session.
     """
 
     if not profile.cli_sandbox_enabled:

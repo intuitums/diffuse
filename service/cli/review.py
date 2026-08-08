@@ -996,8 +996,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
         description=(
             "Review committed, staged, and unstaged changes in this checkout against the\n"
             "merge base with its base branch, using the same index, policy, and learned\n"
-            "rules as the self-hosted server. Today this runs the API one-shot review\n"
-            "runtime (REVIEW_RUNTIME=litellm); agent-CLI runtimes are not selectable yet.\n"
+            "rules as the self-hosted server. This local command intentionally runs the\n"
+            "API one-shot runtime; hosted workers may select CLI-native review sessions.\n"
             "The checkout must correspond to an enabled, indexed Diffuse repository."
         ),
         epilog=REVIEW_EPILOG,
