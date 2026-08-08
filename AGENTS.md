@@ -26,8 +26,8 @@ This VM has no Docker. The dev stack runs natively:
   must stay installed on the server. The cluster is NOT auto-started on a
   fresh pod boot (no systemd); start it with `sudo pg_ctlcluster 17 main start` (check with
   `pg_lsclusters`).
-- **API/app** — `uvicorn service.hosted.webhook_server:app` on `127.0.0.1:8000` (serves REST `/api/v1`,
-  webhooks, MCP `/mcp`, `/docs`, `/health`, `/ready`). Single FastAPI process.
+- **API/app** — `uvicorn service.hosted.webhook_server:app` on `127.0.0.1:8000` (serves
+  GitHub webhooks, private runner transport, `/health`, and `/ready`). Single FastAPI process.
 - **worker** — `python -m service.hosted.worker` (leases jobs from the Postgres queue; there is no
   separate broker/cache).
 
@@ -39,8 +39,7 @@ the native localhost Postgres.
 
 `litellm` calls `load_dotenv()` on import, so importing any service module auto-loads `.env`
 from the current directory into the process environment. That used to break otherwise-passing
-tests whenever a developer had followed the setup instructions and created one — the dev
-`DIFFUSE_MCP_ALLOWED_HOSTS`, for instance, rejects the `testserver` host the MCP test uses.
+tests whenever a developer had followed the setup instructions and created one.
 
 `tests/conftest.py` now sets `LITELLM_MODE=PRODUCTION` before the first litellm import, which
 disables that load for the test process only. Running tests with `.env` in place is fine; the
@@ -49,11 +48,8 @@ normally, which is what you want for local development.
 
 That guard only stops litellm from auto-loading the on-disk `.env`; it cannot undo variables
 you export yourself. So do **not** run `pytest` from a shell where you have already done
-`set -a; source .env` (which is how you launch the app/worker below). Those exports put
-`DIFFUSE_MCP_ALLOWED_HOSTS` into the environment, `pytest` inherits it, and the same MCP test
-fails with `421 Misdirected Request` for `http://testserver/mcp` — a failure that looks like a
-code bug but is pure shell pollution. Run the app in one shell and the tests in a separate,
-un-sourced shell.
+`set -a; source .env` (which is how you launch the app/worker below). Run the app in one shell
+and tests in a separate, un-sourced shell.
 
 ```bash
 .venv/bin/python -m pytest -m "not integration"
@@ -97,8 +93,9 @@ and a fake provider key.
 
 The dev `.env` on this VM is set up the same way: `REVIEW_MODEL=anthropic/claude-sonnet-5` plus
 placeholder provider keys, so the app and worker boot and the whole control plane (onboarding,
-CLI, REST `/api/v1`, MCP, `/health`, `/ready`) works. Replace those placeholders with real keys
-before expecting a review to complete. Indexing needs no model credential.
+CLI, GitHub webhook ingestion, private runner transport, `/health`, and `/ready`) works.
+Replace those placeholders with real keys before expecting a review to complete. Indexing needs
+no model credential.
 
 ### External secrets for full end-to-end review
 

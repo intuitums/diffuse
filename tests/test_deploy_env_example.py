@@ -218,19 +218,3 @@ def test_a_commented_recommendation_never_overrides_a_live_assignment(tmp_path: 
     # adjacency reported the commonest comment style in these files as a
     # variable that was never documented at all.
     assert values["REVIEW_MODEL"] == "anthropic/claude-sonnet-5"
-
-
-def test_no_code_default_can_drift_from_the_shipped_env_files():
-    """The drift this used to check for is now impossible by construction.
-
-    This test used to assert `deploy/env.example` matched a
-    `DEFAULT_REVIEW_MODEL` constant in the code. That constant is gone:
-    guessing a provider the operator never named was the defect, not the
-    particular model guessed. `REVIEW_MODEL` in the env files is a
-    recommendation an operator edits, not a fallback anything reads, so the two
-    can no longer disagree. The sibling test above still keeps the two env
-    files themselves in sync, which is the drift a customer can actually feel.
-    """
-    from service.review import engine as review_engine
-
-    assert not hasattr(review_engine, "DEFAULT_REVIEW_MODEL")

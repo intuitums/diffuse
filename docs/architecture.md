@@ -1,5 +1,12 @@
 # Diffuse target architecture
 
+> **Historical reference — not the v1 product specification.** This document
+> describes the broad pre-v1 system, including public MCP, REST, conversations,
+> analytics, cross-repository context, and policy features that are being
+> removed or deferred. Use [v1-scope.md](v1-scope.md) and
+> [agent-runtimes.md](agent-runtimes.md) for active decisions. Do not extend a
+> legacy surface merely because it is described below.
+
 ## Direction
 
 Diffuse starts as a modular monolith with separately runnable workers. Service

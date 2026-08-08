@@ -1,5 +1,11 @@
 # Engineering plan
 
+> **Superseded plan.** The former Gate A–F agent-platform sequence is no longer
+> the delivery authority. The active order is in [v1-scope.md](v1-scope.md):
+> documentation reset, public-surface excision, one CLI review engine,
+> verification, measured bounded team, then feedback-backed guidance. Retain
+> only isolation work that fits that boundary.
+
 The delivery phases live in [roadmap.md](roadmap.md). This is the shorter,
 faster-moving document: the specific defects and structural work in front of us
 right now, in dependency order, and the open questions that gate them.
