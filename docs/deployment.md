@@ -171,13 +171,13 @@ authorization-code flow that mints platform access on a user's behalf;
 an interactive desktop session, not a headless worker. There is nothing for
 Diffuse to call.
 
-**Can it use OpenAI workload identity federation?** That is the right shape —
-a workload exchanges an OIDC token from AWS, GCP, Azure, Kubernetes, or GitHub
-Actions for a short-lived OpenAI token, with no stored key — and the OpenAI
-Python SDK accepts a `workload_identity` client parameter. Diffuse cannot reach
-it today: every model call goes through LiteLLM, and LiteLLM has no passthrough
-for that parameter and no way to inject a pre-built client. The blocker is
-upstream.
+**Can the transitional API runtime use OpenAI workload identity federation?**
+That is the right shape — a workload exchanges an OIDC token from AWS, GCP,
+Azure, Kubernetes, or GitHub Actions for a short-lived OpenAI token, with no
+stored key — and the OpenAI Python SDK accepts a `workload_identity` client
+parameter. Diffuse's LiteLLM API path cannot reach it today: LiteLLM has no
+passthrough for that parameter and no way to inject a pre-built client. The
+blocker is upstream.
 
 ### Browser sign-in is not usable yet
 
@@ -226,6 +226,12 @@ curl --fail http://127.0.0.1:8000/ready
 (Building from a source checkout instead uses `docker compose up -d --build`
 against the repository's own `docker-compose.yml` and `.env.example`. Neither
 file is part of this bundle.)
+
+For the source-workspace CLI-native pilot, build the two dedicated runner
+targets before enabling their profiles; `docker compose up --build` builds the
+application image but deliberately honors prebuilt
+`DIFFUSE_CLAUDE_RUNNER_IMAGE` / `DIFFUSE_CODEX_RUNNER_IMAGE` selections. The
+exact commands are in [agent-runtimes.md](agent-runtimes.md#compose-skeleton-gate-b-reference).
 
 The `migrate` container must finish successfully before `app` and `worker`
 start. Both the API and worker share the repository-mirror volume. The API

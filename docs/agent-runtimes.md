@@ -35,9 +35,9 @@ the **self-hosted server** process, not a SaaS tier.
 
 | Layer | Today (transitional) | Destination |
 | --- | --- | --- |
-| Review execution on the server | `litellm` transitional API path | `REVIEW_RUNTIME=codex` or `claude`, sent to an isolated matching runner |
-| Worker | Runs API reviews or dispatches native sessions; never runs a CLI | Mints session capabilities, validates structured results, publishes |
-| Agent credentials | Separate Compose runner volumes | Separate volume mounted only by its own runner |
+| Review execution on the server | `litellm` is the default transitional API path; `REVIEW_RUNTIME=codex` or `claude` dispatches to an isolated matching runner | CLI-native runner sessions after the pilot/cutover |
+| Worker | Runs API reviews or mints signed native sessions; never runs a CLI | Mints session capabilities, validates structured results, publishes |
+| Agent credentials | Separate Compose runner volumes; source arrives as a signed bounded artifact, not through SCM access | Separate volume mounted only by its own runner |
 | Local `diffuse review` | Same LiteLLM path until adapters move | May use the same session/capability contract against a local or remote runner |
 
 LiteLLM remains selectable until Gate C/E so production reviews keep booting.
@@ -68,7 +68,32 @@ profiles:
 - `agent-tool-gateway` — credential-free bridge exposing only approved
   `/agent/v1/tools/*` capability methods to the runners.
 
-The `worker` and `app` services do not mount agent credentials.
+The `worker` and `app` services do not mount agent credentials. For a native
+session, the worker checks out the already-scoped head revision, builds a
+bounded deterministic source artifact, and signs its transport and canonical
+workspace digests with the artifact bytes into the dispatch. The runner
+validates and materializes that artifact into an empty, read-only workspace
+before it starts the vendor CLI. The runner never clones, mounts a repository
+mirror, or receives SCM credentials.
+
+The current in-envelope pilot accepts a source tar up to 16 MiB and an
+extracted tree up to 128 MiB, and runs one review at a time per 1 GiB runner.
+That keeps transport decoding and archive validation bounded while larger
+repository delivery moves to object-backed transport.
+
+The root Compose file is the source-workspace profile. It consumes separately
+tagged runner images rather than declaring `build:` on the runner services, so
+an operator-supplied `DIFFUSE_*_RUNNER_IMAGE` always wins. Build the two local
+defaults before enabling the profiles:
+
+```bash
+docker build --target runner-claude --tag diffuse-runner-claude:local .
+docker build --target runner-codex --tag diffuse-runner-codex:local .
+docker compose --profile agent-claude --profile agent-codex up -d --build
+```
+
+The release bundle instead supplies immutable runner digests and uses its
+`deploy/compose.yaml`; see [deployment.md](deployment.md#agent-cli-credentials).
 
 ```bash
 # Sign in through the isolated runner (not the worker):

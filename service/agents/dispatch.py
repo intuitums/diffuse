@@ -15,9 +15,19 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
+from service.review.workspace import DEFAULT_WORKSPACE_LIMITS, SourceArtifact
+
 PRIVATE_KEY_VARIABLE = "DIFFUSE_AGENT_DISPATCH_PRIVATE_KEY"
 PUBLIC_KEY_VARIABLE = "DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY"
 ENVELOPE_PREFIX = "diffuse-dispatch"
+# The native runner receives the whole signed dispatch in memory.  Keep the
+# diff within the same review window as the API runtime and make the maximum
+# outer envelope explicit, rather than letting one unusually large pull
+# request bypass the source-artifact budget through a second field.
+MAX_DISPATCH_DIFF_CHARS = 400_000
+# 16 MiB source archive -> 22.4 MiB inner base64 -> just under 30 MiB outer
+# base64, plus a 400k diff and signed-envelope metadata.
+MAX_DISPATCH_ENVELOPE_CHARS = 31 * 1024 * 1024
 
 
 class DispatchEnvelopeError(ValueError):
@@ -31,6 +41,7 @@ class DispatchEnvelope:
     capability: str
     capability_id: str
     diff_text: str
+    source_artifact: SourceArtifact
     expires_at: datetime
 
 
@@ -77,20 +88,34 @@ def validate_dispatch_public_key() -> None:
 
 
 def sign_dispatch(envelope: DispatchEnvelope) -> str:
+    if envelope.source_artifact.manifest_digest is None:
+        raise DispatchEnvelopeError("dispatch requires a workspace manifest digest")
+    if len(envelope.diff_text) > MAX_DISPATCH_DIFF_CHARS:
+        raise DispatchEnvelopeError("dispatch diff exceeds max characters")
+    if len(envelope.source_artifact.archive) > DEFAULT_WORKSPACE_LIMITS.max_archive_bytes:
+        raise DispatchEnvelopeError("dispatch source archive exceeds max bytes")
     payload = {
         "session_id": envelope.session_id,
         "runtime": envelope.runtime,
         "capability": envelope.capability,
         "capability_id": envelope.capability_id,
         "diff_text": envelope.diff_text,
+        "source_archive": _encode(envelope.source_artifact.archive),
+        "source_digest": envelope.source_artifact.digest,
+        "source_manifest_digest": envelope.source_artifact.manifest_digest,
         "exp": int(envelope.expires_at.astimezone(UTC).timestamp()),
     }
     body = _encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
     signature = _encode(_private_key().sign(body.encode("ascii")))
-    return f"{ENVELOPE_PREFIX}.{body}.{signature}"
+    token = f"{ENVELOPE_PREFIX}.{body}.{signature}"
+    if len(token) > MAX_DISPATCH_ENVELOPE_CHARS:
+        raise DispatchEnvelopeError("dispatch envelope exceeds max characters")
+    return token
 
 
 def verify_dispatch(token: str, *, now: datetime | None = None) -> DispatchEnvelope:
+    if len(token) > MAX_DISPATCH_ENVELOPE_CHARS:
+        raise DispatchEnvelopeError("dispatch envelope exceeds max characters")
     parts = token.split(".")
     if len(parts) != 3 or parts[0] != ENVELOPE_PREFIX:
         raise DispatchEnvelopeError("dispatch envelope is malformed")
@@ -98,6 +123,20 @@ def verify_dispatch(token: str, *, now: datetime | None = None) -> DispatchEnvel
     try:
         _public_key().verify(_decode(signature), body.encode("ascii"))
         payload: Any = json.loads(_decode(body))
+        encoded_archive = payload["source_archive"]
+        if not isinstance(encoded_archive, str) or len(encoded_archive) > (
+            4 * ((DEFAULT_WORKSPACE_LIMITS.max_archive_bytes + 2) // 3)
+        ):
+            raise ValueError
+        manifest_digest = payload["source_manifest_digest"]
+        if not isinstance(manifest_digest, str):
+            raise ValueError
+        source_artifact = SourceArtifact(
+            _decode(encoded_archive),
+            manifest_digest=manifest_digest,
+        )
+        if payload["source_digest"] != source_artifact.digest:
+            raise ValueError
         expires_at = datetime.fromtimestamp(int(payload["exp"]), tz=UTC)
         envelope = DispatchEnvelope(
             session_id=str(payload["session_id"]),
@@ -105,6 +144,7 @@ def verify_dispatch(token: str, *, now: datetime | None = None) -> DispatchEnvel
             capability=str(payload["capability"]),
             capability_id=str(payload["capability_id"]),
             diff_text=str(payload["diff_text"]),
+            source_artifact=source_artifact,
             expires_at=expires_at,
         )
     except (InvalidSignature, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
@@ -116,6 +156,8 @@ def verify_dispatch(token: str, *, now: datetime | None = None) -> DispatchEnvel
         or not envelope.session_id
         or not envelope.capability
         or not envelope.capability_id
+        or len(envelope.diff_text) > MAX_DISPATCH_DIFF_CHARS
+        or len(envelope.source_artifact.archive) > DEFAULT_WORKSPACE_LIMITS.max_archive_bytes
     ):
         raise DispatchEnvelopeError("dispatch envelope is invalid")
     return envelope

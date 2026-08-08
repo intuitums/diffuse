@@ -90,8 +90,8 @@ diffuse review
   ├─ identifies an enabled, indexed checkout from origin
   ├─ diffs the working tree against a selectable merge base
   ├─ resolves the same policy, learned rules, and snapshots
-  └─ runs REVIEW_RUNTIME (today: the same API one-shot path;
-       destination: optional claude / codex behind diffuse agent login)
+  └─ runs the transitional API one-shot runtime
+       (hosted workers can select isolated Claude/Codex runner sessions)
 ```
 
 The webhook acknowledges work only after its delivery and review job are
