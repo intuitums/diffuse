@@ -88,8 +88,6 @@ def test_cli_exits_0_on_exact_match(tmp_path):
     freeze.write_text("litellm==1.93.0\n")
     lock.write_text("litellm==1.93.0\n")
     assert main([str(freeze), str(lock)]) == 0
-
-
 def test_script_is_runnable_as_a_module_path():
     """ci.yml invokes this file; a missing shebang or bad import fails CI."""
 

@@ -63,38 +63,38 @@ The following are explicitly **in scope**:
   despite `--strict-mcp-config`, or running below the version floor so
   sandbox settings are silently ignored.
 - **Credential exposure.** Any path that leaks the GitHub App private key,
-  an installation token, the OAuth client secret, `DIFFUSE_API_TOKEN`, or a
-  repository-scoped service token into a clone URL sent to an unintended
-  origin, into model input, into published review output, into logs, or into an
-  image layer.
-- **Authorization bypass.** Reading or writing another repository's index,
-  findings, analytics, or custom context across a repository-scoped token
-  boundary; escalating a read scope to a generation or write scope; acting on a
-  repository the token is not assigned to.
+  an installation token, or other live operator credentials into a clone URL
+  sent to an unintended origin, into model input, into published review
+  output, into logs, or into an image layer. Historical `DIFFUSE_API_TOKEN`
+  / repository-scoped service-token surfaces are removed from v1; leftover
+  schema rows are not a live auth boundary.
+- **Authorization bypass.** Reading or writing another repository's index or
+  findings outside the repository the authenticated installation or operator
+  session is authorized for.
 - **Webhook authentication flaws.** The one webhook route, `POST
   /webhook/github`, authenticates a delivery solely by an HMAC-SHA-256
   `X-Hub-Signature-256` header, and deduplicates by a durable unique
   `(provider, base URL, delivery id)` record. Signature-verification bypass,
   replaying a delivery past that record, or forging an instance origin are all
   in scope.
-- **OAuth and session flaws** in the browser sign-in path (`/auth/cli`,
-  `/auth/github/callback`, `/setup`), including state fixation or reuse,
-  session-token exposure, and open redirects. These routes are mounted and
-  reachable even though no request authenticator consumes the session they
-  mint yet; they still spend the client secret and write identity rows.
-- **MCP and REST API flaws**, including DNS-rebinding protection bypass and
-  authentication bypass.
 - **Database migration integrity** failures that allow unverified SQL to be
   applied.
 
-### Agent-CLI review boundary (destination)
+Public MCP, public REST (`/api/v1`), browser OAuth/session routes
+(`/auth/cli`, `/auth/github/callback`, `/setup`), and service-token minting
+are removed from the v1 surface. Do not report them as live product
+vulnerabilities; residual schema or historical docs are not an invitation to
+treat those routes as mounted. Private worker-to-runner transport remains in
+scope.
+
+### Agent-CLI review boundary
 
 Diffuse's target architecture is control plane + isolated agent-runner: the
 worker never executes a CLI or mounts agent credentials. Session capabilities
-and structured results are defined in `service.agents.contract`. Host plumbing
-for Claude and Codex exists today (`diffuse agent login claude|codex`); no agent
-`REVIEW_RUNTIME` is selectable yet. For local tooling and the future runner, the
-intended boundaries are:
+and structured results are defined in `service.agents.contract`. The
+self-hosted controlled pilot can select `REVIEW_RUNTIME=claude` or `codex` and
+dispatch it to the matching runner; local review stays on the transitional API
+path until it uses that same session contract. The boundaries are:
 
 1. **Child environment allowlist** — credentials Diffuse does not name never
    reach the CLI process (`GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, `AWS_*`,
@@ -152,11 +152,12 @@ passed, and an assertion minted for one profile is not accepted for another. An
 adapter that selects the profile and skips the preflight therefore gets an
 error rather than an unsandboxed review.
 
-That preflight must still be implemented. It must establish the container
-properties that make the invariant checkable, rather than replacing a
-Bubblewrap refusal with an unverified unsandboxed run. Until then, no
-`assert_compartment` caller exists, agent runtimes remain unselectable, and the
-existing local CLI policy still fails closed with `failIfUnavailable: true`.
+The preflight is implemented in `service.review.agent_compartment`. The runner
+executes it at startup and obtains a fresh profile-matching assertion before
+each CLI session, checking identity, read-only root and agent home, absence of
+control-plane credentials, database isolation, and constrained model egress.
+The existing local CLI policy separately remains fail-closed with
+`failIfUnavailable: true`.
 
 ### Out of scope
 

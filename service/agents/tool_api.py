@@ -8,6 +8,7 @@ snapshot named in that capability.
 
 from __future__ import annotations
 
+import time
 from contextlib import closing
 from functools import partial
 from typing import Annotated
@@ -28,6 +29,8 @@ from service.agents.contract import (
 )
 from service.code_query import CodeQueryTarget, search_codebase
 from service.repositories import get_repository
+from service.review.tool_log import record_review_tool_call
+from service.storage.agent_session import resolve_agent_session_review_attempt
 
 AGENT_API_PREFIX = "/agent/v1"
 MAX_AGENT_SEARCH_LIMIT = 20
@@ -134,14 +137,61 @@ def _target_for_capability(conn, capability: SessionCapability) -> CodeQueryTarg
 
 
 def _search_code(capability: SessionCapability, request: SearchCodeRequest) -> dict[str, object]:
-    with closing(get_conn()) as conn:
-        target = _target_for_capability(conn, capability)
-        return search_codebase(
-            target,
-            query=request.query,
-            path_prefix=request.path,
-            limit=request.limit,
+    arguments: dict[str, object] = {
+        "query": request.query,
+        "path": request.path,
+        "limit": request.limit,
+    }
+    started = time.perf_counter()
+    with closing(get_conn()) as conn, conn:
+        attempt = resolve_agent_session_review_attempt(conn, capability=capability)
+        if attempt is None:
+            # A signed capability names source scope, but only a dispatched
+            # session tied to the review's current attempt may cause an audit
+            # row. This prevents an old, still-unexpired session from adding
+            # calls to a retried run.
+            raise ValueError("The capability session is no longer active")
+
+        try:
+            target = _target_for_capability(conn, capability)
+            result = search_codebase(
+                target,
+                query=request.query,
+                path_prefix=request.path,
+                limit=request.limit,
+            )
+        except Exception as error:
+            # This connection only performs the capability reads and this log
+            # write. Recover it after a database/read failure before recording
+            # the failed remote tool call, rather than losing evidence because
+            # PostgreSQL rejected every command in the aborted transaction.
+            conn.rollback()
+            record_review_tool_call(
+                conn,
+                attempt.review_run_id,
+                tool_name="search_code",
+                arguments=arguments,
+                duration_ms=max(0, round((time.perf_counter() - started) * 1000)),
+                failure_code="search_failed",
+                failure_detail=(str(error).strip() or error.__class__.__name__)[:2000],
+                index_snapshot_ids=(capability.scope.snapshot_id,),
+                context_plan_fingerprint=None,
+                attempt_started_at=attempt.attempt_started_at,
+            )
+            raise
+
+        record_review_tool_call(
+            conn,
+            attempt.review_run_id,
+            tool_name="search_code",
+            arguments=arguments,
+            duration_ms=max(0, round((time.perf_counter() - started) * 1000)),
+            result=result,
+            index_snapshot_ids=(capability.scope.snapshot_id,),
+            context_plan_fingerprint=target.context_plan.fingerprint,
+            attempt_started_at=attempt.attempt_started_at,
         )
+        return result
 
 
 @router.post("/tools/search-code", summary="Search a capability-pinned code snapshot")

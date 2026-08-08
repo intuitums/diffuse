@@ -51,7 +51,9 @@ def write_repository_policy(
                         snapshot_id,
                         layer.directory_path,
                         layer.source_path,
-                        psycopg2.extras.Json(layer.config.model_dump(mode="json")),
+                        psycopg2.extras.Json(
+                            layer.config.model_dump(mode="json")
+                        ),
                     )
                     for layer in policy.layers
                 ],

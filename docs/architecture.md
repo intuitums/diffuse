@@ -1,5 +1,13 @@
 # Diffuse target architecture
 
+> **Historical reference — not the v1 product specification.** This document
+> describes the broad pre-v1 system. Public MCP, REST, conversations,
+> analytics, cross-repository context, auto-approval, and agent handoffs are
+> **removed or deferred** and must not be read as live product surfaces. Use
+> [v1-scope.md](v1-scope.md) and [agent-runtimes.md](agent-runtimes.md) for
+> active decisions. Do not extend a legacy surface merely because it is
+> described below.
+
 ## Direction
 
 Diffuse starts as a modular monolith with separately runnable workers. Service
@@ -49,11 +57,11 @@ GitHub / CLI / MCP / Web app
               isolated agent-runner (CLI)
 ```
 
-> **Target, not current state.** The web app, the source-execution validator and
-> its sandbox, the long-lived agent-runner review path, and the cache and object
-> store are not implemented. The transitional one-shot API review runtime,
-> Claude/Codex host plumbing, review-compartment skeleton, and Gate A session
-> capability / result contract exist; the sections below say how much.
+> **Target, with a controlled-pilot slice now present.** The web app,
+> source-execution validator and its sandbox, cache, and object store are not
+> implemented. LiteLLM remains the default review runtime; a self-hosted worker
+> can now dispatch a signed, bounded native CLI session to the isolated matching
+> runner. The sections below describe the remaining pilot and cutover work.
 
 ## Deployment and ownership boundary
 
@@ -550,8 +558,10 @@ the API or review container is prohibited.
   clusters, learned-rule moderation, agent-CLI host sign-in, and local review.
   Local review uses the working-tree merge base, self-hosted active snapshot,
   cross-repository context, cascading policy, and approved learned rules. Today
-  it still runs the API one-shot runtime; agent-CLI adapters are not selectable
-  yet. It emits human, inline-diff, versioned JSON, or terminal-safe agent text.
+  it deliberately still runs the API one-shot runtime; hosted CLI-native
+  sessions are selected by the worker until local review adopts the same
+  session contract. It emits human, inline-diff, versioned JSON, or
+  terminal-safe agent text.
   A Git-common-dir state record permits failed/interrupted requests to restart
   only when every immutable input identity still matches.
 - Complete the CLI with remote API authentication, optional remote job

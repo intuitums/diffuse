@@ -1,5 +1,11 @@
 # Diffuse delivery roadmap
 
+> **Historical delivery ledger — not the v1 product specification.** Public
+> MCP, REST, service tokens, auto-approval, and agent handoffs described in
+> present tense below are **removed from v1** (see [v1-scope.md](v1-scope.md)).
+> Prefer that document for active scope; treat this file as phase history and
+> unfinished measurement work.
+
 The phases are ordered by dependency and risk, not by demo appeal. The full
 capability set in `docs/capabilities.md` remains the goal throughout; each phase
 must leave a deployable, observable system.
@@ -150,12 +156,12 @@ context can be tuned honestly until this gate passes.
   default-open controls for summary, issues, confidence, and diagrams plus
   footer visibility, while mandatory finding fallback prevents a display
   preference from losing review feedback on enabled summary surfaces.
-  Revision-safe MCP fix-one/fix-all actions are now present in published review
-  output. GitHub publication can also replace one human-preserving managed
-  PR-description region, suppress top-level summary comments, hide agent-fix
-  guidance, recover retries idempotently, and ignore the resulting
-  self-description webhook. Add manual diagram requests, commit-message
-  previews, custom-URL bridge buttons, and richer history views.
+  ~~Revision-safe MCP fix-one/fix-all actions~~ are removed from v1 published
+  review output (suggested-fix text may remain). GitHub publication can also
+  replace one human-preserving managed
+  PR-description region, suppress top-level summary comments, recover retries
+  idempotently, and ignore the resulting self-description webhook. Add manual
+  diagram requests, commit-message previews, and richer history views.
 - The trigger-policy foundation now supports default draft/update behavior,
   include/exclude label/author/target-branch/keyword filters, file-change
   limits, same-SHA metadata supersession, durable skip reasons, and authorized
@@ -258,66 +264,25 @@ the missing gate, and it does not exist in any phase.
   partial-stage continuation, and shell completion. Local agent-CLI review
   runtimes are tracked in [agent-runtimes.md](agent-runtimes.md) and
   [engineering-plan.md](engineering-plan.md), not as a deletion of the server.
-- The MCP foundation now serves repository-scoped inspection and write tools for
-  repositories, PR lifecycle state, review reports, current finding lineages,
-  finding/context search, and feedback-derived context over stateless JSON
-  Streamable HTTP. Durable non-recoverable tokens add expiration/revocation,
-  audited operator lifecycle, and fail-closed repository scopes while the
-  environment credential remains a recovery path. Explicit write scope now
-  gates authoritative GitHub re-runs and custom-context creation; active
-  context is path-scoped, fingerprinted, and snapshotted on reviews. Public
-  repository descriptors, camelCase inputs, both PR-list names,
-  PR-comment projection, and the documented comment-search name now form a
-  compatibility layer over repository-scoped durable state. Commit-pinned
-  `search_code` now fuses lexical and graph evidence, while separately scoped
-  `ask_codebase` fails closed to claim-level citations inside the retrieved
-  evidence. Both support literal path scope and optional token-authorized
-  cluster context. Operator custom context now has write-scoped, compare-and-
-  swap update/delete operations with safe audit deltas/tombstones; learned rules
-  retain their separate approval lifecycle. A Diffuse-native analytics
-  projection now aggregates repository-authorized half-open windows into exact
-  review status/latency/token/custom-context/approval metrics, applied-finding
-  and current-state rates, reaction/context engagement, repository and UTC
-  daily trends, and linked open findings with explicit denominator and
-  unavailable-metric definitions. Authoritative SCM creation/close/merge
-  timestamps now flow through an append-only lifecycle ledger and current PR
-  projection, adding author filtering, exact opened reviewed/unreviewed
-  cohorts, mean/median merge time, timestamp-completeness rates, and PR/
-  merge daily trends without receipt-time inference. Add organization/team
-  RBAC, generation rate/usage policy, historical
-  policy-eligibility facts, scheduled weekly reports, and CSV/JSON export.
-- The versioned REST foundation exposes repository/index state, PRs, reviews,
-  findings, analytics, hybrid code search, and grounded Q&A under `/api/v1`.
-  It reuses repository-scoped service tokens, separates read from generation,
-  bounds pagination and request bodies, hides unauthorized objects as missing,
-  and publishes an OpenAPI contract. Its first write route provider-revalidates
-  and audits manual review triggers, with hashed actor-scoped idempotency keys,
-  request-conflict detection, leases, exact response replay, and crash-stable
-  provider event snapshots. Admin/all-repository onboarding and
-  repository-grant-scoped reindex requests now validate explicit SCM origins,
-  resolve through credential-safe mirrors, persist exact push events, and reuse
-  the webhook queue with the same durable replay/audit contract. Add
-  enable/disable/delete and context/rule mutations, provider discovery,
-  outbound webhooks, quotas, retention policy, and compatibility policy.
-- The agent-handoff foundation emits exact-revision, current-lineage fix-one
-  and fix-all bundles for Codex, Claude Code, Conductor, Cursor, Devin, and
-  open MCP clients without granting checkout or push authority. Add the
-  optional local bridge, custom URL registration, per-user agent selection,
-  and direct launch UX.
-- Extend source-linked search and Q&A with multi-hop/type-aware traversal,
-  durable usage/rate accounting, a web UI, and retrieval/answer evaluations.
+- ~~The MCP foundation~~ is removed from v1. Historical notes about
+  repository-scoped MCP tools, service tokens, `ask_codebase`, analytics
+  projections, and agent handoffs belong to the pre-v1 surface; do not treat
+  them as live. Internal `search_code` remains available to review runtimes.
+- ~~The versioned REST foundation~~ (`/api/v1`) is removed from v1. Service
+  tokens and public idempotency keys are not a live auth boundary.
+- The agent-handoff foundation is removed from v1; Diffuse does not emit
+  fix-one/fix-all MCP bundles.
+- Extend source-linked search with multi-hop/type-aware traversal and
+  retrieval evaluations (Q&A / `ask_codebase` is out of v1).
 
 Exit: every review and customization workflow is available without the web UI.
 
-Availability is broadly true and largely checked; quality is not checked at
-all. The CLI, MCP, REST, and agent-handoff surfaces exist and are tested, but
-the last bullet of this phase still lists retrieval and answer evaluations as
-outstanding, and those are the Phase 1 gate under another name. `search_code`
-and `ask_codebase` ship with no recall or grounding number, so a change to
-fusion weights or traversal depth can degrade every one of these surfaces
-without a single test turning red. Learned-rule moderation is available here
-via `diffuse learning`, but see the open question below: available is not the
-same as used.
+Availability of the remaining CLI/operator workflows is broadly true and
+largely checked; quality is not checked at all. `search_code` ships with no
+recall number, so a change to fusion weights or traversal depth can degrade
+review retrieval without a single test turning red. Learned-rule moderation is
+available here via `diffuse learning`, but see the open question below:
+available is not the same as used.
 
 ## Phase 5 — Source-execution validation
 

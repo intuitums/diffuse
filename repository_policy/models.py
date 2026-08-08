@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Bumping this is mandatory whenever the policy models or policy_fingerprint
 # change shape. The version feeds INDEX_FORMAT_VERSION, so existing snapshots
@@ -18,11 +18,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # RepositoryPolicySnapshot.__post_init__ raises, and that ValueError is
 # classified non-retryable -- so every configured repository's next review fails
 # terminally instead of taking the documented reindex path.
-POLICY_SCHEMA_VERSION = "repository-policy-v13-auto-approval-allowlist"
+POLICY_SCHEMA_VERSION = "repository-policy-v15-mcp-auto-approval-excised"
 REVIEW_PASS_NAMES = ("correctness", "security", "performance", "tests")
 ReviewPassName = Literal["correctness", "security", "performance", "tests"]
 SeverityName = Literal["critical", "high", "medium", "low"]
-AutoApprovalRiskName = Literal["low", "medium", "high", "critical"]
 CategoryName = Literal[
     "correctness",
     "security",
@@ -180,7 +179,6 @@ class ReviewSettingsPatch(StrictPolicyModel):
     respond_to_comments: bool | None = None
     update_description: bool | None = None
     summary_comment: bool | None = None
-    fix_with_agent: bool | None = None
     summary_section: OutputSectionSettingsPatch = Field(
         default_factory=OutputSectionSettingsPatch
     )
@@ -332,99 +330,35 @@ class SecuritySettingsPatch(StrictPolicyModel):
     )
 
 
-class AutoApprovalFiltersPatch(StrictPolicyModel):
-    # Approving is a write action, so the paths it may touch are named by the operator
-    # rather than left to a denylist Diffuse maintains on their behalf. A denylist has
-    # to anticipate every sensitive directory in every repository Diffuse is installed
-    # on: `**/auth/**` never catches `internal/perms/`, `lib/rbac/`, or `pkg/tenancy/`,
-    # and the resulting miss silently approves. Only the operator knows which of those
-    # their repository has, so an unnamed path is not consent. Omitting this key leaves
-    # the scope approving nothing; an empty list says the same thing explicitly.
-    allow_paths: tuple[str, ...] | None = Field(default=None, max_length=100)
-    exclude_paths: tuple[str, ...] | None = Field(default=None, max_length=100)
-    include_authors: tuple[str, ...] | None = Field(default=None, max_length=100)
-    exclude_authors: tuple[str, ...] | None = Field(default=None, max_length=100)
-    include_branches: tuple[str, ...] | None = Field(default=None, max_length=100)
-    exclude_branches: tuple[str, ...] | None = Field(default=None, max_length=100)
-    labels: tuple[str, ...] | None = Field(default=None, max_length=100)
-    disabled_labels: tuple[str, ...] | None = Field(default=None, max_length=100)
-    include_keywords: tuple[str, ...] | None = Field(default=None, max_length=100)
-    exclude_keywords: tuple[str, ...] | None = Field(default=None, max_length=100)
-    file_change_limit: int | None = Field(default=None, ge=1, le=100_000)
-    include_repositories: tuple[str, ...] | None = Field(default=None, max_length=100)
-    exclude_repositories: tuple[str, ...] | None = Field(default=None, max_length=100)
-
-    @field_validator("allow_paths", "exclude_paths")
-    @classmethod
-    def valid_path_globs(
-        cls,
-        value: tuple[str, ...] | None,
-    ) -> tuple[str, ...] | None:
-        if value is None:
-            return None
-        normalized = tuple(validate_repo_glob(item) for item in value)
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("auto-approval path globs must be unique")
-        return normalized
-
-    @field_validator(
-        "include_authors",
-        "exclude_authors",
-        "include_branches",
-        "exclude_branches",
-        "labels",
-        "disabled_labels",
-        "include_repositories",
-        "exclude_repositories",
-    )
-    @classmethod
-    def valid_filter_patterns(
-        cls,
-        value: tuple[str, ...] | None,
-    ) -> tuple[str, ...] | None:
-        if value is None:
-            return None
-        normalized = tuple(validate_filter_pattern(item) for item in value)
-        if len({item.casefold() for item in normalized}) != len(normalized):
-            raise ValueError("auto-approval filter patterns must be unique ignoring case")
-        return normalized
-
-    @field_validator("include_keywords", "exclude_keywords")
-    @classmethod
-    def valid_keywords(
-        cls,
-        value: tuple[str, ...] | None,
-    ) -> tuple[str, ...] | None:
-        if value is None:
-            return None
-        normalized = tuple(validate_keyword(item) for item in value)
-        if len({item.casefold() for item in normalized}) != len(normalized):
-            raise ValueError("auto-approval keywords must be unique ignoring case")
-        return normalized
-
-
-class AutoApprovalSettingsPatch(StrictPolicyModel):
-    enabled: bool | None = None
-    risk_ceiling: AutoApprovalRiskName | None = None
-    filters: AutoApprovalFiltersPatch = Field(
-        default_factory=AutoApprovalFiltersPatch
-    )
-
-
 class RepositoryConfig(StrictPolicyModel):
     version: Literal[1]
     review: ReviewSettingsPatch = Field(default_factory=ReviewSettingsPatch)
     triggers: TriggerSettingsPatch = Field(default_factory=TriggerSettingsPatch)
     context: ContextSettingsPatch = Field(default_factory=ContextSettingsPatch)
     security: SecuritySettingsPatch = Field(default_factory=SecuritySettingsPatch)
-    auto_approval: AutoApprovalSettingsPatch = Field(
-        default_factory=AutoApprovalSettingsPatch
-    )
     rules: tuple[RepositoryRule, ...] = Field(default=(), max_length=100)
     rule_overrides: dict[
         Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")],
         RuleOverride,
     ] = Field(default_factory=dict, max_length=100)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_keys(cls, value):
+        if not isinstance(value, dict):
+            return value
+        if "auto_approval" in value:
+            raise ValueError(
+                "auto_approval has been removed: Diffuse v1 never submits "
+                "GitHub APPROVE reviews"
+            )
+        review = value.get("review")
+        if isinstance(review, dict) and "fix_with_agent" in review:
+            raise ValueError(
+                "fix_with_agent has been removed: Diffuse v1 does not publish "
+                "agent handoffs"
+            )
+        return value
 
     @field_validator("rules")
     @classmethod

@@ -97,3 +97,25 @@ def test_runner_images_pin_cli_dependencies_and_the_runtime_keeps_the_home_priva
     assert '"@openai/codex": "0.147.0"' in (
         REPOSITORY_ROOT / "agent-runners" / "codex" / "package.json"
     ).read_text()
+
+
+def test_source_runner_images_are_explicit_prebuilt_overrides_not_implicit_compose_builds():
+    """Source Compose defaults locally, while release Compose requires a digest.
+
+    Keeping the source services image-only is intentional: a production-like
+    source checkout may point them at a separately built or scanned image, and
+    `docker compose up --build` must not silently replace that selection.
+    """
+
+    source = (REPOSITORY_ROOT / "docker-compose.yml").read_text()
+    release = (REPOSITORY_ROOT / "deploy" / "compose.yaml").read_text()
+    for runtime in ("claude", "codex"):
+        variable = f"DIFFUSE_{runtime.upper()}_RUNNER_IMAGE"
+        source_runner = _service_block(source, f"agent-runner-{runtime}")
+        release_runner = _service_block(release, f"agent-runner-{runtime}")
+
+        assert f"image: ${{{variable}:-diffuse-runner-{runtime}:local}}" in source_runner
+        assert "build:" not in source_runner
+        release_image = f"image: ${{{variable}:?Set {variable} to the release digest in .env}}"
+        assert release_image in release_runner
+        assert "build:" not in release_runner

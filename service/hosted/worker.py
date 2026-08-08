@@ -9,6 +9,7 @@ import os
 import socket
 import sys
 import time
+from collections.abc import Callable
 from contextlib import closing
 from functools import partial
 
@@ -38,11 +39,6 @@ from retriever.retrieve import (
 )
 from service.agents.capability_auth import session_capability_signing_key
 from service.agents.contract import SessionScope, mint_session_capability
-from service.approval_publication import (
-    ApprovalNotCurrentError,
-    PublishedApproval,
-)
-from service.auto_approval import AutoApprovalDecision, evaluate_auto_approval
 from service.conversation_engine import (
     CONVERSATION_PROMPT_VERSION,
     build_conversation_retrieval_diff,
@@ -61,9 +57,6 @@ from service.github.api import (
     fetch_pull_request_update_diff,
 )
 from service.github.app import validate_app_configuration
-from service.github.approval import (
-    publish_github_approval,
-)
 from service.github.check import (
     complete_github_check_run,
     ensure_github_check_run,
@@ -137,12 +130,14 @@ from service.review.provenance import (
     select_review_model_plan,
     select_review_runtime_plan,
 )
+from service.review.report_assembly import all_files_disabled_report, reviewable_diff
 from service.review.request import ReviewRequest
 from service.review.runtimes import (
     LITELLM_RUNTIME,
     hosted_review_runtime_name,
     resolve_review_runtime,
 )
+from service.review.workspace import SourceArtifact, build_source_artifact
 from service.scm import (
     FeedbackSyncEvent,
     PullRequestEvent,
@@ -151,14 +146,7 @@ from service.scm import (
     normalize_base_url,
     scm_api_timeout_seconds,
 )
-from service.storage.agent_session import create_agent_session
-from service.storage.approval import (
-    AutoApprovalHandle,
-    begin_auto_approval,
-    mark_auto_approval_cancelled,
-    mark_auto_approval_failed,
-    mark_auto_approval_published,
-)
+from service.storage.agent_session import abandon_agent_session, create_agent_session
 from service.storage.check import (
     MAX_COMPLETION_ATTEMPTS,
     CheckRunHandle,
@@ -751,9 +739,16 @@ def _create_native_agent_session(
     runtime: str,
     snapshot_id: int,
     head_sha: str,
+    progress_callback: Callable[[], None],
 ) -> NativeSessionDispatch:
     if job.pull_request_id is None:
         raise NonRetryableError("Native review job does not reference a pull request")
+    # The checkout/archive can be the most expensive local step before runner
+    # dispatch. Prove this worker still owns the job both before doing that
+    # work and before writing a session another worker could dispatch.
+    progress_callback()
+    source_artifact = _build_native_workspace_artifact(job, head_sha=head_sha)
+    progress_callback()
     grant = mint_session_capability(
         signing_key=session_capability_signing_key(),
         runtime=runtime,
@@ -777,8 +772,30 @@ def _create_native_agent_session(
         runtime=handle.runtime,
         capability=grant.token,
         capability_id=handle.capability_id,
+        source_artifact=source_artifact,
         expires_at=handle.expires_at,
     )
+
+
+def _build_native_workspace_artifact(
+    job: WorkflowJob,
+    *,
+    head_sha: str,
+) -> SourceArtifact:
+    """Archive the exact review revision without exposing mirror credentials.
+
+    The runner is on a private worker-control network but deliberately has no
+    repository volume, SCM token, or direct GitHub egress.  The worker alone
+    checks out the revision already bound into the durable session scope and
+    hands it to the runner as a signed, bounded source artifact.
+    """
+
+    with closing(get_conn()) as conn:
+        repository = get_repository(conn, job.repository_id)
+    if repository is None or not repository.enabled:
+        raise NonRetryableError("Native review repository is unavailable for workspace delivery")
+    with RepositoryMirror(repository).checkout(head_sha) as checkout:
+        return build_source_artifact(checkout)
 
 
 def _generate_and_persist_review(
@@ -795,6 +812,8 @@ def _generate_and_persist_review(
     snapshot_id: int | None = None,
     head_sha: str | None = None,
 ) -> None:
+    agent_session: NativeSessionDispatch | None = None
+
     def report_progress() -> None:
         if not _heartbeat_and_check_current(job.id, worker_id):
             raise ReviewSupersededError(
@@ -803,8 +822,28 @@ def _generate_and_persist_review(
 
     try:
         selected_runtime = runtime_name or hosted_review_runtime_name()
-        agent_session = None
         if selected_runtime != LITELLM_RUNTIME:
+            complete_diff = parse_unified_diff(diff_text)
+            reviewable, ignored_file_count = reviewable_diff(complete_diff, policy)
+            if complete_diff.files and not reviewable.files:
+                # Match the one-shot runtime's early policy exit. Apart from
+                # avoiding a pointless CLI charge, this keeps a path-disabled
+                # review from granting the runner a source artifact at all.
+                report = all_files_disabled_report(
+                    diff_file_count=len(complete_diff.files),
+                    ignored_file_count=ignored_file_count,
+                    policy=policy,
+                )
+                report_progress()
+                with closing(get_conn()) as conn, conn:
+                    persist_review_report(
+                        conn,
+                        review_run_id,
+                        report,
+                        touched_paths=touched_paths,
+                        path_aliases=path_aliases,
+                    )
+                return
             if snapshot_id is None or head_sha is None:
                 raise NonRetryableError("Native review session is missing immutable scope")
             agent_session = _create_native_agent_session(
@@ -812,6 +851,7 @@ def _generate_and_persist_review(
                 runtime=selected_runtime,
                 snapshot_id=snapshot_id,
                 head_sha=head_sha,
+                progress_callback=report_progress,
             )
         report = generate_review(
             diff_text,
@@ -853,6 +893,14 @@ def _generate_and_persist_review(
             )
     except ReviewSupersededError:
         with closing(get_conn()) as conn, conn:
+            if agent_session is not None:
+                abandon_agent_session(
+                    conn,
+                    session_id=agent_session.session_id,
+                    runtime=agent_session.runtime,
+                    capability_id=agent_session.capability_id,
+                    status="cancelled",
+                )
             if not mark_review_superseded(conn, review_run_id, worker_id=worker_id):
                 # The lease is already gone, so another worker owns this review run
                 # now. Superseding it here would delete the findings that worker is
@@ -865,6 +913,14 @@ def _generate_and_persist_review(
         raise
     except Exception:
         with closing(get_conn()) as conn, conn:
+            if agent_session is not None:
+                abandon_agent_session(
+                    conn,
+                    session_id=agent_session.session_id,
+                    runtime=agent_session.runtime,
+                    capability_id=agent_session.capability_id,
+                    status="failed",
+                )
             mark_review_failed(conn, review_run_id)
         raise
 
@@ -911,53 +967,6 @@ def _mark_native_publication_published(
 def _mark_native_publication_failed(publication_id: int) -> None:
     with closing(get_conn()) as conn, conn:
         mark_publication_failed(conn, publication_id)
-
-
-def _begin_native_auto_approval(
-    review_run_id: int,
-    event: PullRequestEvent,
-    policy_fingerprint: str,
-    decision: AutoApprovalDecision,
-) -> AutoApprovalHandle:
-    with closing(get_conn()) as conn, conn:
-        return begin_auto_approval(
-            conn,
-            review_run_id=review_run_id,
-            scm_provider=event.provider,
-            head_sha=event.head_sha,
-            policy_fingerprint=policy_fingerprint,
-            decision=decision,
-        )
-
-
-def _mark_native_auto_approval_published(
-    approval_id: int,
-    published: PublishedApproval,
-) -> None:
-    with closing(get_conn()) as conn, conn:
-        mark_auto_approval_published(
-            conn,
-            approval_id,
-            external_id=published.external_id,
-            external_url=published.external_url,
-        )
-
-
-def _mark_native_auto_approval_failed(approval_id: int) -> None:
-    with closing(get_conn()) as conn, conn:
-        mark_auto_approval_failed(conn, approval_id)
-
-
-def _mark_native_auto_approval_cancelled(
-    approval_id: int,
-    error_code: str,
-) -> None:
-    with closing(get_conn()) as conn, conn:
-        mark_auto_approval_cancelled(
-            conn,
-            approval_id,
-            error_code=error_code,
-        )
 
 
 def _mark_native_review_superseded(review_run_id: int, worker_id: str) -> bool:
@@ -1522,23 +1531,6 @@ async def _complete_native_check(
     )
 
 
-async def _publish_native_auto_approval(
-    event: PullRequestEvent,
-    *,
-    review_run_id: int,
-    decision: AutoApprovalDecision,
-) -> PublishedApproval:
-    if event.provider == "github":
-        publisher = publish_github_approval
-    else:
-        raise NonRetryableError(f"Unsupported SCM provider: {event.provider}")
-    return await publisher(
-        event,
-        review_run_id=review_run_id,
-        decision=decision,
-    )
-
-
 async def _complete_existing_job_check(
     job: WorkflowJob,
     event: PullRequestEvent,
@@ -2014,54 +2006,6 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
     if not await anyio.to_thread.run_sync(partial(_heartbeat_and_check_current, job.id, worker_id)):
         await anyio.to_thread.run_sync(partial(_supersede, job.id, worker_id))
         return
-    if report.publication_enabled and policy.auto_approval_requested:
-        approval_decision = evaluate_auto_approval(
-            policy,
-            event,
-            diff_text,
-            report,
-            unresolved_findings=continuity.open_findings,
-        )
-        approval = await anyio.to_thread.run_sync(
-            partial(
-                _begin_native_auto_approval,
-                review_run.id,
-                event,
-                policy.fingerprint,
-                approval_decision,
-            )
-        )
-        if not approval.is_terminal:
-            try:
-                published_approval = await _publish_native_auto_approval(
-                    event,
-                    review_run_id=review_run.id,
-                    decision=approval_decision,
-                )
-            except ApprovalNotCurrentError as error:
-                await anyio.to_thread.run_sync(
-                    partial(
-                        _mark_native_auto_approval_cancelled,
-                        approval.id,
-                        error.code,
-                    )
-                )
-            except Exception:
-                await anyio.to_thread.run_sync(
-                    partial(
-                        _mark_native_auto_approval_failed,
-                        approval.id,
-                    )
-                )
-                raise
-            else:
-                await anyio.to_thread.run_sync(
-                    partial(
-                        _mark_native_auto_approval_published,
-                        approval.id,
-                        published_approval,
-                    )
-                )
     completed = await anyio.to_thread.run_sync(partial(_complete, job.id, worker_id))
     if not completed:
         raise RuntimeError("Workflow lease was lost before completion")

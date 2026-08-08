@@ -278,12 +278,6 @@ def test_unified_cli_routes_operator_commands():
     assert learning.rule_id == 11
     assert learning.handler is learning_cli._show
 
-    # The standalone per-module parsers are deliberately gone.
-    for module in (repository_cli, cluster_cli, learning_cli):
-        assert not hasattr(module, "_parser")
-        assert not hasattr(module, "main")
-
-
 def test_unified_cli_dispatches_repository_handler(monkeypatch, capsys):
     def list_repositories(_args):
         print("repository-dispatch-ok")
