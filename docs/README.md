@@ -5,16 +5,15 @@ first pull request. These pages are the reference behind it.
 
 | Document | What it is |
 | --- | --- |
-| [capabilities.md](capabilities.md) | The acceptance ledger: every required capability and its honest status. The authoritative answer to "does Diffuse do X yet?" |
-| [architecture.md](architecture.md) | Target architecture, component boundaries, data model, durable workflow model, and security invariants. Says explicitly where it describes a target rather than the current state. |
-| [roadmap.md](roadmap.md) | Delivery phases, ordered by dependency and risk, with the exit condition each phase has to pass. |
-| [engineering-plan.md](engineering-plan.md) | The near-term work in dependency order, with per-item status and the open questions that gate it. Shorter-lived than the roadmap. |
-| [agent-runtimes.md](agent-runtimes.md) | CLI-native runtime contract: control plane + isolated agent-runner, session capability / result modules, and the transitional LiteLLM path. |
-| [configuration.md](configuration.md) | Repository review policy: every `.diffuse/` file, field, default, and inheritance rule. |
-| [deployment.md](deployment.md) | Single-server operation: host preparation, secrets, backups and restore drills, upgrades, rollback, and the operational checklist. |
-| [cli.md](cli.md) | The `diffuse` command: every subcommand, the local-review flags and output modes, and the stable exit-code table. |
-| [mcp.md](mcp.md) | The MCP server at `/mcp`: authentication, scopes, the twenty-two tools, fix handoffs, and analytics. |
-| [rest-api.md](rest-api.md) | The versioned REST API under `/api/v1`: scopes, conventions, and idempotency. The schema itself is served at `/openapi.json`. |
+| [v1-scope.md](v1-scope.md) | The active product boundary and delivery order. Read this first when a legacy plan or capability claim conflicts with current v1 decisions. |
+| [agent-runtimes.md](agent-runtimes.md) | The active CLI review-runner boundary and investigation contract. |
+| [capabilities.md](capabilities.md) | The concise v1 shipping ledger. |
+| [architecture.md](architecture.md) | Historical system architecture. Use only for implementation archaeology until rewritten against v1 scope. |
+| [roadmap.md](roadmap.md) | Historical roadmap. It is not an active delivery commitment. |
+| [engineering-plan.md](engineering-plan.md) | Historical engineering plan. Use the delivery order in `v1-scope.md` instead. |
+| [configuration.md](configuration.md) | The intentionally small v1 root repository configuration. |
+| [deployment.md](deployment.md) | Current self-hosted deployment and temporary manual GitHub App setup. |
+| [cli.md](cli.md) | Transitional CLI reference. Operator runner authentication remains private configuration, not a product API. |
 
 Elsewhere in the repository:
 
@@ -27,3 +26,6 @@ Elsewhere in the repository:
   inline at its definition.
 - [`deploy/README.md`](../deploy/README.md) — installing a tagged release from
   published, signature-verified images.
+
+The old `mcp.md` and `rest-api.md` documents were removed with their public
+product surfaces; they are not supported installation options.

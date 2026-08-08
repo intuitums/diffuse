@@ -55,9 +55,6 @@ from service.cli import (
 from service.cli import (
     repository as repository_cli,
 )
-from service.cli import (
-    token as token_cli,
-)
 from service.code_query import code_query_target_for_plan
 from service.cross_repository import resolve_cross_repository_context_plan
 from service.diff_parser import ParsedDiff, parse_unified_diff
@@ -1098,12 +1095,6 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
     )
     learning_cli.configure_parser(learning)
 
-    token = subparsers.add_parser(
-        "token",
-        help="Create, inspect, and revoke scoped service tokens",
-    )
-    token_cli.configure_parser(token)
-
     database = subparsers.add_parser(
         "database",
         help="Inspect, migrate, and verify the PostgreSQL schema",
@@ -1136,7 +1127,6 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
         "repository": repository,
         "cluster": cluster,
         "learning": learning,
-        "token": token,
         "database": database,
         "evaluate": evaluate,
         "model": model,

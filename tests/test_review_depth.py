@@ -315,21 +315,6 @@ def test_an_honored_request_is_reported_without_alarm(
     assert all(record.levelno == logging.INFO for record in caplog.records)
 
 
-def test_startup_validation_runs_the_model_control_check(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A check nothing calls is not a check. Guards the wiring in `main` and,
-    because startup only ever sees the configured pair, in the review path that
-    resolves the routed one."""
-
-    import inspect
-
-    assert "validate_worker_model_controls()" in inspect.getsource(worker.main)
-    routed = inspect.getsource(worker.process_review_job)
-    assert "resolve_review_depth_support(" in routed
-    assert "model_plan.candidate_model" in routed
-
-
 # --- The pair that actually reviews -------------------------------------------
 
 

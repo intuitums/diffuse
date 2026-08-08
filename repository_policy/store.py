@@ -51,7 +51,17 @@ def write_repository_policy(
                         snapshot_id,
                         layer.directory_path,
                         layer.source_path,
-                        psycopg2.extras.Json(layer.config.model_dump(mode="json")),
+                        # `auto_approval` is a removed v1 feature.  The
+                        # Pydantic default still exists temporarily while the
+                        # remaining resolver types are excised, but persisting
+                        # it would make the next load look like an operator
+                        # requested a removed setting.
+                        psycopg2.extras.Json(
+                            layer.config.model_dump(
+                                mode="json",
+                                exclude={"auto_approval"},
+                            )
+                        ),
                     )
                     for layer in policy.layers
                 ],

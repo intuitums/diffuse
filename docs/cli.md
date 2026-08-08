@@ -1,5 +1,10 @@
 # CLI
 
+> **Transitional CLI reference.** Public token, MCP, handoff, and generic-agent
+> commands described here are being removed. The only v1 CLI-adjacent concern is
+> private operator configuration for an isolated Codex or Claude Code review
+> runner; see [agent-runtimes.md](agent-runtimes.md).
+
 `diffuse` is the command-line interface to a self-hosted installation. Its
 subcommands onboard and manage indexed repositories (`repository`) and
 cross-repository context clusters (`cluster`), inspect and moderate
@@ -36,9 +41,8 @@ diffuse agent status
 diffuse evaluate evals/baseline.example.json
 ```
 
-`diffuse token add` mints the repository-scoped service tokens the
-[MCP server](mcp.md#minting-a-service-token) and
-[REST API](rest-api.md#authorization) authenticate with.
+`diffuse token` is legacy public-surface plumbing and is not part of v1. New
+deployments must not issue service tokens.
 
 ## Review runtimes
 
