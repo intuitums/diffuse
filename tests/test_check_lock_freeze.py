@@ -91,7 +91,7 @@ def test_cli_exits_0_on_exact_match(tmp_path):
 
 
 def test_script_is_runnable_as_a_module_path():
-    """verify.yml invokes this file; a missing shebang or bad import fails CI."""
+    """ci.yml invokes this file; a missing shebang or bad import fails CI."""
 
     completed = subprocess.run(
         [sys.executable, str(SCRIPT), "--help"],
@@ -103,10 +103,10 @@ def test_script_is_runnable_as_a_module_path():
     assert "requirements.lock" in completed.stdout
 
 
-def test_verify_workflow_calls_the_script_not_an_inline_copy():
+def test_ci_workflow_calls_the_script_not_an_inline_copy():
     """An inline reimplementation would rot the way the previous one did."""
 
-    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "verify.yml").read_text()
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
     assert "scripts/check_lock_freeze.py" in workflow
     # The old skip-on-missing pattern must not return.
     assert "if actual is None:\n                  continue" not in workflow

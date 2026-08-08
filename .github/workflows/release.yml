@@ -1,7 +1,7 @@
 # Release — tag-driven publish of a signed, immutable multi-arch image plus the
 # self-host deployment bundle.
 #
-# Naming convention shared with intuitumxyz/leo: verify.yml gates changes, release.yml
+# Naming convention shared with intuitumxyz/leo: ci.yml gates changes, release.yml
 # publishes them.
 #
 # STRUCTURE CHANGED for Blacksmith. The previous single job built linux/amd64 and
@@ -142,7 +142,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # amd64 adopts its runner's persistent builder — the same idempotent command as
-      # verify.yml's container jobs; keep the two spellings identical. arm64 is on an
+      # ci.yml's container jobs; keep the two spellings identical. arm64 is on an
       # ephemeral Blacksmith VM, so it provisions a throwaway buildx the ordinary way
       # and leans on the `type=gha` cache declared in the matrix. Attestations below
       # (`sbom`, `provenance`) need the docker-container driver on both paths; the

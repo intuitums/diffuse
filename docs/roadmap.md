@@ -6,12 +6,12 @@ must leave a deployable, observable system.
 
 **No phase is complete until its exit condition passes in CI.** Not
 demonstrated once by hand, not argued for in a pull request description, not
-asserted in this document: a command in `.github/workflows/verify.yml` that
+asserted in this document: a command in `.github/workflows/ci.yml` that
 fails the build when the condition stops holding. A phase whose exit condition
 has no such command is unfinished no matter how much of its body is built, and
 this document says so in that phase's own text.
 
-No phase's exit condition is enforced in CI today. `verify.yml` runs lint, unit
+No phase's exit condition is enforced in CI today. `ci.yml` runs lint, unit
 tests, PostgreSQL integration tests, packaged-image validation, and a stack
 boot; it does not call `scripts/eval.sh`, and the two gates the rest of the
 roadmap is measured against — review quality in Phase 0 and retrieval recall in
@@ -60,7 +60,7 @@ Work the Phase 0 and Phase 1 gates before work that depends on them.
   `evals/baselines/review-baseline.json`; prove it fails against a seeded
   regression, per `evals/CAPTURE.md` §6, because a baseline that has never
   failed is not yet known to be a gate; and call `scripts/eval.sh` from
-  `.github/workflows/verify.yml`, which does not call it today.
+  `.github/workflows/ci.yml`, which does not call it today.
 - Be exact about what that gate covers, because its name invites overreading.
   It measures the review engine and nothing else. It does **not** measure
   retrieval: the harness reads every context entry verbatim from the fixture's
