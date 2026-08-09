@@ -37,55 +37,9 @@ Work the Phase 0 and Phase 1 gates before work that depends on them.
   adoption, status/verification commands, and a Compose startup gate. Add
   release-by-release downgrade policy, backup/restore drills, and migration
   compatibility CI across supported versions.
-- A versioned review-evaluation *scorer* exists: given labeled and observed
-  findings it computes true bugs, false positives/negatives, addressed
-  findings, precision/recall/F1, median latency, tokens, and estimated cost.
-  `service/eval_harness.py` now runs the review engine against committed
-  fixtures and emits that `observed` half directly, so it no longer has to be
-  transcribed by hand; `evals/fixtures/` holds eight labeled cases and
-  `scripts/eval.sh` runs them and compares the scored result against a baseline.
-  **The gate is not live yet: no baseline is committed.** Capturing one requires
-  live model calls, so `scripts/eval.sh` exits non-zero with instructions rather
-  than passing vacuously — see `evals/CAPTURE.md`. Until a baseline exists,
-  every confidence threshold, severity floor, and finding cap remains an
-  unmeasured constant. Remaining work: capture the baselines, add reviewed
-  private PR fixtures alongside the synthetic ones, and establish release gates.
-  `evals/` is packaged into the image and verified in CI, but the documented
-  relative path does not resolve there — the in-image copy of the example suite
-  is `/opt/diffuse/_internal/evals/baseline.example.json`.
-- That gate is one funded run away. Everything it needs except the baseline is
-  committed and working: `service/eval_harness.py run` drives the real engine
-  over `evals/fixtures/`, `capture` and `check` are pure functions of a suite
-  file so the regression logic is unit-tested without a credential,
-  `scripts/eval.sh` refuses to pass rather than pass vacuously, and
-  `evals/CAPTURE.md` is the exact procedure. What is missing is a credential
-  and the decision to spend on it: 40 model calls, roughly $0.75 at an example
-  $3/$15 rate card with no depth requested, under $0.10 on a small model
-  (`evals/CAPTURE.md` §4). **The blocker is a spend decision, not
-  engineering.** Three steps make the gate live: capture
-  `evals/baselines/review-baseline.json`; prove it fails against a seeded
-  regression, per `evals/CAPTURE.md` §6, because a baseline that has never
-  failed is not yet known to be a gate; and call `scripts/eval.sh` from
-  `.github/workflows/ci.yml`, which does not call it today.
-- Be exact about what that gate covers, because its name invites overreading.
-  It measures the review engine and nothing else. It does **not** measure
-  retrieval: the harness reads every context entry verbatim from the fixture's
-  `FixtureContext` list and never calls the retriever. That is deliberate — a
-  baseline that depended on the state of an index snapshot would drift for
-  reasons unrelated to review quality — but the consequence is that a retrieval
-  regression is invisible to it, and the embedding removal shipped with that
-  stated explicitly. It does **not** measure policy: the harness calls
-  `generate_review` without a `policy` argument, so the engine runs with
-  `policy=None` and exercises no repository rule, no path scope, no
-  path-scoped confidence or severity floor, and no approved learned rule.
-  Retrieval recall is Phase 1's gate and needs different machinery. Policy has
-  no gate at all yet, and no phase currently claims one.
-- Review, retrieval, and security evaluation is phase work, not a continuous
-  workstream. It was listed as one until now, which is part of why it never
-  started: an always-running workstream is never late, and nobody is behind on
-  it. The review gate is this phase, the retrieval gate is Phase 1, and the
-  security eval fixtures and noise gates are Phase 2's classified-security
-  bullet. Each blocks the exit condition of the phase that owns it.
+- Agent evaluation is deferred until the Agent Host contract has stable,
+  representative fixtures and a release-quality scoring design. Retrieval and
+  policy require their own evaluations rather than a shared proxy metric.
 - Configuration validation is in place for the worker: `validate_worker_configuration`
   resolves every hot-path variable at startup and names the one that fails.
   Extend the same treatment to the API process, which still reads its
@@ -94,10 +48,8 @@ Work the Phase 0 and Phase 1 gates before work that depends on them.
 Exit: every planned capability has an owner component, data boundary, and
 testable acceptance condition.
 
-Not met. The acceptance conditions are written down in `docs/capabilities.md`,
-but written down is not testable: no command evaluates any of them. The command
-that would evaluate the most consequential one is `scripts/eval.sh`, and it
-needs the baseline.
+The acceptance conditions are recorded in `docs/capabilities.md`; Agent
+evaluation remains a future release gate.
 
 ## Phase 1 — Repository and code-intelligence foundation
 
@@ -124,16 +76,9 @@ Exit: evals demonstrate that changed functions retrieve their important
 callers, dependencies, tests, and cross-repo contracts at a defined recall
 target.
 
-Never met, and not currently measurable. No retrieval eval exists. There is no
-defined recall target, no labeled must-retrieve set for any fixture, and no
-run that has produced a recall number for retrieval. The one harness that
-exists, `service/eval_harness.py`, cannot serve here: it reads each context
-entry verbatim from the fixture's `FixtureContext` list and never calls
-`retriever.retrieve`, so it would score the fixture author rather than the
-retriever. Meeting this gate means extending the harness to build a real index
-over a real repository, call the retriever against it, and score the returned
-set against labeled expectations per changed function — a separate and larger
-piece of work than the Phase 0 review gate, which needs only a credential.
+Never met, and not currently measurable. No retrieval evaluation exists. A
+future Agent evaluation must build a real index, call the retriever, and score
+the returned set against labeled expectations per changed function.
 
 This is the dependency the phase ordering was supposed to respect and did not.
 Phases 2, 3 and 4 all consume retrieved context and were built on top of an
@@ -262,7 +207,7 @@ the missing gate, and it does not exist in any phase.
   unchanged-input resume after interruption/failure. Add remote API
   authentication, optional job submission to the operator's self-hosted worker,
   partial-stage continuation, and shell completion. Local agent-CLI review
-  runtimes are tracked in [agent-runtimes.md](agent-runtimes.md) and
+  runtimes are tracked in [agents.md](agents.md) and
   [engineering-plan.md](engineering-plan.md), not as a deletion of the server.
 - ~~The MCP foundation~~ is removed from v1. Historical notes about
   repository-scoped MCP tools, service tokens, `ask_codebase`, analytics
@@ -291,10 +236,9 @@ starts until that decision is recorded.** The content below is unchanged and
 stays in place; this is a flag, not a deletion, and the decision has not been
 made.
 
-This phase is **not** `REVIEW_RUNTIME` / agent-CLI review (renting Claude Code
-or Codex for local `diffuse review`). It is generating tests and **executing
+This phase is **not** Review Agent work. It is generating tests and **executing
 untrusted pull-request code** in a disposable sandbox. See
-[agent-runtimes.md](agent-runtimes.md) for the former.
+[agents.md](agents.md) for the former.
 
 The argument for deleting it. This phase generates code with a model and
 executes it, and the code under test arrives from an untrusted pull request
@@ -407,7 +351,7 @@ it is to say in `docs/capabilities.md` that learned rules do not activate in
 practice, rather than leave them listed as a working foundation.
 
 **Keep, defer, or delete Phase 5 (source-execution validation)?** Stated in
-full under Phase 5 above. Separate from shipping agent-CLI `REVIEW_RUNTIME`
+full under Phase 5 above. Separate from shipping agent-CLI `REVIEW_AGENT`
 adapters.
 
 ## Continuous workstreams

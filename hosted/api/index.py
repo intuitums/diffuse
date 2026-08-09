@@ -1,5 +1,5 @@
-"""Vercel ASGI entrypoint for the hosted Diffuse-Agent integration."""
+"""Vercel ASGI entrypoint for the GitHub Integration Service."""
 
-from diffuse_setup.app import app
+from github_integration.app import app
 
 __all__ = ["app"]

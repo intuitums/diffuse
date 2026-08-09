@@ -14,7 +14,7 @@ import anyio
 from fastapi import FastAPI, Header, HTTPException, Request, Response, status
 
 from indexer.store import get_conn
-from service.agents.tool_api import router as agent_tool_router
+from service.agents.context_api import router as context_service_router
 from service.github.api import (
     fetch_manual_pull_request_event,
     normalize_manual_review_request,
@@ -107,16 +107,12 @@ def _verify_database_schema() -> None:
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # The API resolves the same hot-path configuration the worker does -- it
     # answers code questions in-process and enqueues the jobs the worker later
-    # runs -- but it used to check only the database schema. With REVIEW_MODEL
-    # unset it therefore started clean, accepted webhooks, enqueued jobs that
-    # could never succeed, and answered `code/ask` with HTTP 400
-    # `invalid_request`: a server misconfiguration reported to the caller as
-    # their mistake. Failing here names the variable instead, and matches the
-    # worker, the CLI, and `diffuse model`.
+    # runs -- but it used to check only the database schema. Failing here keeps
+    # readiness aligned with worker configuration and Agent access.
     # The API deliberately cannot reach credential-isolated runner control
     # networks. The worker validates their availability before claiming work.
     await anyio.to_thread.run_sync(
-        partial(validate_worker_configuration, verify_native_runners=False)
+        partial(validate_worker_configuration, verify_agent_clients=False)
     )
     await anyio.to_thread.run_sync(_verify_database_schema)
     yield
@@ -130,7 +126,7 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
-app.include_router(agent_tool_router)
+app.include_router(context_service_router)
 
 # Keep the original public name for callers upgrading from the first foundation.
 verify_github_signature = verify_signature

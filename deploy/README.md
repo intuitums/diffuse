@@ -13,12 +13,11 @@ commercial agreement, license key, entitlement file, or registry credential.
 
 ## Install
 
-1. Copy `env.example` to `.env`, restrict it with `chmod 600 .env`, and fill
-   the GitHub App ID, installation ID, private key, and webhook secret; Diffuse
-   mints and refreshes installation tokens, so do not paste a one-hour token
-   into `GITHUB_TOKEN`. CLI-native `REVIEW_RUNTIME=codex` or `claude` does not
-   use `REVIEW_MODEL` or provider API keys. Set `REVIEW_MODEL` only when using
-   transitional `REVIEW_RUNTIME=litellm`. Release bundles already pin
+1. Copy `env.example` to `.env`, restrict it with `chmod 600 .env`, then run
+   `diffuse github connect` and copy its GitHub Integration Service credentials
+   into the file. Do not paste a one-hour token into `GITHUB_TOKEN`. Set
+   `REVIEW_AGENT=codex` or `REVIEW_AGENT=claude` and generate the Agent Dispatch
+   and Review Access Grant signing keys. Release bundles already pin
    `DIFFUSE_IMAGE`, `DIFFUSE_CLAUDE_RUNNER_IMAGE`, and
    `DIFFUSE_CODEX_RUNNER_IMAGE` to compatible immutable release digests.
 2. Verify each release image signature before starting it:
@@ -47,18 +46,14 @@ commercial agreement, license key, entitlement file, or registry credential.
    token refresh, while Diffuse never reads or prints credential material.
 
    ```bash
-   docker compose --profile agent-codex run --rm agent-runner-codex agent login codex --device-auth
-   docker compose --profile agent-claude run --rm agent-runner-claude agent login claude --console
+   docker compose --profile agent-codex run --rm agent-host-codex agent login codex --device-auth
+   docker compose --profile agent-claude run --rm agent-host-claude agent login claude --console
    ```
 
-4. Create the GitHub webhook, pointing it at
-   `https://your-diffuse-host/webhook/github` with the `GITHUB_WEBHOOK_SECRET`
-   from `.env`. Enable exactly these four event types and no others:
-
-   - `push`
-   - `pull_request`
-   - `issue_comment`
-   - `pull_request_review_comment`
+4. Do not create a public webhook when using the GitHub Integration Service.
+   Diffuse polls signed deliveries over its existing outbound connection. The
+   standalone GitHub App mode is the only deployment that uses
+   `/webhook/github` and `GITHUB_WEBHOOK_SECRET`.
 
 5. Onboard each repository you want reviewed. **Nothing is reviewed until you
    do this**, and a webhook for a repository that was never onboarded is
@@ -97,8 +92,9 @@ docker compose --env-file .env run --rm worker <command>
 
 For example, `diffuse repository list` becomes
 `docker compose --env-file .env run --rm worker repository list`. The available
-subcommands are `review`, `repository`, `cluster`, `learning`,
-`database`, `evaluate`, and `model`; each accepts `--help`. The former
+subcommands are `repository`, `cluster`, `learning`, `database`, `agent`, and
+`github`; each accepts `--help`. Pull-request review is performed by the worker
+and configured Agent Host, not through a local branch command. The former
 `token` subcommand has been removed from v1.
 
 ## Obtaining this bundle and later ones
@@ -130,5 +126,5 @@ database volume exists.
 Read `OPERATIONS.md`, included alongside this file in the release bundle, before
 onboarding production repositories. (It is not present in the source
 repository — the release build generates it from `docs/deployment.md`.) Back up
-PostgreSQL before every upgrade. Never share `.env`, SCM credentials, or model
+PostgreSQL before every upgrade. Never share `.env`, SCM credentials, or Agent
 credentials with anyone, including Diffuse support.

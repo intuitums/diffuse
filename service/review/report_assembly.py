@@ -2,18 +2,13 @@
 
 Severity ordering, the risk floor, the confidence score, finding identity, the
 presentation flags, and the thresholds a finding must clear are properties of a
-`ReviewReport` — not of the way one was produced. They lived in
-`service/review/engine.py` because the one-shot API runtime was the only
-producer, which meant a second runtime could not exist without either
-duplicating them or inheriting that whole module.
+`ReviewReport` — not of the way one was produced. They live outside the Agent
+execution boundary so every Review Agent shares the same publication rules.
 
-Both runtimes call into here, so a finding is filtered, fingerprinted, and
-scored identically no matter which one investigated. `MIN_REVIEW_CONFIDENCE`
-therefore keeps its exact meaning when the one-shot runtime is retired: Diffuse
-filters an agent's self-reported confidence the same way it filters a verifier's
-today.
+Every Review Agent calls into here, so a finding is filtered, fingerprinted,
+and scored identically no matter which one investigated.
 
-Deliberately free of model, provider, and LiteLLM imports. That is what makes it
+Deliberately free of model and provider imports. That is what makes it
 survive `service/review/engine.py` being deleted, and it is worth keeping true.
 """
 
@@ -171,7 +166,7 @@ def deduplicate_candidates(
 ) -> list[CandidateFinding]:
     """Keep only policy-allowed candidates anchored to changed lines.
 
-    This is a report invariant, not a LiteLLM property: an agent runtime must
+    This is a report invariant: an Agent must
     not publish a finding whose claimed location is outside the supplied diff.
     """
 

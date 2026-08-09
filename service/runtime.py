@@ -100,11 +100,11 @@ def _run_worker(arguments: Sequence[str]) -> None:
     worker_main()
 
 
-def _run_hosted_relay(arguments: Sequence[str]) -> None:
-    from service.hosted.relay import main as relay_main
+def _run_github_delivery_poller(arguments: Sequence[str]) -> None:
+    from service.github.delivery_poller import main as poller_main
 
     _replace_process_arguments(arguments)
-    relay_main()
+    poller_main()
 
 
 def _run_healthcheck(arguments: Sequence[str]) -> None:
@@ -119,7 +119,7 @@ def _run_healthcheck(arguments: Sequence[str]) -> None:
 def _run_review_compartment_preflight(arguments: Sequence[str]) -> None:
     if arguments:
         raise ValueError("The review-compartment-preflight command does not accept arguments")
-    from service.review.agent_compartment import run_preflight
+    from service.review.agent_sandbox import run_preflight
 
     run_preflight()
 
@@ -127,7 +127,7 @@ def _run_review_compartment_preflight(arguments: Sequence[str]) -> None:
 def _run_egress_proxy(arguments: Sequence[str]) -> None:
     if arguments:
         raise ValueError("The egress-proxy command does not accept arguments")
-    from service.review.agent_compartment import run_egress_proxy
+    from service.review.agent_sandbox import run_egress_proxy
 
     run_egress_proxy()
 
@@ -155,10 +155,10 @@ def _run_egress_proxy_healthcheck(arguments: Sequence[str]) -> None:
 
 def _run_agent_runner(arguments: Sequence[str]) -> None:
     if arguments:
-        raise ValueError("The agent-runner command does not accept positional arguments")
+        raise ValueError("The agent-host command does not accept positional arguments")
     import uvicorn
 
-    from service.agents.runner import app
+    from service.agents.host import app
 
     _logging_level, uvicorn_level = _log_level()
     uvicorn.run(app, host=DEFAULT_BIND_HOST, port=8010, log_level=uvicorn_level)
@@ -167,19 +167,19 @@ def _run_agent_runner(arguments: Sequence[str]) -> None:
 def _run_agent_runner_healthcheck(arguments: Sequence[str]) -> None:
     if arguments:
         raise ValueError(
-            "The agent-runner-healthcheck command does not accept positional arguments"
+            "The agent-host-healthcheck command does not accept positional arguments"
         )
     with urlopen("http://127.0.0.1:8010/ready", timeout=_healthcheck_timeout()) as response:
         if response.status != 200:
             raise RuntimeError(f"Agent runner readiness returned HTTP {response.status}")
 
 
-def _run_agent_tool_gateway(arguments: Sequence[str]) -> None:
+def _run_context_service(arguments: Sequence[str]) -> None:
     if arguments:
-        raise ValueError("The agent-tool-gateway command does not accept positional arguments")
+        raise ValueError("The context-service command does not accept positional arguments")
     import uvicorn
 
-    from service.agents.tool_gateway import app
+    from service.agents.context_service import app
 
     _logging_level, uvicorn_level = _log_level()
     uvicorn.run(app, host=DEFAULT_BIND_HOST, port=8011, log_level=uvicorn_level)
@@ -200,8 +200,8 @@ def main(arguments: Sequence[str] | None = None) -> None:
             _run_api(selected)
         elif command == "worker":
             _run_worker(selected)
-        elif command == "relay":
-            _run_hosted_relay(selected)
+        elif command == "github-delivery-poller":
+            _run_github_delivery_poller(selected)
         elif command == "healthcheck":
             _run_healthcheck(selected)
         elif command == "review-compartment-preflight":
@@ -210,12 +210,12 @@ def main(arguments: Sequence[str] | None = None) -> None:
             _run_egress_proxy(selected)
         elif command == "egress-proxy-healthcheck":
             _run_egress_proxy_healthcheck(selected)
-        elif command == "agent-runner":
+        elif command == "agent-host":
             _run_agent_runner(selected)
-        elif command == "agent-runner-healthcheck":
+        elif command == "agent-host-healthcheck":
             _run_agent_runner_healthcheck(selected)
-        elif command == "agent-tool-gateway":
-            _run_agent_tool_gateway(selected)
+        elif command == "context-service":
+            _run_context_service(selected)
         else:
             # The CLI owns its own exit codes and error formatting.
             _run_cli([command, *selected])

@@ -1,13 +1,11 @@
 """Tools a review runtime can call over a pinned context plan.
 
-The one-shot API runtime receives a pre-fused context blob and never calls
-these. An agent-CLI runtime investigates through them instead. Both paths share
-`search_codebase` so MCP clients and Diffuse's own reviewer see the same
-index-backed answers.
+Review Agents investigate through these private, capability-scoped tools.
+They share `search_codebase` with the Context Service, so every investigation
+receives the same index-backed answers.
 
-Every call can be appended to `review_tool_calls` through a recorder. Local
-review without a durable `review_runs` row uses the in-memory recorder; the
-worker passes a Postgres-backed one once it has a run id.
+Every call is appended to `review_tool_calls` through a recorder. The worker
+uses a Postgres-backed recorder once it has a durable review run.
 """
 
 from __future__ import annotations

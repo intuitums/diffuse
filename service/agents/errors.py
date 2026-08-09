@@ -7,39 +7,39 @@ the hosted worker already gives that base class terminal semantics.
 from __future__ import annotations
 
 
-class AgentSessionError(RuntimeError):
+class AgentInvestigationError(RuntimeError):
     """A transient session failure; the workflow may retry the review."""
 
 
-class AgentSessionTerminalError(ValueError):
+class AgentInvestigationTerminalError(ValueError):
     """A configuration or authentication failure no retry can repair."""
 
 
-class AgentSessionAuthRequired(AgentSessionTerminalError):
+class AgentInvestigationAuthRequired(AgentInvestigationTerminalError):
     """Vendor refresh/login was rejected; an operator must reconnect."""
 
 
-class AgentSessionTimeout(AgentSessionError):
+class AgentInvestigationTimeout(AgentInvestigationError):
     """The agent did not exit before the profile's deadline."""
 
 
-class AgentSessionExecutionError(AgentSessionError):
+class AgentInvestigationExecutionError(AgentInvestigationError):
     """The CLI reported an error while it was executing a turn."""
 
 
-class AgentSessionRateLimited(AgentSessionError):
+class AgentInvestigationRateLimited(AgentInvestigationError):
     """The vendor reported a rate or seat-quota limit."""
 
 
-class AgentSessionOutputError(AgentSessionError):
+class AgentInvestigationOutputError(AgentInvestigationError):
     """The CLI output was not a valid structured response."""
 
 
-class AgentSessionMcpError(AgentSessionError):
+class AgentInvestigationMcpError(AgentInvestigationError):
     """A configured MCP tool server failed to start."""
 
 
-class AgentSessionCoverageCaveat(AgentSessionError):
+class AgentInvestigationCoverageCaveat(AgentInvestigationError):
     """The agent stopped at its turn budget rather than at an answer.
 
     An adapter can convert this into a report caveat rather than a failed

@@ -1,12 +1,10 @@
 """The self-hosted server surface: webhooks, queue, worker, and private transport.
 
 This package is the process boundary that reviews pull requests from anyone who
-can open one. It stays. Local `diffuse review` is a second path that can rent a
-developer-installed agent CLI; it does not replace webhook ingress, the durable
-job queue, publication, or the one-shot API review runtime the worker uses.
-Fork PRs and fleet reviews are a different threat model from a developer
-driving their own authenticated CLI on a laptop. Public MCP and REST are not
-part of this package's v1 surface.
+can open one. Pull-request reviews run through the durable job queue,
+publication boundary, and isolated Agent Hosts. Local branch review remains
+unavailable until it can use the same Review Access Grant contract. Public MCP
+and REST are not part of this package's v1 surface.
 
 Everything outside this package that still reaches into it:
 
