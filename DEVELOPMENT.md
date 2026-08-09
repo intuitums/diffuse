@@ -148,8 +148,8 @@ Compose refuses to start with
 cp .env.example .env
 # Edit .env and set POSTGRES_PASSWORD.
 # It is in the "REQUIRED" block at the top of the file.
-# Capability and transport secrets may use: openssl rand -hex 32
-# Dispatch Ed25519 keys must be base64url-encoded raw 32-byte values
+# Capability HMAC may use: openssl rand -hex 32
+# Transport and dispatch secrets must be base64url-encoded raw 32-byte values
 # (see the generation comments in .env.example — not openssl -hex).
 #
 # Configure REVIEW_AGENT, Agent Dispatch keys, and

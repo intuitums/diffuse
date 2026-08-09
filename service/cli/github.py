@@ -23,6 +23,11 @@ def _connect(args: argparse.Namespace) -> None:
     base_url = normalize_base_url(args.url.rstrip("/"), field_name="--url")
     if not base_url.startswith("https://"):
         raise ValueError("--url must be an HTTPS origin")
+    write_path: Path | None = None
+    if args.write_env is not None:
+        # Validate and lock down the destination before redeeming the one-time
+        # enrollment code so a local write failure cannot burn the code.
+        write_path = _prepare_write_env_path(Path(args.write_env))
     try:
         response = httpx.post(
             f"{base_url}/v1/instances/register",
@@ -52,12 +57,21 @@ def _connect(args: argparse.Namespace) -> None:
         "installation_id": payload.get("installation_id"),
         "instance_id": payload.get("instance_id"),
     }
-    if args.write_env is not None:
-        _write_env_file(Path(args.write_env), credentials)
+    if write_path is not None:
+        try:
+            _write_env_file(write_path, credentials)
+        except OSError as error:
+            print(
+                f"Warning: failed to write {write_path}: {error}. "
+                "Printing one-time connection secrets to stdout so they are not lost.",
+                file=sys.stderr,
+            )
+            print(json.dumps(credentials, indent=2, sort_keys=True))
+            raise RuntimeError(f"Could not write connection secrets to {write_path}") from error
         print(
             json.dumps(
                 {
-                    "wrote_env": str(Path(args.write_env)),
+                    "wrote_env": str(write_path),
                     "installation_id": credentials["installation_id"],
                     "instance_id": credentials["instance_id"],
                     "secrets_shown_once": True,
@@ -75,14 +89,38 @@ def _connect(args: argparse.Namespace) -> None:
     print(json.dumps(credentials, indent=2, sort_keys=True))
 
 
+def _prepare_write_env_path(path: Path) -> Path:
+    """Ensure PATH is a writable regular file with mode 0600 before redeeming."""
+    path = path.expanduser()
+    if path.exists() and not path.is_file():
+        raise ValueError(f"--write-env must be a regular file path: {path}")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+    except OSError as error:
+        raise ValueError(f"--write-env path is not writable: {path}") from error
+    return path
+
+
 def _write_env_file(path: Path, credentials: dict[str, object]) -> None:
     lines = [f"{key}={credentials[key]}\n" for key in _ENV_KEYS]
     path = path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.writelines(lines)
-    os.chmod(path, 0o600)
+    try:
+        # os.open's mode is ignored when the path already exists; lock the
+        # descriptor down before any secret bytes are written.
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.writelines(lines)
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
