@@ -408,7 +408,8 @@ def integration_installation_token(broker: GitHubIntegrationTokenBroker | None =
             ) from error
         if response.status_code in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
             raise GitHubAppConfigurationError(
-                "GitHub Integration Service rejected this self-hosted instance credential; reconnect it."
+                "GitHub Integration Service rejected this self-hosted "
+                "instance credential; reconnect it."
             )
         if response.status_code >= httpx.codes.BAD_REQUEST:
             raise GitHubAppError(

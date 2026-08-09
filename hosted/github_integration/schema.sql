@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS setup_enrollment_codes (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- event_signing_key holds an AES-GCM sealed secret
+-- (diffuse-secret.v1.<key_id>.<payload>) under
+-- DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK. Legacy plaintext rows are still
+-- readable once and should be rewritten on next enrollment.
 CREATE TABLE IF NOT EXISTS self_hosted_instances (
     id UUID PRIMARY KEY,
     github_installation_id BIGINT NOT NULL REFERENCES app_installations (github_installation_id)

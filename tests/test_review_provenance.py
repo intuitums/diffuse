@@ -4,8 +4,8 @@ from service.review.provenance import (
     PullRequestProvenance,
     classify_pull_request_provenance,
     model_family,
-    select_review_model_plan,
     select_review_agent_plan,
+    select_review_model_plan,
 )
 
 

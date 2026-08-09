@@ -86,23 +86,19 @@ the source is published under BSL 1.1.
 
 ### Control plane
 
-> **Target, not current state.** Only the versioned REST API and scoped
-> service-token authentication exist. There is no web UI, no organization,
-> team, or role model, and no OIDC, SAML, or SCIM implementation — none of
-> those three appears anywhere in the source.
+> **v1 current state.** Public REST (`/api/v1`), public MCP (`/mcp`), browser
+> OAuth/session routes, and service-token minting are **not mounted**. The live
+> self-hosted surface is webhook ingress, health/ready, private worker-to-runner
+> transport, and the capability-gated agent context tools. See
+> [v1-scope.md](v1-scope.md) and [SECURITY.md](../SECURITY.md).
 
-- The v1 REST foundation exposes repository/index state, PRs, reviews,
-  findings, analytics, and code search/Q&A plus idempotent repository
-  onboarding, reindexing, and review requests. A web UI, settings, identity,
-  and broader administrative mutations remain.
-- Scoped service tokens and the bootstrap credential are the authenticated
-  principals. The GitHub OAuth browser endpoints are mounted but no
-  authenticator consumes the session they mint, so OAuth grants no access yet;
-  OIDC and SAML will be added.
-- Organizations, teams, users, roles, repositories, integrations, policies,
-  rules, model settings, audit events, analytics, and operational state will be
-  the control plane's resources. Repositories, policies, rules, model settings,
-  and audit events are durable today; the tenancy model above them is not.
+- v1 authenticates GitHub deliveries by webhook HMAC and authenticates Agent
+  tool calls by short-lived Review Access Grants. There is no public API token
+  product surface.
+- Residual `api_tokens` / OAuth schema from earlier experiments is not a live
+  auth boundary.
+- Organizations, teams, users, roles, a web UI, OIDC/SAML, and a general
+  control-plane API remain targets, not current product.
 
 ### SCM adapters
 
@@ -549,90 +545,14 @@ the API or review container is prohibited.
   guidance moderation, Agent Host sign-in, and GitHub integration. Local
   branch review is unavailable until it can use the same Review Access Grant
   contract as a hosted pull-request review.
-- Complete the CLI with remote API authentication, optional remote job
-  submission to the operator's self-hosted worker, partial-stage continuation,
-  and shell completion.
-- The MCP foundation is mounted at `/mcp` using stateless JSON Streamable HTTP,
-  constant-time validation of an installation-wide recovery credential or a
-  non-recoverable durable service token, explicit host allowlisting, and the
-  same PostgreSQL source of truth as workers. Repository claims are enforced
-  again in every PostgreSQL projection. Inspection tools project repositories,
-  durable PR lifecycle state, review reports, current finding lineages/search,
-  operator context, and feedback-derived context. A thin compatibility adapter
-  resolves the public `name`/`remote`/`defaultBranch`/`remoteUrl` repository
-  descriptor under the token's repository claims before querying by internal
-  ID. Public camelCase parameters and PR/comment search aliases stay at the MCP
-  boundary; storage and worker APIs remain Diffuse-native. Explicit write scope
-  gates authoritative GitHub re-runs and audited context creation/update/
-  deletion. Provider dispatch occurs only after repository-claim resolution,
-  and each re-run re-fetches current provider state. Operator-context updates
-  compare the caller's `expectedUpdatedAt` with the locked row, keep identical
-  retries as no-ops, and record safe hashed deltas. Deletes preserve an audit
-  tombstone and do not alter context snapshots already attached to review runs.
-  Learned rules remain on their separate evidence-backed version/approval
-  lifecycle.
-- The REST foundation is mounted under `/api/v1` before the MCP catch-all and
-  uses the same shared bearer authenticator and repository-scoped PostgreSQL
-  projections. `diffuse:api:read` gates repository/index, PR, review, finding,
-  analytics, and code-search reads. Model-backed Q&A additionally requires
-  `diffuse:api:generate`. A manual review request requires read and write
-  scopes, resolves the repository grant before provider dispatch, re-fetches
-  the current open PR head, and enters the same audited durable queue as
-  MCP. Required idempotency keys are stored only as actor/operation-scoped
-  hashes; a request fingerprint detects conflicting reuse, a bounded lease
-  coordinates concurrent attempts, and the normalized provider event is
-  persisted before enqueue so a crash retry cannot drift. Missing and
-  unauthorized objects share one 404 response, request bodies reject unknown
-  fields, pagination is bounded, and failures use Problem Details. The
-  bootstrap credential retains recovery access, while routine clients use
-  hashed, expiring, revocable service tokens.
-- REST repository creation requires administrative and all-repositories
-  authority. It registers a non-conflicting enabled repository, verifies clone
-  access through the locked credential-safe mirror, snapshots the resolved
-  default-branch push event, and queues that exact commit. Reindexing requires
-  read/write scope and the repository grant. Both mutations use longer bounded
-  leases for clone/fetch, deterministic provider delivery IDs, the same
-  transactional push-event queue as webhooks, exact response replay, and
-  one audit event per accepted delivery.
-- Source search resolves the caller-authorized repository descriptor to one
-  compatible active index, freezes its exact snapshot plan, and then runs a
-  first-class text query through lexical and graph-neighbor channels.
-  Optional cluster context is intersected with the token's repository claims.
-  Literal path prefixes constrain seeds and graph results. Every result includes
-  repository-qualified lines, snapshot/commit identity, retrieval provenance,
-  and an SCM-specific immutable commit permalink.
-- Repository Q&A requires a separate generation scope. The model receives only
-  bounded untrusted source excerpts and must return structured claims with exact
-  repository/path/range citations. Diffuse retains a claim only when every
-  citation maps unambiguously inside the supplied evidence; otherwise the whole
-  claim is discarded. Zero grounded claims fails closed as insufficient
-  evidence. Query/plan/source fingerprints and model/token provenance make the
-  response inspectable even if a newer snapshot activates concurrently.
-- Review analytics use the same repository-claim injection as every MCP read.
-  The query accepts a required half-open UTC-normalized window of at most 366
-  days and optionally resolves one public repository descriptor under those
-  claims. Review attempts are counted once even when a run has many findings;
-  applied findings are grouped separately by durable lineage. Current address,
-  open-critical/security, reaction, and context-reply state is projected only
-  for lineages selected by published runs in the window and is labeled with
-  the database transaction's `asOf` time. An optional exact author filter is
-  applied inside the same authorized SQL scope. Source-created PR cohorts
-  provide reviewed/unreviewed counts; source-merged cohorts provide exact
-  mean/median open-to-merge duration and UTC trends. The lifecycle ledger
-  exposes merge-timestamp completeness, so missing provider data is visible
-  rather than replaced with receipt time. The response defines every
-  denominator and refuses to infer historical policy eligibility or monetary
-  cost from missing versioned facts.
-- Extend MCP with organization/team RBAC, generation rate/usage policy, report
-  export/scheduling, and historical policy-eligibility/cost inputs.
-- The agent-handoff foundation projects one current finding or all current
-  findings from a published review into a revision-pinned, repository-scoped
-  MCP bundle for Codex, Claude Code, Conductor, Cursor, Devin, and generic MCP
-  clients. It refuses stale base/head revisions, closed PRs, addressed
-  lineages, and superseded finding occurrences. GitHub review output names the
-  exact handoff call. Add the optional local custom-URL bridge and per-user
-  agent launch configuration for literal one-click buttons.
-- Thread conversation and clarification in the SCM.
+- Public MCP and public REST are removed from v1. Private capability-gated
+  context tools serve only the isolated Agent Host over the internal
+  context-service path.
+- A future operator API (remote job submission, shell completion, broader
+  inspection) remains deferred; do not treat historical MCP/REST prose in older
+  revisions of this document as mounted surfaces.
+- Public repository Q&A, analytics reporting, MCP agent handoffs, and SCM
+  conversation threads are removed or deferred for v1.
 
 ## Durable workflow model
 
@@ -754,7 +674,10 @@ artifacts according to configured retention policy.
    as untrusted input.
 3. Enforce authorization in the data access layer, not only in handlers/UI.
 4. Never place credentials or source text in routine logs.
-5. Encrypt stored provider credentials with a rotatable key-encryption key.
+5. Encrypt stored provider credentials with a rotatable key-encryption key
+   (`service.crypto.sealed_secret` / hosted `sealed_secret`; delivery signing
+   keys are sealed today, per-installation SCM credentials remain the next
+   consumer).
 6. Restrict SCM and model egress; defend URL fetches against SSRF.
 7. Run PR code only in disposable sandbox isolation with no control-plane
    credentials.

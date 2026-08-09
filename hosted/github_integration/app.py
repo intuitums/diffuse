@@ -118,11 +118,15 @@ async def register_instance(payload: InstanceRegistration) -> dict[str, object]:
     credentials = redeem_enrollment_code(payload.code, display_name=payload.display_name)
     if credentials is None:
         raise HTTPException(status_code=400, detail="Connection code is invalid or expired")
+    # These secrets are returned exactly once. The integration service stores
+    # only a peppered hash of the instance token and an AES-GCM sealed copy of
+    # the delivery signing key; plaintext cannot be recovered later.
     return {
         "instance_id": credentials.instance_id,
         "installation_id": credentials.installation_id,
         "instance_token": credentials.instance_token,
         "event_signing_key": credentials.event_signing_key,
+        "secrets_shown_once": True,
     }
 
 

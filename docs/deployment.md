@@ -26,10 +26,12 @@ flow shows a single-use connection code.
 On the machine that runs self-hosted Diffuse, claim that code:
 
 ```bash
-diffuse github connect '<one-time-code>' --name 'production-reviewer'
+diffuse github connect '<one-time-code>' --name 'production-reviewer' \
+  --write-env /etc/diffuse/github-integration.env
 ```
 
-It prints the credentials to set in the self-hosted deployment's secret-managed
+Prefer `--write-env` (mode 0600) over printing secrets to stdout. The command
+returns credentials exactly once; set them in the self-hosted deployment's secret-managed
 environment. The required values are:
 
 ```dotenv

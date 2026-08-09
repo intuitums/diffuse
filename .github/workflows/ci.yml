@@ -315,7 +315,10 @@ jobs:
       # Compose validates opt-in runner profiles too. This is a well-formed
       # public key for configuration validation only; it has no corresponding
       # private key in CI and cannot sign a dispatch envelope.
-      DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY: Yfs8wlT_0BUOdJOjbOpcJ2khTWvDZi4y-K8XZOVxeFE
+      DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY: Yfs8wlT_0BUOdJOjbOpcJ2khTWvDZi4y-K8XZOVxeFE
+      # Shared wrap key required by agent-host env interpolation; CI never
+      # mints a live dispatch, so any 32-byte base64url value is sufficient.
+      DIFFUSE_REVIEW_AGENT_TRANSPORT_SECRET: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
       REVIEW_AGENT: codex
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -464,6 +467,8 @@ jobs:
           # secret in the repository. This generated CI file is removed in teardown.
           printf 'DIFFUSE_REVIEW_AGENT_CAPABILITY_SIGNING_KEY=%s\n' \
             "$(openssl rand -hex 48)" >> ci.env
+          printf 'DIFFUSE_REVIEW_AGENT_TRANSPORT_SECRET=%s\n' \
+            "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" >> ci.env
           printf 'DIFFUSE_REVIEW_AGENT_DISPATCH_PRIVATE_KEY=%s\n' \
             "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" >> ci.env
 

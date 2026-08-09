@@ -11,7 +11,6 @@ import subprocess
 import sys
 import tempfile
 import traceback
-from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,16 +20,8 @@ from urllib.parse import urlsplit, urlunsplit
 import psycopg2
 from pydantic import BaseModel, ConfigDict, Field
 
-from indexer.store import DEFAULT_DATABASE_URL, active_snapshot_id_for_repository, get_conn
-from repository_policy.discovery import discover_repository_policy
+from indexer.store import DEFAULT_DATABASE_URL, get_conn
 from repository_policy.models import validate_repo_path
-from repository_policy.resolve import (
-    apply_approved_custom_contexts,
-    apply_approved_learned_rules,
-    resolve_review_policy,
-)
-from retriever.context_models import CrossRepositoryContextPlan
-from retriever.retrieve import parse_changed_files, retrieve_context_from_plan
 from service.cli import (
     agent as agent_cli,
 )
@@ -52,21 +43,11 @@ from service.cli import (
 from service.cli import (
     repository as repository_cli,
 )
-from service.code_query import code_query_target_for_plan
-from service.cross_repository import resolve_cross_repository_context_plan
 from service.diff_parser import ParsedDiff, parse_unified_diff
 from service.models.review import ReviewFinding, ReviewReport
 from service.repositories import RegisteredRepository, list_repositories
-from service.review.engine import (
-    PROMPT_VERSION,
-    generate_review,
-)
-from service.review.request import ReviewRequest
 from service.review.agents import review_agent_name
-from service.review.tools import MemoryToolRecorder, build_review_tool_provider
 from service.scm import validate_branch_name
-from service.storage.custom_context import load_active_custom_contexts
-from service.storage.learning import load_active_learned_rules
 
 MAX_LOCAL_DIFF_BYTES = 5 * 1024 * 1024
 MAX_GIT_ERROR_CHARS = 2000
@@ -550,21 +531,13 @@ def _stderr_progress_reporter() -> ProgressReporter | None:
 
 
 def report_review_depth(stream: TextIO | None = None) -> None:
-    """Name what each model will actually be sent, and refuse the impossible.
+    """Report that local model-depth selection is gone in Agent-only Diffuse."""
 
-    The worker resolves this at startup; the CLI has no startup, so it resolves
-    it before the first model call instead. Written straight to stderr rather
-    than through `ProgressReporter`, which overwrites its own line and stays
-    silent off a terminal -- the opposite of what a diagnostic about a control
-    the operator will not get needs to be.
-    """
-
-    support = resolve_review_depth_support()
-    for line in support.report_lines():
-        print(line, file=stream if stream is not None else sys.stderr)
-    refusal = support.refusal()
-    if refusal is not None:
-        raise ValueError(refusal)
+    print(
+        "Review depth is controlled by the configured Review Agent; "
+        "there is no local model depth plan to report.",
+        file=stream if stream is not None else sys.stderr,
+    )
 
 
 def run_local_review(
@@ -580,10 +553,6 @@ def run_local_review(
     def stage(message: str) -> None:
         if progress is not None:
             progress.stage(message)
-
-    model_progress: Callable[[], None] | None = (
-        progress.model_step if progress is not None else None
-    )
 
     stage("resolving repository identity")
     root = find_repository_root(start)
@@ -624,20 +593,6 @@ def run_local_review(
         raise ValueError(
             "The local diff changed after the unfinished review; start a new review"
         )
-    parsed = parse_unified_diff(local_diff.diff_text)
-    changed_paths = {
-        path
-        for file in parsed.files
-        for path in (file.old_path, file.new_path)
-        if path is not None
-    }
-    if not changed_paths:
-        changed_paths = parse_changed_files(local_diff.diff_text)
-    stage("discovering repository policy")
-    policy = resolve_review_policy(
-        discover_repository_policy(root),
-        changed_paths,
-    )
     # Local branches cannot safely receive an Agent Host access grant yet. Keep
     # the command explicit rather than falling back to an in-process model API.
     selected_runtime = review_agent_name()
@@ -648,126 +603,6 @@ def run_local_review(
     raise ValueError(
         "Local branch review is unavailable in Agent-only Diffuse. "
         "Push the branch and let the configured Agent Host review the pull request."
-    )
-    with closing(get_conn()) as conn:
-        snapshot_id = active_snapshot_id_for_repository(conn, repository.id)
-        if snapshot_id is None:
-            raise RuntimeError(
-                "Repository has no compatible active index; run maintenance reindex first"
-            )
-        learned_rules = load_active_learned_rules(
-            conn,
-            repository_id=repository.id,
-        )
-        custom_contexts = load_active_custom_contexts(
-            conn,
-            repository_id=repository.id,
-        )
-        policy = apply_approved_learned_rules(policy, learned_rules)
-        policy = apply_approved_custom_contexts(policy, custom_contexts)
-        context_plan = resolve_cross_repository_context_plan(
-            conn,
-            primary_repository_id=repository.id,
-            primary_snapshot_id=snapshot_id,
-            explicit_repositories=policy.context_repositories,
-        )
-    if previous_state is not None and (
-        previous_state.index_snapshot_id != snapshot_id
-        or previous_state.policy_fingerprint != policy.fingerprint
-        or previous_state.review_agent != selected_runtime
-        or previous_state.review_model != selected_review_model
-        or previous_state.review_verifier_model != selected_verifier_model
-        or previous_state.prompt_version != PROMPT_VERSION
-    ):
-        raise ValueError(
-            "Review inputs changed after the unfinished run; start a new review"
-        )
-    state = CliReviewState(
-        status="running",
-        repository_id=repository.id,
-        repository_full_name=repository.full_name,
-        base_ref=local_diff.base_ref,
-        diff_fingerprint=local_diff.fingerprint,
-        include_untracked=include_untracked,
-        index_snapshot_id=snapshot_id,
-        policy_fingerprint=policy.fingerprint,
-        review_agent=selected_runtime,
-        review_model=selected_review_model,
-        review_verifier_model=selected_verifier_model,
-        prompt_version=PROMPT_VERSION,
-        attempt_count=(
-            previous_state.attempt_count + 1
-            if previous_state is not None
-            else 1
-        ),
-    )
-    _write_state(root, state)
-    try:
-        stage("retrieving repository context")
-        context = retrieve_context_from_plan(local_diff.diff_text, context_plan)
-        tools = None
-        if (
-            repository.scm_provider == "github"
-            and isinstance(context_plan, CrossRepositoryContextPlan)
-        ):
-            # Built for the agent-CLI path; the one-shot runtime ignores it and
-            # keeps using the pre-fused blob above. Constructing it here means a
-            # selectable agent runtime finds tools already on the request.
-            tools = build_review_tool_provider(
-                code_query_target_for_plan(
-                    repository_id=repository.id,
-                    repository_name=repository.full_name,
-                    remote_url=repository.scm_base_url,
-                    default_branch=repository.default_branch,
-                    context_plan=context_plan,
-                    include_related=bool(context_plan.related_snapshots),
-                ),
-                recorder=MemoryToolRecorder(),
-            )
-        stage("running review model")
-        report = generate_review(
-            local_diff.diff_text,
-            list(context.contexts),
-            request=ReviewRequest(
-                diff_text=local_diff.diff_text,
-                contexts=list(context.contexts),
-                progress_callback=model_progress,
-                policy=policy,
-                candidate_model=selected_review_model,
-                verifier_model=selected_verifier_model,
-                worktree=root,
-                context_plan=context_plan,
-                tools=tools,
-            ),
-        )
-    except Exception:
-        _write_state(
-            root,
-            state.model_copy(
-                update={
-                    "status": "failed",
-                    "error_code": "review_failed",
-                }
-            ),
-        )
-        raise
-    _write_state(
-        root,
-        state.model_copy(
-            update={
-                "status": "completed",
-                "error_code": None,
-            }
-        ),
-    )
-    return LocalReviewResult(
-        repository=repository,
-        local_diff=local_diff,
-        snapshot_id=snapshot_id,
-        review_model_name=selected_review_model,
-        review_verifier_model_name=selected_verifier_model,
-        prompt_version=PROMPT_VERSION,
-        report=report,
     )
 
 

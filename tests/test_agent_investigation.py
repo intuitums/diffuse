@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from service.agents import investigation
 from service.agents.claude_investigation import build_argv, parse_envelope
+from service.agents.context_bridge import MAX_SEARCH_LIMIT, McpBridge, write_mcp_config
 from service.agents.errors import (
     AgentInvestigationCoverageCaveat,
     AgentInvestigationError,
@@ -22,7 +23,6 @@ from service.agents.errors import (
     AgentInvestigationTerminalError,
     AgentInvestigationTimeout,
 )
-from service.agents.context_bridge import MAX_SEARCH_LIMIT, McpBridge, write_mcp_config
 from service.agents.profiles import REVIEW, SessionProfile
 from service.agents.replay import SessionTranscript, record, replay
 from service.review.agent_environment import CREDENTIAL_ENVIRONMENT
@@ -467,7 +467,11 @@ def test_a_rate_limit_survives_a_non_zero_exit(executable, tmp_path):
 
 def test_second_max_turns_is_an_explicit_coverage_caveat(executable, tmp_path):
     def runner(*_args):
-        return investigation.SessionRun(1, _envelope("", is_error=True, subtype="error_max_turns"), "")
+        return investigation.SessionRun(
+            1,
+            _envelope("", is_error=True, subtype="error_max_turns"),
+            "",
+        )
 
     with pytest.raises(AgentInvestigationCoverageCaveat, match="coverage caveat") as raised:
         investigation.run_structured(

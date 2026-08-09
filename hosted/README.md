@@ -27,6 +27,9 @@ DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL=https://api.diffuse.website
 # supplies DATABASE_URL automatically.
 DIFFUSE_GITHUB_INTEGRATION_DATABASE_URL=postgresql://...
 DIFFUSE_GITHUB_INTEGRATION_TOKEN_PEPPER=...                  # base64url, at least 32 random bytes
+DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK=...               # base64url, exactly 32 random bytes
+# Optional dual-read key during rotation:
+# DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK_PREVIOUS=...
 GITHUB_APP_ID=...
 GITHUB_APP_PRIVATE_KEY=...                      # Diffuse GitHub App PEM; literal \n is accepted
 GITHUB_WEBHOOK_SECRET=...
@@ -38,6 +41,14 @@ GITHUB_OAUTH_CLIENT_SECRET=...
 they reach the database. Generate it once with
 `openssl rand -base64 48 | tr '+/' '-_' | tr -d '='`; preserve it for the life
 of the database or every stored credential becomes invalid.
+
+`DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK` seals reversible secrets such as
+per-instance delivery signing keys with AES-GCM before they are stored.
+Generate it with
+`head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '='`.
+During rotation, keep the old value in
+`DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK_PREVIOUS` until every row has been
+rewritten under the new key.
 
 The OAuth application's callback URL is:
 

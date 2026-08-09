@@ -20,15 +20,16 @@ from service.agents.dispatch import (
     verify_dispatch,
 )
 from service.agents.errors import AgentInvestigationAuthRequired
-from service.agents.profiles import REVIEW
 from service.agents.investigation import run_structured
-from service.review.agent_sandbox import preflight
+from service.agents.profiles import REVIEW
+from service.agents.transport_secret import validate_transport_secret
 from service.review.agent_host import (
     CONTAINER_COMPARTMENT_PROFILE,
     assert_compartment,
     cli_status,
     resolve_cli,
 )
+from service.review.agent_sandbox import preflight
 from service.review.workspace import SourceArtifactError, materialize_source_artifact
 
 # The signed envelope and archive validator necessarily hold several copies of
@@ -42,6 +43,7 @@ _review_slots = threading.BoundedSemaphore(value=1)
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     preflight()
     validate_dispatch_public_key()
+    validate_transport_secret()
     yield
 
 
