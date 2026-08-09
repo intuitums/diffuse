@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import hmac
+import os
 import socket
 import threading
 from collections.abc import AsyncIterator
@@ -275,7 +275,6 @@ def _review_prompt(diff_text: str) -> str:
 def review(invocation: ReviewInvocation) -> dict[str, object]:
     """Execute one bounded CLI review in an empty ephemeral workspace."""
 
-    from tempfile import TemporaryDirectory
 
     if not _review_slots.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="runner busy")

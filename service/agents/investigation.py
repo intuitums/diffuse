@@ -8,12 +8,12 @@ import os
 import signal
 import subprocess
 import time
-from threading import Event
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 
 from pydantic import BaseModel, ValidationError
 

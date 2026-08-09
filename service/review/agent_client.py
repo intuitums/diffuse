@@ -93,16 +93,23 @@ class AgentRuntime:
             while payload.get("status") in {"accepted", "running"}:
                 if time.time() >= deadline:
                     _cancel(url, session)
-                    raise NativeRunnerError(f"{self._runtime} runner exceeded its investigation deadline")
+                    raise NativeRunnerError(
+                        f"{self._runtime} runner exceeded its investigation deadline"
+                    )
                 time.sleep(NATIVE_RUNNER_POLL_SECONDS)
                 if request.progress_callback is not None:
                     request.progress_callback()
                 payload = _investigation_status(url, session)
                 _record_lifecycle(payload, session)
-            if payload.get("status") == "failed" and payload.get("error_code") == "agent_auth_required":
+            if (
+                payload.get("status") == "failed"
+                and payload.get("error_code") == "agent_auth_required"
+            ):
                 raise ValueError(f"agent_auth_required:{self._runtime}")
             if payload.get("status") != "completed" or not isinstance(payload.get("result"), dict):
-                raise NativeRunnerError(f"{self._runtime} runner did not complete the investigation")
+                raise NativeRunnerError(
+                    f"{self._runtime} runner did not complete the investigation"
+                )
             result = payload["result"]
             _accept_completion(result, session)
             return _report_from_runner(result, request)
@@ -110,7 +117,9 @@ class AgentRuntime:
             raise NativeRunnerError(f"{self._runtime} runner returned an invalid result") from error
 
 
-def _start_or_reconnect(url: str, envelope: str, session: NativeSessionDispatch) -> dict[str, object]:
+def _start_or_reconnect(
+    url: str, envelope: str, session: NativeSessionDispatch
+) -> dict[str, object]:
     """Start once, then reconnect by immutable investigation id on an uncertain POST."""
 
     try:
@@ -131,7 +140,9 @@ def _start_or_reconnect(url: str, envelope: str, session: NativeSessionDispatch)
         try:
             return _investigation_status(url, session)
         except NativeRunnerError as error:
-            raise NativeRunnerError(f"{session.runtime} runner dispatch outcome is unknown") from error
+            raise NativeRunnerError(
+                f"{session.runtime} runner dispatch outcome is unknown"
+            ) from error
 
 
 def _investigation_status(url: str, session: NativeSessionDispatch) -> dict[str, object]:
