@@ -1,0 +1,16 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+[scripts]
+setup = """
+set -euo pipefail
+
+if command -v uv >/dev/null 2>&1; then
+  uv venv --seed .venv --python 3.12
+else
+  python3.12 -m venv .venv
+fi
+
+.venv/bin/python -m pip install --require-hashes -r requirements.lock
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pip install --no-deps -e .
+"""
