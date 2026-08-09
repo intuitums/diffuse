@@ -35,7 +35,6 @@ from retriever.retrieve import (
     max_context_chars,
     max_context_chunks,
     retrieve_context_from_plan,
-    retrieve_context_from_snapshot,
 )
 from service.agents.access_grant import session_capability_signing_key
 from service.agents.contract import SessionScope, mint_session_capability
@@ -57,7 +56,6 @@ from service.github.check import (
     find_github_check_run,
     review_check_conclusion,
 )
-from service.github.conversation import publish_github_conversation_reply
 from service.github.feedback import fetch_github_review_reactions
 from service.github.repository import fetch_github_repository_metadata
 from service.github.review import (
@@ -96,6 +94,11 @@ from service.repositories import (
     resolve_github_repository,
     update_mirror_state,
 )
+from service.review.agent_client import NativeSessionDispatch
+from service.review.agents import (
+    hosted_review_agent_name,
+    resolve_review_agent,
+)
 from service.review.engine import (
     PROMPT_VERSION,
     ReviewDepthSupport,
@@ -106,7 +109,6 @@ from service.review.failure_notice import (
     agent_auth_required_failure,
     terminal_review_failure,
 )
-from service.review.agent_client import NativeSessionDispatch
 from service.review.provenance import (
     PullRequestCommits,
     PullRequestProvenance,
@@ -116,10 +118,6 @@ from service.review.provenance import (
 )
 from service.review.report_assembly import all_files_disabled_report, reviewable_diff
 from service.review.request import ReviewRequest
-from service.review.agents import (
-    hosted_review_agent_name,
-    resolve_review_agent,
-)
 from service.review.workspace import SourceArtifact, build_source_artifact
 from service.scm import (
     FeedbackSyncEvent,
@@ -129,7 +127,10 @@ from service.scm import (
     normalize_base_url,
     scm_api_timeout_seconds,
 )
-from service.storage.agent_investigation import abandon_agent_investigation, create_agent_investigation
+from service.storage.agent_investigation import (
+    abandon_agent_investigation,
+    create_agent_investigation,
+)
 from service.storage.check import (
     MAX_COMPLETION_ATTEMPTS,
     CheckRunHandle,
@@ -150,7 +151,6 @@ from service.storage.conversation import (
     mark_conversation_failed,
     mark_conversation_ignored,
     mark_conversation_published,
-    mark_conversation_ready,
 )
 from service.storage.custom_context import load_active_custom_contexts
 from service.storage.feedback import (
@@ -170,10 +170,8 @@ from service.storage.finding import (
     record_finding_threads,
 )
 from service.storage.learning import (
-    begin_rule_learning,
     load_active_learned_rules,
     mark_rule_learning_failed,
-    persist_rule_suggestions,
     schedule_due_rule_learning_jobs,
 )
 from service.storage.migrations import verify_database_current
@@ -1954,129 +1952,6 @@ async def process_conversation_job(job: WorkflowJob, worker_id: str) -> None:
     if job.job_type != "answer_review_comment" or job.pull_request_id is None:
         raise NonRetryableError(f"Unsupported conversation workflow job: {job.job_type}")
     raise NonRetryableError("Agent conversations are not available yet")
-    event = ReviewConversationEvent.from_payload(job.payload)
-    if (
-        event.base_sha != job.base_revision
-        or event.head_sha != job.revision
-        or event.scope_key != job.scope_key
-    ):
-        raise NonRetryableError("Conversation workflow identity does not match its payload")
-
-    try:
-        if not await anyio.to_thread.run_sync(
-            partial(_heartbeat_lease, job.id, worker_id)
-        ):
-            raise RuntimeError("Workflow lease was lost before conversation processing")
-        work = await anyio.to_thread.run_sync(partial(_begin_conversation, job.id))
-        if work.root_comment_id != event.root_comment_id:
-            raise NonRetryableError("Conversation thread does not match its workflow payload")
-        if work.status == "ignored":
-            completed = await anyio.to_thread.run_sync(
-                partial(_complete, job.id, worker_id)
-            )
-            if not completed:
-                raise RuntimeError("Workflow lease was lost before completion")
-            return
-        if work.is_published:
-            completed = await anyio.to_thread.run_sync(
-                partial(_complete, job.id, worker_id)
-            )
-            if not completed:
-                raise RuntimeError("Workflow lease was lost before completion")
-            return
-
-        if work.needs_generation:
-            retrieval_diff = build_conversation_retrieval_diff(event, work.finding)
-            snapshot_id = await anyio.to_thread.run_sync(
-                partial(compatible_snapshot_id, event.repo_full_name, job.repository_id)
-            )
-            policy = await anyio.to_thread.run_sync(
-                partial(
-                    _load_review_policy,
-                    snapshot_id,
-                    retrieval_diff,
-                    job.repository_id,
-                )
-            )
-            path_policy = policy.for_path(event.file_path)
-            if (
-                path_policy is None
-                or not path_policy.reviewable
-                or not path_policy.respond_to_comments
-            ):
-                await anyio.to_thread.run_sync(
-                    partial(
-                        _ignore_conversation,
-                        work.id,
-                        "conversation_disabled",
-                    )
-                )
-                completed = await anyio.to_thread.run_sync(
-                    partial(_complete, job.id, worker_id)
-                )
-                if not completed:
-                    raise RuntimeError("Workflow lease was lost before completion")
-                return
-            context_bundle = await anyio.to_thread.run_sync(
-                partial(
-                    retrieve_context_from_snapshot,
-                    event.repo_full_name,
-                    retrieval_diff,
-                    snapshot_id,
-                )
-            )
-            await anyio.to_thread.run_sync(
-                partial(
-                    _generate_and_persist_conversation,
-                    job,
-                    event,
-                    work,
-                    list(context_bundle.contexts),
-                    snapshot_id,
-                    worker_id,
-                )
-            )
-
-        publication = await anyio.to_thread.run_sync(
-            partial(_begin_conversation_publication, work.id)
-        )
-        if not publication.is_published:
-            if event.provider == "github":
-                result = await publish_github_conversation_reply(
-                    event,
-                    answer=publication.answer,
-                    references=publication.references,
-                )
-            else:
-                raise NonRetryableError(
-                    f"Unsupported SCM provider: {event.provider}"
-                )
-            await anyio.to_thread.run_sync(
-                partial(_mark_conversation_published, work.id, result)
-            )
-        if not await anyio.to_thread.run_sync(
-            partial(_heartbeat_lease, job.id, worker_id)
-        ):
-            raise RuntimeError("Workflow lease was lost before conversation completion")
-        completed = await anyio.to_thread.run_sync(
-            partial(_complete, job.id, worker_id)
-        )
-        if not completed:
-            raise RuntimeError("Workflow lease was lost before conversation completion")
-        LOGGER.info(
-            "Conversation answered repo=%s pr=%s thread=%s revision=%s job=%s",
-            event.repo_full_name,
-            event.number,
-            event.root_comment_id,
-            event.head_sha,
-            job.id,
-        )
-    except Exception:
-        await anyio.to_thread.run_sync(
-            partial(_mark_conversation_failed, job.id)
-        )
-        raise
-
 
 async def process_index_job(job: WorkflowJob, worker_id: str) -> None:
     event = PushEvent.from_payload(job.payload)

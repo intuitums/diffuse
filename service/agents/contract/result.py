@@ -133,7 +133,9 @@ def _classify_pydantic_error(error: dict[str, Any]) -> ResultValidationFailureCo
     return ResultValidationFailureCode.SCHEMA_MISMATCH
 
 
-def validate_agent_investigation_result(payload: str | bytes | dict[str, Any]) -> AgentInvestigationResult:
+def validate_agent_investigation_result(
+    payload: str | bytes | dict[str, Any],
+) -> AgentInvestigationResult:
     """Parse and validate a runner result, raising a taxonomy-coded error on failure."""
 
     if isinstance(payload, (str, bytes)):

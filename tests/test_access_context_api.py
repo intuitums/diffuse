@@ -9,7 +9,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 
-from service.agents import host, context_api, context_server
+from service.agents import context_api, context_server, host
 from service.agents.contract import AgentInvestigationResult, SessionScope, mint_session_capability
 from service.review.workspace import SourceArtifact, build_source_artifact
 from service.storage.agent_investigation import AgentInvestigationReviewAttempt

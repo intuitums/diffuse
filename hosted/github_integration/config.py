@@ -29,7 +29,9 @@ def optional(name: str) -> str | None:
 def public_url() -> str:
     value = required("DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL").rstrip("/")
     if not value.startswith("https://") or "/" in value[len("https://") :]:
-        raise HostedConfigurationError("DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL must be an HTTPS origin")
+        raise HostedConfigurationError(
+            "DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL must be an HTTPS origin"
+        )
     return value
 
 
@@ -69,7 +71,9 @@ def token_key() -> bytes:
             "DIFFUSE_GITHUB_INTEGRATION_TOKEN_PEPPER must be base64url text"
         ) from error
     if len(decoded) < 32:
-        raise HostedConfigurationError("DIFFUSE_GITHUB_INTEGRATION_TOKEN_PEPPER must decode to 32 bytes")
+        raise HostedConfigurationError(
+            "DIFFUSE_GITHUB_INTEGRATION_TOKEN_PEPPER must decode to 32 bytes"
+        )
     return decoded
 
 
