@@ -219,7 +219,7 @@ def record_webhook_event(
             INSERT INTO github_webhook_events (
                 delivery_id, github_installation_id, event_name, payload, payload_sha256
             )
-            SELECT %s, installation.github_installation_id, %s, %s, %s::jsonb, %s
+            SELECT %s, installation.github_installation_id, %s, %s::jsonb, %s
             FROM app_installations AS installation
             WHERE installation.github_installation_id = %s AND installation.active
             ON CONFLICT (delivery_id) DO NOTHING

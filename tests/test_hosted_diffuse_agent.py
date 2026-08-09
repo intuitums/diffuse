@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ if str(HOSTED_ROOT) not in sys.path:
 
 from diffuse_setup import app as hosted_app  # noqa: E402
 from diffuse_setup import config as hosted_config  # noqa: E402
+from diffuse_setup import store as hosted_store  # noqa: E402
 
 from service.hosted import relay  # noqa: E402
 
@@ -135,3 +137,40 @@ def test_hosted_database_url_allows_an_explicit_provider_override(monkeypatch):
     )
 
     assert hosted_config.database_url() == "postgresql://provider.example/diffuse"
+
+
+def test_hosted_webhook_insert_binds_each_placeholder_once(monkeypatch):
+    statements: list[tuple[str, tuple[object, ...]]] = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, parameters=()):
+            statements.append((query, parameters))
+            assert query.count("%s") == len(parameters)
+
+        def fetchone(self):
+            return ("delivery-1",)
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    @contextmanager
+    def fake_connection():
+        yield Connection()
+
+    monkeypatch.setattr(hosted_store, "connection", fake_connection)
+
+    assert hosted_store.record_webhook_event(
+        delivery_id="delivery-1",
+        installation_id=42,
+        event_name="push",
+        payload={"installation": {"id": 42}},
+        payload_sha256="hash",
+    )
+    assert len(statements) == 2
