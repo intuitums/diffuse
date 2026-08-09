@@ -33,6 +33,7 @@ import stat
 import threading
 import time
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 import httpx
@@ -46,6 +47,8 @@ APP_ID_VARIABLE = "GITHUB_APP_ID"
 INSTALLATION_ID_VARIABLE = "GITHUB_APP_INSTALLATION_ID"
 PRIVATE_KEY_FILE_VARIABLE = "GITHUB_APP_PRIVATE_KEY_FILE"
 PRIVATE_KEY_VARIABLE = "GITHUB_APP_PRIVATE_KEY"
+HOSTED_TOKEN_BROKER_URL_VARIABLE = "DIFFUSE_HOSTED_TOKEN_BROKER_URL"
+HOSTED_INSTANCE_TOKEN_VARIABLE = "DIFFUSE_HOSTED_INSTANCE_TOKEN"
 DEFAULT_GITHUB_API_VERSION = "2026-03-10"
 
 MAX_PRIVATE_KEY_BYTES = 16_384
@@ -208,6 +211,40 @@ def app_credentials() -> AppCredentials | None:
     return AppCredentials(app_id, installation_id, private_key)
 
 
+@dataclass(frozen=True)
+class HostedTokenBroker:
+    """The narrow hosted credential bridge for the shared Diffuse-Agent App.
+
+    The customer-operated instance proves only its own enrollment credential to
+    this endpoint. It never receives the shared App private key.
+    """
+
+    url: str
+    instance_token: str
+
+
+def hosted_token_broker() -> HostedTokenBroker | None:
+    url = os.environ.get(HOSTED_TOKEN_BROKER_URL_VARIABLE, "").strip().rstrip("/")
+    instance_token = os.environ.get(HOSTED_INSTANCE_TOKEN_VARIABLE, "").strip()
+    if not url and not instance_token:
+        return None
+    if not url or not instance_token:
+        raise GitHubAppConfigurationError(
+            "Hosted Diffuse-Agent authentication is partially configured; set both "
+            f"{HOSTED_TOKEN_BROKER_URL_VARIABLE} and {HOSTED_INSTANCE_TOKEN_VARIABLE}."
+        )
+    parsed = normalize_base_url(url, field_name=HOSTED_TOKEN_BROKER_URL_VARIABLE)
+    if not parsed.startswith("https://"):
+        raise GitHubAppConfigurationError(
+            f"{HOSTED_TOKEN_BROKER_URL_VARIABLE} must be an HTTPS origin"
+        )
+    if len(instance_token) < 32:
+        raise GitHubAppConfigurationError(
+            f"{HOSTED_INSTANCE_TOKEN_VARIABLE} is too short"
+        )
+    return HostedTokenBroker(parsed, instance_token)
+
+
 def _mint_app_jwt(credentials: AppCredentials) -> str:
     issued_at = int(time.time()) - JWT_BACKDATE_SECONDS
     try:
@@ -236,7 +273,13 @@ def validate_app_configuration() -> None:
     malformed PEM is deterministic configuration. Catch it at worker startup
     rather than dead-lettering the first claimed review job.
     """
+    broker = hosted_token_broker()
     credentials = app_credentials()
+    if broker is not None and credentials is not None:
+        raise GitHubAppConfigurationError(
+            "Configure either local GitHub App credentials or the hosted Diffuse-Agent "
+            "token broker, not both."
+        )
     if credentials is not None:
         _mint_app_jwt(credentials)
 
@@ -332,6 +375,55 @@ def installation_token(credentials: AppCredentials | None = None) -> str:
         return token
 
 
+def hosted_installation_token(broker: HostedTokenBroker | None = None) -> str:
+    """Get a cached installation token from the hosted Diffuse-Agent broker."""
+    global _cached_token, _cached_expires_at, _cached_identity
+
+    broker = broker or hosted_token_broker()
+    if broker is None:
+        raise GitHubAppConfigurationError("Hosted Diffuse-Agent authentication is not configured")
+    identity = (
+        "hosted",
+        f"{broker.url}:{sha256(broker.instance_token.encode()).hexdigest()}",
+    )
+    with _cache_lock:
+        fresh = (
+            _cached_token is not None
+            and _cached_identity == identity
+            and time.monotonic() < _cached_expires_at - TOKEN_REFRESH_MARGIN_SECONDS
+        )
+        if fresh:
+            return _cached_token
+        try:
+            response = httpx.post(
+                f"{broker.url}/v1/installation-token",
+                headers={"Authorization": f"Bearer {broker.instance_token}"},
+                timeout=scm_api_timeout_seconds(),
+            )
+        except httpx.HTTPError as error:
+            raise GitHubAppError(
+                f"Could not reach the Diffuse-Agent token broker: {error}"
+            ) from error
+        if response.status_code in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
+            raise GitHubAppConfigurationError(
+                "Diffuse-Agent rejected this self-hosted instance credential; reconnect it."
+            )
+        if response.status_code >= httpx.codes.BAD_REQUEST:
+            raise GitHubAppError(
+                f"Diffuse-Agent could not mint an installation token (HTTP {response.status_code})"
+            )
+        try:
+            token = response.json()["token"]
+        except (ValueError, KeyError, TypeError) as error:
+            raise GitHubAppError("Diffuse-Agent returned an invalid installation token") from error
+        if not isinstance(token, str) or not token:
+            raise GitHubAppError("Diffuse-Agent returned an empty installation token")
+        _cached_token = token
+        _cached_expires_at = time.monotonic() + 3600.0
+        _cached_identity = identity
+        return token
+
+
 def reset_installation_token_cache() -> None:
     """Drop the cached token. For tests, and for a forced refresh after a 401."""
     global _cached_token, _cached_expires_at, _cached_identity
@@ -348,6 +440,9 @@ def github_token() -> str:
     permissions and installation rather than to a person, and expires on its
     own. Falls back to ``GITHUB_TOKEN`` when no App is configured.
     """
+    broker = hosted_token_broker()
+    if broker is not None:
+        return hosted_installation_token(broker)
     credentials = app_credentials()
     if credentials is not None:
         return installation_token(credentials)

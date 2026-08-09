@@ -100,6 +100,13 @@ def _run_worker(arguments: Sequence[str]) -> None:
     worker_main()
 
 
+def _run_hosted_relay(arguments: Sequence[str]) -> None:
+    from service.hosted.relay import main as relay_main
+
+    _replace_process_arguments(arguments)
+    relay_main()
+
+
 def _run_healthcheck(arguments: Sequence[str]) -> None:
     if arguments:
         raise ValueError("The healthcheck command does not accept positional arguments")
@@ -193,6 +200,8 @@ def main(arguments: Sequence[str] | None = None) -> None:
             _run_api(selected)
         elif command == "worker":
             _run_worker(selected)
+        elif command == "relay":
+            _run_hosted_relay(selected)
         elif command == "healthcheck":
             _run_healthcheck(selected)
         elif command == "review-compartment-preflight":
