@@ -22,25 +22,39 @@ ensure_apt_packages() {
 }
 
 ensure_pgdg_repo() {
+  # Some Cursor bases ship a stale pgdg.list without a usable signing key.
+  # Disable it before any apt-get update, refresh the keyring, then re-enable.
   if [[ -f /etc/apt/sources.list.d/pgdg.list ]]; then
-    return 0
+    sudo mv /etc/apt/sources.list.d/pgdg.list /etc/apt/sources.list.d/pgdg.list.disabled
   fi
+
   ensure_apt_packages ca-certificates curl gnupg
-  sudo install -d /usr/share/postgresql-common/pgdg
-  if [[ ! -f /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc ]]; then
-    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-      | sudo gpg --dearmor -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
-  fi
+  sudo install -d -m 0755 /usr/share/postgresql-common/pgdg
+
+  local tmp_asc tmp_gpg
+  tmp_asc="$(mktemp)"
+  tmp_gpg="$(mktemp)"
+  curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o "${tmp_asc}"
+  gpg --batch --yes --dearmor -o "${tmp_gpg}" "${tmp_asc}"
+  sudo install -m 0644 "${tmp_gpg}" /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+  rm -f "${tmp_asc}" "${tmp_gpg}"
+
   . /etc/os-release
   echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
     | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+  sudo rm -f /etc/apt/sources.list.d/pgdg.list.disabled
   sudo apt-get update -y
 }
+
+# If Postgres is missing, or a pgdg source is already present, refresh the key
+# before any other apt work so a stale source cannot break apt-get update.
+if ! command -v pg_lsclusters >/dev/null 2>&1 || [[ -f /etc/apt/sources.list.d/pgdg.list ]]; then
+  ensure_pgdg_repo
+fi
 
 ensure_apt_packages python3.12 python3.12-venv build-essential
 
 if ! command -v pg_lsclusters >/dev/null 2>&1; then
-  ensure_pgdg_repo
   # postgresql-17 creates cluster 17/main; pgvector is required by the frozen v1 baseline.
   ensure_apt_packages postgresql-17 postgresql-client-17 postgresql-17-pgvector
 fi
