@@ -356,7 +356,16 @@ class _CrossRepositoryCursor:
         if "repository_cluster_members AS source" in query:
             self._rows = list(self._cluster_members)
         elif "clone_url IS NOT NULL" in query:
-            target = self._onboarded.get(parameters[2])
+            if "LOWER(full_name) = LOWER(%s)" not in query:
+                raise AssertionError("Context repository lookup must be case-insensitive")
+            target = next(
+                (
+                    repository
+                    for full_name, repository in self._onboarded.items()
+                    if full_name.casefold() == parameters[2].casefold()
+                ),
+                None,
+            )
             self._rows = [target] if target else []
         elif "FROM index_snapshots" in query:
             snapshot = self._snapshots.get(parameters[0])
@@ -449,3 +458,33 @@ def test_clustered_explicit_context_repository_is_still_retrieved():
         (item.repository_full_name, item.source, item.cluster_ids)
         for item in resolution.plan.related_snapshots
     ] == [("owner/secrets", "explicit+cluster", (7,))]
+
+
+def test_clustered_context_repository_identity_is_case_insensitive():
+    """GitHub treats owner and repository names case-insensitively.
+
+    A differently cased `.diffuse` entry must not turn an operator-approved
+    repository into an unavailable context target.
+    """
+    resolution = resolve_cross_repository_context(
+        _cross_repository_connection(
+            cluster_members=(
+                {
+                    "id": 2,
+                    "full_name": "owner/secrets",
+                    "enabled": True,
+                    "scm_provider": "github",
+                    "scm_base_url": "https://github.com",
+                    "cluster_ids": [7],
+                },
+            )
+        ),
+        primary_repository_id=1,
+        primary_snapshot_id=None,
+        explicit_repositories=("Owner/Secrets",),
+    )
+
+    assert resolution.dropped_repositories == ()
+    assert [item.repository_full_name for item in resolution.plan.related_snapshots] == [
+        "owner/secrets"
+    ]
