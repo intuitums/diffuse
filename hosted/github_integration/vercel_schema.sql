@@ -28,6 +28,8 @@ BEGIN
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
+    -- event_signing_key is AES-GCM sealed under
+    -- DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK (see sealed_secret.py).
     CREATE TABLE IF NOT EXISTS self_hosted_instances (
         id UUID PRIMARY KEY,
         github_installation_id BIGINT NOT NULL REFERENCES app_installations (github_installation_id)

@@ -21,9 +21,6 @@ from typing import Any
 import httpx
 
 from service.github.api import normalize_pull_request_event, normalize_push_event
-from service.repositories import RepositoryIdentityConflictError
-from service.scm import normalize_base_url, scm_api_timeout_seconds
-
 from service.hosted.webhook_server import (
     ACCEPTED_ACTIONS,
     _is_github_managed_description_update,
@@ -36,6 +33,8 @@ from service.hosted.workflow import (
     EventOrderConflictError,
     RepositoryNotOnboardedError,
 )
+from service.repositories import RepositoryIdentityConflictError
+from service.scm import normalize_base_url, scm_api_timeout_seconds
 
 LOGGER = logging.getLogger(__name__)
 
@@ -172,7 +171,9 @@ def pull_once(config: DeliveryPollerConfiguration) -> int:
             f"Could not reach the GitHub Integration Service: {error}"
         ) from error
     if response.status_code == httpx.codes.UNAUTHORIZED:
-        raise GitHubDeliveryPollerError("GitHub Integration Service rejected this instance credential")
+        raise GitHubDeliveryPollerError(
+            "GitHub Integration Service rejected this instance credential"
+        )
     if response.status_code >= httpx.codes.BAD_REQUEST:
         raise GitHubDeliveryPollerError(
             f"GitHub delivery pull failed with HTTP {response.status_code}"
@@ -180,7 +181,9 @@ def pull_once(config: DeliveryPollerConfiguration) -> int:
     try:
         events = response.json()["events"]
     except (ValueError, KeyError, TypeError) as error:
-        raise GitHubDeliveryPollerError("GitHub delivery pull returned an invalid response") from error
+        raise GitHubDeliveryPollerError(
+            "GitHub delivery pull returned an invalid response"
+        ) from error
     if not isinstance(events, list):
         raise GitHubDeliveryPollerError("GitHub delivery pull returned invalid events")
     for envelope in events:
@@ -194,7 +197,9 @@ def pull_once(config: DeliveryPollerConfiguration) -> int:
                 "GitHub delivery pull returned an invalid delivery envelope"
             ) from error
         if not isinstance(payload, dict) or not delivery_id or not event_name:
-            raise GitHubDeliveryPollerError("GitHub delivery pull returned an invalid delivery envelope")
+            raise GitHubDeliveryPollerError(
+                "GitHub delivery pull returned an invalid delivery envelope"
+            )
         _verify_event(
             config,
             delivery_id=delivery_id,

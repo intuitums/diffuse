@@ -21,6 +21,13 @@ from service.agents.contract.access_grant import (
     mint_session_capability,
     verify_session_capability,
 )
+from service.agents.contract.agent import (
+    AGENT_RUNTIME_CLAUDE,
+    AGENT_RUNTIME_CODEX,
+    AGENT_RUNTIME_NAMES,
+    AgentRuntimeConfig,
+    parse_agent_runtime_name,
+)
 from service.agents.contract.result import (
     RESULT_SCHEMA_VERSION,
     AgentFinding,
@@ -28,13 +35,6 @@ from service.agents.contract.result import (
     ResultValidationError,
     ResultValidationFailureCode,
     validate_agent_investigation_result,
-)
-from service.agents.contract.agent import (
-    AGENT_RUNTIME_CLAUDE,
-    AGENT_RUNTIME_CODEX,
-    AGENT_RUNTIME_NAMES,
-    AgentRuntimeConfig,
-    parse_agent_runtime_name,
 )
 
 __all__ = [

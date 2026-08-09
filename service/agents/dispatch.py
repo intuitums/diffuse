@@ -15,6 +15,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
+from service.agents.transport_secret import unwrap_capability, wrap_capability
+from service.crypto.sealed_secret import is_sealed
 from service.review.workspace import DEFAULT_WORKSPACE_LIMITS, SourceArtifact
 
 PRIVATE_KEY_VARIABLE = "DIFFUSE_REVIEW_AGENT_DISPATCH_PRIVATE_KEY"
@@ -94,10 +96,14 @@ def sign_dispatch(envelope: DispatchEnvelope) -> str:
         raise DispatchEnvelopeError("dispatch diff exceeds max characters")
     if len(envelope.source_artifact.archive) > DEFAULT_WORKSPACE_LIMITS.max_archive_bytes:
         raise DispatchEnvelopeError("dispatch source archive exceeds max bytes")
+    # The capability bearer is sealed with the runner-shared transport secret
+    # before the Ed25519 signature so a sniffed envelope does not reveal a live
+    # Review Access Grant. capability_id stays clear for routing/audit only.
+    wrapped_capability = wrap_capability(envelope.capability)
     payload = {
         "session_id": envelope.session_id,
         "runtime": envelope.runtime,
-        "capability": envelope.capability,
+        "capability": wrapped_capability,
         "capability_id": envelope.capability_id,
         "diff_text": envelope.diff_text,
         "source_archive": _encode(envelope.source_artifact.archive),
@@ -138,10 +144,13 @@ def verify_dispatch(token: str, *, now: datetime | None = None) -> DispatchEnvel
         if payload["source_digest"] != source_artifact.digest:
             raise ValueError
         expires_at = datetime.fromtimestamp(int(payload["exp"]), tz=UTC)
+        sealed_capability = str(payload["capability"])
+        if not is_sealed(sealed_capability):
+            raise ValueError("dispatch capability must be sealed")
         envelope = DispatchEnvelope(
             session_id=str(payload["session_id"]),
             runtime=str(payload["runtime"]),
-            capability=str(payload["capability"]),
+            capability=unwrap_capability(sealed_capability),
             capability_id=str(payload["capability_id"]),
             diff_text=str(payload["diff_text"]),
             source_artifact=source_artifact,

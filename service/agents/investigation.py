@@ -32,6 +32,8 @@ from service.agents.codex_investigation import (
 from service.agents.codex_investigation import (
     parse_envelope as parse_codex_envelope,
 )
+from service.agents.context_bridge import BRIDGE_URL_VARIABLE, McpBridge, write_mcp_config
+from service.agents.context_server import CONTEXT_SERVICE_URL_VARIABLE, SESSION_CAPABILITY_VARIABLE
 from service.agents.errors import (
     AgentInvestigationAuthRequired,
     AgentInvestigationCoverageCaveat,
@@ -41,10 +43,8 @@ from service.agents.errors import (
     AgentInvestigationTerminalError,
     AgentInvestigationTimeout,
 )
-from service.agents.context_bridge import BRIDGE_URL_VARIABLE, McpBridge, write_mcp_config
 from service.agents.profiles import SessionProfile
 from service.agents.replay import SessionTranscript
-from service.agents.context_server import CONTEXT_SERVICE_URL_VARIABLE, SESSION_CAPABILITY_VARIABLE
 from service.review.agent_host import (
     LOCAL_CLI_SANDBOX_PROFILE,
     AgentCli,
