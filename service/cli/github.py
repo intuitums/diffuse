@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -24,97 +25,105 @@ def _connect(args: argparse.Namespace) -> None:
     if not base_url.startswith("https://"):
         raise ValueError("--url must be an HTTPS origin")
     write_path: Path | None = None
+    write_fd: int | None = None
     if args.write_env is not None:
         # Validate and lock down the destination before redeeming the one-time
         # enrollment code so a local write failure cannot burn the code.
-        write_path = _prepare_write_env_path(Path(args.write_env))
+        write_path, write_fd = _prepare_write_env_path(Path(args.write_env))
     try:
         response = httpx.post(
             f"{base_url}/v1/instances/register",
             json={"code": args.code, "display_name": args.name},
             timeout=scm_api_timeout_seconds(),
         )
+        if response.status_code >= httpx.codes.BAD_REQUEST:
+            raise ValueError(
+                "GitHub Integration Service rejected the connection code "
+                f"(HTTP {response.status_code})"
+            )
+        try:
+            payload = response.json()
+            instance_token = payload["instance_token"]
+            event_signing_key = payload["event_signing_key"]
+        except (ValueError, KeyError, TypeError) as error:
+            raise RuntimeError(
+                "GitHub Integration Service returned an invalid connection response"
+            ) from error
+        if not isinstance(instance_token, str) or not isinstance(event_signing_key, str):
+            raise RuntimeError("GitHub Integration Service returned invalid connection credentials")
+        credentials = {
+            "DIFFUSE_GITHUB_INTEGRATION_URL": base_url,
+            "DIFFUSE_GITHUB_INTEGRATION_TOKEN": instance_token,
+            "DIFFUSE_GITHUB_DELIVERY_SIGNING_KEY": event_signing_key,
+            "installation_id": payload.get("installation_id"),
+            "instance_id": payload.get("instance_id"),
+        }
+        if write_path is not None and write_fd is not None:
+            try:
+                _write_env_file(write_fd, credentials)
+            except OSError as error:
+                print(
+                    f"Warning: failed to write {write_path}: {error}. "
+                    "Printing one-time connection secrets to stdout so they are not lost.",
+                    file=sys.stderr,
+                )
+                print(json.dumps(credentials, indent=2, sort_keys=True))
+                raise RuntimeError(f"Could not write connection secrets to {write_path}") from error
+            finally:
+                # _write_env_file always consumes and closes the descriptor.
+                write_fd = None
+            print(
+                json.dumps(
+                    {
+                        "wrote_env": str(write_path),
+                        "installation_id": credentials["installation_id"],
+                        "instance_id": credentials["instance_id"],
+                        "secrets_shown_once": True,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return
+        print(
+            "Warning: printing one-time connection secrets to stdout. "
+            "Prefer --write-env PATH (mode 0600).",
+            file=sys.stderr,
+        )
+        print(json.dumps(credentials, indent=2, sort_keys=True))
     except httpx.HTTPError as error:
         raise RuntimeError(f"Could not reach the GitHub Integration Service: {error}") from error
-    if response.status_code >= httpx.codes.BAD_REQUEST:
-        raise ValueError(
-            f"GitHub Integration Service rejected the connection code (HTTP {response.status_code})"
-        )
-    try:
-        payload = response.json()
-        instance_token = payload["instance_token"]
-        event_signing_key = payload["event_signing_key"]
-    except (ValueError, KeyError, TypeError) as error:
-        raise RuntimeError(
-            "GitHub Integration Service returned an invalid connection response"
-        ) from error
-    if not isinstance(instance_token, str) or not isinstance(event_signing_key, str):
-        raise RuntimeError("GitHub Integration Service returned invalid connection credentials")
-    credentials = {
-        "DIFFUSE_GITHUB_INTEGRATION_URL": base_url,
-        "DIFFUSE_GITHUB_INTEGRATION_TOKEN": instance_token,
-        "DIFFUSE_GITHUB_DELIVERY_SIGNING_KEY": event_signing_key,
-        "installation_id": payload.get("installation_id"),
-        "instance_id": payload.get("instance_id"),
-    }
-    if write_path is not None:
-        try:
-            _write_env_file(write_path, credentials)
-        except OSError as error:
-            print(
-                f"Warning: failed to write {write_path}: {error}. "
-                "Printing one-time connection secrets to stdout so they are not lost.",
-                file=sys.stderr,
-            )
-            print(json.dumps(credentials, indent=2, sort_keys=True))
-            raise RuntimeError(f"Could not write connection secrets to {write_path}") from error
-        print(
-            json.dumps(
-                {
-                    "wrote_env": str(write_path),
-                    "installation_id": credentials["installation_id"],
-                    "instance_id": credentials["instance_id"],
-                    "secrets_shown_once": True,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return
-    print(
-        "Warning: printing one-time connection secrets to stdout. "
-        "Prefer --write-env PATH (mode 0600).",
-        file=sys.stderr,
-    )
-    print(json.dumps(credentials, indent=2, sort_keys=True))
+    finally:
+        if write_fd is not None:
+            os.close(write_fd)
 
 
-def _prepare_write_env_path(path: Path) -> Path:
-    """Ensure PATH is a writable regular file with mode 0600 before redeeming."""
+def _prepare_write_env_path(path: Path) -> tuple[Path, int]:
+    """Open a writable regular PATH safely before redeeming an enrollment code."""
     path = path.expanduser()
-    if path.exists() and not path.is_file():
-        raise ValueError(f"--write-env must be a regular file path: {path}")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
         try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError(f"--write-env must be a regular file path: {path}")
             os.fchmod(fd, 0o600)
-        finally:
+        except BaseException:
             os.close(fd)
+            raise
     except OSError as error:
         raise ValueError(f"--write-env path is not writable: {path}") from error
-    return path
+    return path, fd
 
 
-def _write_env_file(path: Path, credentials: dict[str, object]) -> None:
+def _write_env_file(fd: int, credentials: dict[str, object]) -> None:
     lines = [f"{key}={credentials[key]}\n" for key in _ENV_KEYS]
-    path = path.expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        # os.open's mode is ignored when the path already exists; lock the
-        # descriptor down before any secret bytes are written.
+        # The descriptor was opened before code redemption, so reopening a
+        # swapped path cannot redirect one-time secrets to another file.
         os.fchmod(fd, 0o600)
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             fd = -1
             handle.writelines(lines)
