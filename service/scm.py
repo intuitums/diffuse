@@ -132,6 +132,7 @@ class PullRequestEvent:
     base_sha: str
     updated_at: str
     delivery_id: str
+    github_repository_id: int = 0
     author: str = ""
     base_branch: str = ""
     head_branch: str = ""
@@ -162,6 +163,9 @@ class PullRequestEvent:
             and COMMIT_SHA_PATTERN.fullmatch(self.head_sha)
             and COMMIT_SHA_PATTERN.fullmatch(self.base_sha)
             and 0 < len(self.delivery_id) <= 255
+            and isinstance(self.github_repository_id, int)
+            and not isinstance(self.github_repository_id, bool)
+            and self.github_repository_id >= 0
             and self.trigger_kind in TRIGGER_KINDS
             and 0 <= len(self.trigger_id) <= 255
             and isinstance(self.is_draft, bool)
@@ -259,8 +263,14 @@ class PullRequestEvent:
 
     @property
     def scope_key(self) -> str:
+        repository_identity = (
+            f"github_repository:{self.github_repository_id}"
+            if self.github_repository_id
+            else self.repo_full_name
+        )
         return (
-            f"{self.provider}:{self.scm_base_url}:{self.repo_full_name}:pull_request:{self.number}"
+            f"{self.provider}:{self.scm_base_url}:{repository_identity}:"
+            f"pull_request:{self.number}"
         )
 
     @property
@@ -360,13 +370,16 @@ class PullRequestEvent:
             "start_sha",
         }
         payload_keys = frozenset(payload)
-        if payload_keys not in {
+        supported = {
             frozenset(required),
             frozenset(required | metadata_v1),
             frozenset(required | metadata_v2),
             frozenset(required | metadata_v3),
             frozenset(required | metadata_v4),
             frozenset(required | metadata_v5),
+        }
+        if payload_keys not in supported | {
+            keys | {"github_repository_id"} for keys in supported
         }:
             raise ValueError("Workflow payload does not match the pull-request event schema")
         if metadata_v1.issubset(payload):
@@ -393,6 +406,7 @@ class PullRequestEvent:
             base_sha=str(payload["base_sha"]),
             updated_at=str(payload["updated_at"]),
             delivery_id=str(payload["delivery_id"]),
+            github_repository_id=payload.get("github_repository_id", 0),
             author=str(payload.get("author", "")),
             base_branch=str(payload.get("base_branch", "")),
             head_branch=str(payload.get("head_branch", "")),
@@ -434,6 +448,7 @@ class ReviewConversationEvent:
     line: int
     side: str
     diff_hunk: str
+    github_repository_id: int = 0
 
     def __post_init__(self) -> None:
         scm_base_url = normalize_base_url(self.scm_base_url, field_name="scm_base_url")
@@ -442,6 +457,9 @@ class ReviewConversationEvent:
         valid = (
             self.provider == "github"
             and validate_repository_name(self.repo_full_name)
+            and isinstance(self.github_repository_id, int)
+            and not isinstance(self.github_repository_id, bool)
+            and self.github_repository_id >= 0
             and self.number > 0
             and 0 < len(self.delivery_id) <= 255
             and self.external_comment_id.isdigit()
@@ -478,8 +496,13 @@ class ReviewConversationEvent:
 
     @property
     def scope_key(self) -> str:
+        repository_scope = (
+            f"github_repository:{self.github_repository_id}"
+            if self.github_repository_id
+            else self.repo_full_name
+        )
         return (
-            f"{self.provider}:{self.scm_base_url}:{self.repo_full_name}:"
+            f"{self.provider}:{self.scm_base_url}:{repository_scope}:"
             f"pull_request:{self.number}:review_thread:{self.root_comment_id}"
         )
 
@@ -514,11 +537,15 @@ class ReviewConversationEvent:
             "diff_hunk",
         }
         required_v2 = required_v1 | {"thread_id"}
+        required_v3 = required_v1 | {"github_repository_id"}
+        required_v4 = required_v3 | {"thread_id"}
         # required_v2 carried a retired GitLab-shaped thread_id. Still accepted so
         # in-flight conversation jobs deserialize across the deploy that drops it.
         if frozenset(payload) not in {
             frozenset(required_v1),
             frozenset(required_v2),
+            frozenset(required_v3),
+            frozenset(required_v4),
         }:
             raise ValueError(
                 "Workflow payload does not match the review-conversation event schema"
@@ -546,6 +573,7 @@ class ReviewConversationEvent:
             line=line,
             side=str(payload["side"]),
             diff_hunk=str(payload["diff_hunk"]),
+            github_repository_id=payload.get("github_repository_id", 0),
         )
 
 
@@ -564,6 +592,7 @@ class ReviewFeedbackCommentEvent:
     created_at: str
     body: str
     file_path: str
+    github_repository_id: int = 0
 
     def __post_init__(self) -> None:
         scm_base_url = normalize_base_url(self.scm_base_url, field_name="scm_base_url")
@@ -572,6 +601,9 @@ class ReviewFeedbackCommentEvent:
         valid = (
             self.provider == "github"
             and validate_repository_name(self.repo_full_name)
+            and isinstance(self.github_repository_id, int)
+            and not isinstance(self.github_repository_id, bool)
+            and self.github_repository_id >= 0
             and self.number > 0
             and 0 < len(self.delivery_id) <= 255
             and self.external_comment_id.isdigit()
@@ -687,6 +719,7 @@ class PushEvent:
     after_sha: str
     pushed_at: str
     delivery_id: str
+    github_repository_id: int = 0
 
     def __post_init__(self) -> None:
         scm_base_url = normalize_base_url(self.scm_base_url, field_name="scm_base_url")
@@ -699,6 +732,9 @@ class PushEvent:
             and COMMIT_SHA_PATTERN.fullmatch(self.before_sha)
             and COMMIT_SHA_PATTERN.fullmatch(self.after_sha)
             and 0 < len(self.delivery_id) <= 255
+            and isinstance(self.github_repository_id, int)
+            and not isinstance(self.github_repository_id, bool)
+            and self.github_repository_id >= 0
         )
         if not valid:
             raise ValueError("Invalid repository push event")
@@ -710,9 +746,14 @@ class PushEvent:
 
     @property
     def scope_key(self) -> str:
+        repository_identity = (
+            f"github_repository:{self.github_repository_id}"
+            if self.github_repository_id
+            else self.repo_full_name
+        )
         return (
             f"{self.provider}:{self.scm_base_url}:"
-            f"{self.repo_full_name}:repository_index:{self.ref_name}"
+            f"{repository_identity}:repository_index:{self.ref_name}"
         )
 
     @property
@@ -736,7 +777,10 @@ class PushEvent:
             "pushed_at",
             "delivery_id",
         }
-        if set(payload) != required:
+        if frozenset(payload) not in {
+            frozenset(required),
+            frozenset(required | {"github_repository_id"}),
+        }:
             raise ValueError("Workflow payload does not match the push event schema")
         return cls(
             provider=str(payload["provider"]),
@@ -749,4 +793,5 @@ class PushEvent:
             after_sha=str(payload["after_sha"]),
             pushed_at=str(payload["pushed_at"]),
             delivery_id=str(payload["delivery_id"]),
+            github_repository_id=payload.get("github_repository_id", 0),
         )

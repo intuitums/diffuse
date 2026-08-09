@@ -6,7 +6,8 @@
 > review runner; see [agents.md](agents.md).
 
 `diffuse` is the command-line interface to a self-hosted installation. Its
-subcommands onboard and manage indexed repositories (`repository`) and
+subcommands onboard and manage indexed repositories (`repository`, or its
+`repo` alias) and
 cross-repository context clusters (`cluster`), inspect and moderate
 feedback-derived rules (`learning`), inspect and migrate the PostgreSQL schema
 (`database`), sign in to and inspect Agent Host CLIs (`agent`), and configure
@@ -26,6 +27,10 @@ an equivalent Python installer) to manage a self-hosted server:
 
 ```bash
 diffuse repository list
+diffuse repo list  # equivalent shorthand
+diffuse repo settings show acme/api
+diffuse repo settings set acme/api --auto-review off
+diffuse maintenance reindex acme/api
 diffuse cluster list
 diffuse learning list 1
 diffuse agent status
@@ -33,6 +38,32 @@ diffuse github connect <one-time-code> --name <instance-name>
 ```
 
 `diffuse token` has been removed. Service-token minting is not part of v1.
+
+## Repository controls
+
+Repository commands use the GitHub repository name (`owner/repo`). `diffuse
+repo disable acme/api` stops indexing and review for that repository. For an
+enabled repository, `--auto-review off` prevents GitHub pull-request events
+from starting a review while preserving authorized manual `@diffuse review`
+requests. Pass `--base-url URL` only if the same `owner/repo` is connected on
+more than one GitHub host.
+
+`diffuse repo add` records GitHub's immutable repository identity during
+onboarding. GitHub webhook processing keeps the mutable repository name and
+clone URL current automatically after a rename or ownership transfer.
+
+## Maintenance
+
+Normal repository indexing and rename handling happen in the backend. The
+explicit maintenance command is for recovery and index-format upgrades:
+
+```bash
+diffuse maintenance reindex acme/api
+diffuse maintenance reindex --all
+```
+
+`--all` queues a fresh index for every enabled repository and is safe to rerun.
+It is the required operator step after an upgrade that changes the index format.
 
 ## Review runtimes
 
