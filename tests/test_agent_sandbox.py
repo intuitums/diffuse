@@ -171,13 +171,14 @@ def test_a_client_that_hangs_up_does_not_take_the_proxy_down():
     agent_sandbox._serve_proxy_client(server)
 
 
-def test_a_client_too_slow_to_send_its_request_is_dropped_not_fatal():
+def test_a_client_too_slow_to_send_its_request_is_dropped_not_fatal(monkeypatch):
+    monkeypatch.setattr(agent_sandbox, "NETWORK_PROBE_TIMEOUT_SECONDS", 0.01)
     server, client = socket.socketpair()
     thread = threading.Thread(target=agent_sandbox._serve_proxy_client, args=(server,))
     thread.start()
     try:
         # Never sends a request line; the parse timeout must contain it.
-        thread.join(timeout=agent_sandbox.NETWORK_PROBE_TIMEOUT_SECONDS + 3)
+        thread.join(timeout=1)
         assert not thread.is_alive()
     finally:
         client.close()
