@@ -1,0 +1,90 @@
+# Hosted Diffuse-Agent integration
+
+This directory is the intentionally small service deployed at
+`https://api.diffuse.website`. It is not a hosted Diffuse review service.
+
+It does only four jobs:
+
+1. verifies the owner who returns from the Diffuse-Agent GitHub App setup flow;
+2. accepts and HMAC-verifies the GitHub App's global webhook deliveries;
+3. leases each installation's delivery to its enrolled self-hosted Diffuse
+   instance over an outbound pull connection; and
+4. brokers short-lived GitHub installation tokens to that same instance.
+
+It must not receive source checkouts, repository mirrors, review findings,
+model credentials, runner credentials, or review output. GitHub's event payload
+is retained only until the self-hosted instance acknowledges it; an exceptional
+undelivered payload is pruned on subsequent ingress after 30 days.
+
+## Required Vercel environment
+
+Set these as encrypted Production environment variables on the `diffuse`
+Vercel project:
+
+```dotenv
+DIFFUSE_SETUP_PUBLIC_URL=https://api.diffuse.website
+# Required only for a non-Neon database; a Vercel-attached Neon database
+# supplies DATABASE_URL automatically.
+DIFFUSE_SETUP_DATABASE_URL=postgresql://...
+DIFFUSE_SETUP_TOKEN_PEPPER=...                  # base64url, at least 32 random bytes
+GITHUB_APP_ID=...
+GITHUB_APP_PRIVATE_KEY=...                      # Diffuse-Agent PEM; literal \n is accepted
+GITHUB_WEBHOOK_SECRET=...
+GITHUB_OAUTH_CLIENT_ID=...
+GITHUB_OAUTH_CLIENT_SECRET=...
+```
+
+`DIFFUSE_SETUP_TOKEN_PEPPER` hashes enrollment and instance credentials before
+they reach the database. Generate it once with
+`openssl rand -base64 48 | tr '+/' '-_' | tr -d '='`; preserve it for the life
+of the database or every stored credential becomes invalid.
+
+The OAuth application's callback URL is:
+
+```text
+https://api.diffuse.website/auth/github/callback
+```
+
+The GitHub App's global webhook URL is:
+
+```text
+https://api.diffuse.website/webhook/github
+```
+
+The App needs only the permissions required by Diffuse review: Contents read,
+Pull requests read/write, Issues read when comment-triggered reviews are
+enabled, and Checks write when checks are enabled. Subscribe it to `push` and
+`pull_request`, plus interaction events only when Diffuse enables them.
+
+## Database and deployment
+
+Provision a dedicated PostgreSQL database for this service. The Vercel
+Marketplace Neon integration supplies `DATABASE_URL` automatically; an operator
+using another provider supplies `DIFFUSE_SETUP_DATABASE_URL` instead. Apply the
+schema once from a controlled environment with the hosted variables set:
+
+```bash
+cd hosted
+python -m diffuse_setup.migrate
+```
+
+For Vercel's Marketplace Query editor, run
+`diffuse_setup/vercel_schema.sql` instead. It is the same idempotent schema in
+one `DO` statement, because that editor accepts only one prepared statement per
+query.
+
+Deploy this directory as the Vercel project root. `api/index.py` exports the
+FastAPI ASGI application and `vercel.json` rewrites all API paths to it.
+
+`GET /health` is intentionally configuration-free. It proves the deployment is
+reachable but does not claim that GitHub, OAuth, or PostgreSQL has been
+configured. Validate those by completing one installation and claiming its
+one-time enrollment code from a self-hosted Diffuse instance.
+
+## Operational limits
+
+The first deployment leases at most 20 events per pull and waits 15 seconds
+between empty polls. With 200 enrolled instances, that is roughly 13 small
+requests per second while idle—not a workload that requires a dedicated
+always-on server. PostgreSQL is the durable queue; Vercel functions do only
+short verification, storage, leasing, and token-broker requests.
