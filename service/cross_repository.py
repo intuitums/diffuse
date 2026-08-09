@@ -502,7 +502,7 @@ def resolve_cross_repository_context(
                 FROM repositories
                 WHERE scm_provider = %s
                   AND scm_base_url = %s
-                  AND full_name = %s
+                  AND LOWER(full_name) = LOWER(%s)
                   AND clone_url IS NOT NULL
                 """,
                 (
