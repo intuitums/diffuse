@@ -26,4 +26,8 @@ def test_runner_status_is_sanitized(monkeypatch):
         "cli_version": "2.1.224",
         "policy_state": "current",
         "state": "not_logged_in",
+        "runner_id": host.runner_id("claude"),
+        "capacity": 1,
+        "running": 0,
+        "runtimes": ["claude"],
     }
