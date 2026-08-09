@@ -47,6 +47,9 @@ from service.cli import (
     evaluation as evaluation_cli,
 )
 from service.cli import (
+    hosted as hosted_cli,
+)
+from service.cli import (
     learning as learning_cli,
 )
 from service.cli import (
@@ -1118,6 +1121,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
     )
     agent_cli.configure_parser(agent)
 
+    hosted = subparsers.add_parser(
+        "hosted",
+        help="Enroll this self-hosted instance with the shared Diffuse-Agent App",
+    )
+    hosted_cli.configure_parser(hosted)
+
     # Every subparser must appear here, or an unknown flag typed on that
     # subcommand is reported against the top-level parser and prints the wrong
     # usage block -- the defect this mapping exists to fix.
@@ -1130,6 +1139,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
         "evaluate": evaluate,
         "model": model,
         "agent": agent,
+        "hosted": hosted,
     }
     return parser, commands
 

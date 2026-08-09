@@ -165,6 +165,43 @@ services:
     stop_grace_period: 30s
     networks: [backend, runner_control_claude, runner_control_codex, control_egress]
 
+  # Pulls signed, installation-scoped deliveries from the hosted Diffuse-Agent
+  # integration into this customer's local workflow queue. It has no App private
+  # key, source checkout, runner credential, or inbound listener.
+  relay:
+    image: ${DIFFUSE_IMAGE:-diffuse:local}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command: ["relay"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - ${DIFFUSE_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
+      # Diffuse-Agent mints scoped installation tokens remotely; its shared key
+      # must never enter a customer process.
+      GITHUB_APP_ID: ""
+      GITHUB_APP_INSTALLATION_ID: ""
+      GITHUB_APP_PRIVATE_KEY_FILE: ""
+      GITHUB_APP_PRIVATE_KEY: ""
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 30s
+    networks: [backend, control_egress]
+
   # Gate B: long-lived credential-isolated agent-runner. The worker never mounts
   # agent credentials and never executes a CLI. This service is the only Compose
   # writer of `agent_data`. It deliberately has no `env_file` (no database /

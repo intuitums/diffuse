@@ -12,7 +12,8 @@ first pull request. These pages are the reference behind it.
 | [roadmap.md](roadmap.md) | Historical roadmap. It is not an active delivery commitment. |
 | [engineering-plan.md](engineering-plan.md) | Historical engineering plan. Use the delivery order in `v1-scope.md` instead. |
 | [configuration.md](configuration.md) | The intentionally small v1 root repository configuration. |
-| [deployment.md](deployment.md) | Current self-hosted deployment and temporary manual GitHub App setup. |
+| [deployment.md](deployment.md) | Current self-hosted deployment and Diffuse-Agent setup. |
+| [infisical-hosted-production.json.example](infisical-hosted-production.json.example) | Safe placeholder-only import template for the hosted Diffuse-Agent production configuration. |
 | [cli.md](cli.md) | Transitional CLI reference. Operator runner authentication remains private configuration, not a product API. |
 
 Elsewhere in the repository:

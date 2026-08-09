@@ -36,11 +36,10 @@ swarm.
 
 ## Required v1 capabilities
 
-- A guided, verified GitHub App connection. Setup creates or connects an
-  operator-owned App, sends the operator through GitHub's installation screen,
-  verifies the returned installation with that App's credentials, and confirms
-  the repositories selected for review. It is one setup journey, not a
-  Diffuse-user account or a generic GitHub OAuth login.
+- A guided, verified connection to the shared **Diffuse-Agent** GitHub App.
+  The hosted setup confirms the GitHub installation, then enrolls the existing
+  self-hosted Diffuse instance. It is one setup journey, not a Diffuse-user
+  account or a generic GitHub OAuth login.
 - GitHub App authentication, signed webhook ingestion, and idempotent
   publication of reviews and Checks.
 - Repository mirroring, commit-pinned indexing, and targeted retrieval.
@@ -60,9 +59,10 @@ swarm.
 
 - Public MCP server, MCP service tokens, MCP write tools, and agent handoffs.
 - Automatic pull-request approval.
-- A shared Intuitum GitHub App, multi-tenant webhook relay, and per-user
-  Diffuse account system. Those are required for a literal hosted-SaaS
-  "Connect with Diffuse" button and are a separate distribution decision.
+- A hosted review SaaS or per-user Diffuse account system. Diffuse-Agent is
+  limited to setup, signed webhook ingress, event routing, and short-lived
+  installation-token brokering; it never runs reviews or stores code, mirrors,
+  findings, model credentials, or review output.
 - General public REST API as a product surface. Narrow private worker-to-runner
   transport is allowed.
 - General repository Q&A, analytics reporting, cross-repository context, and
@@ -99,12 +99,11 @@ general-purpose agent platform.
 
 1. **Documentation and work-plan reset.** Remove conflicting feature claims;
    align Linear with this scope.
-2. **GitHub App connection.** Build the guided owner-App setup before review
-   work: use the GitHub App manifest flow to create a correctly permissioned
-   App when needed, secure the returned credentials, direct installation,
-   verify the installation and selected repositories, then surface a clear
-   ready/not-ready diagnostic. A public Diffuse endpoint is required for
-   GitHub webhooks; local development uses an explicit webhook proxy.
+2. **GitHub App connection.** Build the guided shared Diffuse-Agent setup:
+   direct installation, verify the operator controls it, enroll the existing
+   self-hosted instance, and surface a clear ready/not-ready diagnostic.
+   GitHub webhooks terminate at the hosted relay; each customer instance pulls
+   signed events over outbound HTTPS and needs no public inbound endpoint.
 3. **Excision.** Delete MCP and auto-approval code paths, configuration,
    tests, documentation, and public routes. Do not destructively drop their
    database data until an explicit migration decision.
