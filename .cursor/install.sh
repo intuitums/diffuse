@@ -31,13 +31,13 @@ ensure_pgdg_repo() {
   ensure_apt_packages ca-certificates curl gnupg
   sudo install -d -m 0755 /usr/share/postgresql-common/pgdg
 
-  local tmp_asc tmp_gpg
+  # apt expects the ASCII-armored key at this path (do not dearmor it).
+  # See https://wiki.postgresql.org/wiki/Apt
+  local tmp_asc
   tmp_asc="$(mktemp)"
-  tmp_gpg="$(mktemp)"
   curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o "${tmp_asc}"
-  gpg --batch --yes --dearmor -o "${tmp_gpg}" "${tmp_asc}"
-  sudo install -m 0644 "${tmp_gpg}" /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
-  rm -f "${tmp_asc}" "${tmp_gpg}"
+  sudo install -m 0644 "${tmp_asc}" /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+  rm -f "${tmp_asc}"
 
   . /etc/os-release
   echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
