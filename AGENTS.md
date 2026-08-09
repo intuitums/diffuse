@@ -15,6 +15,20 @@ Diffuse is a self-hostable code-review platform. Standard setup/run/test command
 `pyproject.toml`. This section only records the non-obvious, environment-specific things a
 cloud agent needs.
 
+### Repo-managed environment (`.cursor/`)
+
+Cloud Agents resolve configuration from `.cursor/environment.json` first (then personal /
+team saved environments). That file wires:
+
+- `install` → `.cursor/install.sh` — create/refresh `.venv` from the locked requirements
+  (Build-time / dependency refresh only; must terminate)
+- `start` → `.cursor/start.sh` — start PostgreSQL 17, ensure the `diffuse` role + DBs,
+  isolated git `HOME`, and `/var/lib/diffuse/repositories`
+
+Do not put the API or worker in `install` or `terminals` by default: they need
+`REVIEW_AGENT` / dispatch secrets and the rewrite-free git `HOME` below. Start them
+on demand when the task needs a live stack.
+
 ### Services (run natively, not via Docker)
 
 This VM has no Docker. The dev stack runs natively:
