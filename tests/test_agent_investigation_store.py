@@ -9,6 +9,8 @@ import pytest
 from service.agents.contract import SessionScope, mint_session_capability
 from service.storage.agent_investigation import (
     abandon_agent_investigation,
+    record_agent_investigation_lifecycle,
+    request_agent_investigation_cancellation,
     resolve_agent_investigation_review_attempt,
 )
 
@@ -52,7 +54,7 @@ def test_capability_tool_attempt_requires_the_current_scope_identical_session():
     # attempt: the join asserts the durable scope and the creation-time guard.
     assert "review.workflow_job_id = session.review_job_id" in statement
     assert "review.index_snapshot_id = session.snapshot_id" in statement
-    assert "session.status = 'dispatched'" in statement
+    assert "session.status IN ('dispatched', 'accepted', 'running')" in statement
     assert "session.expires_at > now()" in statement
     assert "review.status = 'generating'" in statement
     assert "session.created_at >= review.started_at" in statement
@@ -84,7 +86,7 @@ def test_abandoning_a_session_cannot_replace_a_completed_result(status):
         "codex",
         "capability-1",
     )
-    assert "AND status = 'dispatched'" in statement
+    assert "AND status IN ('dispatched', 'accepted', 'running')" in statement
 
 
 def test_abandoning_a_session_rejects_nonterminal_state():
@@ -96,6 +98,52 @@ def test_abandoning_a_session_rejects_nonterminal_state():
             capability_id="capability-1",
             status="completed",
         )
+
+
+def test_runner_lifecycle_binds_the_first_host_and_only_allows_monotonic_states():
+    connection = _Connection(None, rowcount=1)
+
+    assert record_agent_investigation_lifecycle(
+        connection,
+        session_id="a32b1c5d-3c15-4462-a9fe-f191775b3459",
+        runtime="codex",
+        capability_id="capability-1",
+        runner_id="codex-host-a",
+        status="accepted",
+    )
+
+    statement, parameters = connection.cursor_instance.executed
+    assert parameters[-2:] == ("codex-host-a", ["dispatched"])
+    assert "runner_id = COALESCE(runner_id, %s)" in statement
+    assert "runner_id IS NULL OR runner_id = %s" in statement
+
+
+def test_runner_lifecycle_rejects_a_nonrunner_status():
+    with pytest.raises(ValueError, match="accepted or running"):
+        record_agent_investigation_lifecycle(
+            _Connection(None),
+            session_id="a32b1c5d-3c15-4462-a9fe-f191775b3459",
+            runtime="codex",
+            capability_id="capability-1",
+            runner_id="codex-host-a",
+            status="completed",
+        )
+
+
+def test_cancellation_is_recorded_only_while_an_investigation_is_active():
+    connection = _Connection(None, rowcount=1)
+
+    assert request_agent_investigation_cancellation(
+        connection,
+        session_id="a32b1c5d-3c15-4462-a9fe-f191775b3459",
+        runtime="codex",
+        capability_id="capability-1",
+    )
+
+    statement, parameters = connection.cursor_instance.executed
+    assert parameters == ("a32b1c5d-3c15-4462-a9fe-f191775b3459", "codex", "capability-1")
+    assert "cancel_requested_at = COALESCE(cancel_requested_at, now())" in statement
+    assert "status IN ('dispatched', 'accepted', 'running')" in statement
 
 
 class _Connection:

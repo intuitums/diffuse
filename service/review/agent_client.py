@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,7 +26,11 @@ from service.review.report_assembly import (
 )
 from service.review.request import ReviewRequest
 from service.review.workspace import SourceArtifact
-from service.storage.agent_investigation import accept_agent_investigation_completion
+from service.storage.agent_investigation import (
+    accept_agent_investigation_completion,
+    record_agent_investigation_lifecycle,
+    request_agent_investigation_cancellation,
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,9 @@ class NativeRunnerError(RuntimeError):
 # The CLI gets its full REVIEW timeout.  Artifact validation, temporary
 # workspace setup, and result transport occur outside that subprocess budget.
 NATIVE_RUNNER_REQUEST_TIMEOUT_SECONDS = REVIEW.timeout_seconds + 120
+NATIVE_RUNNER_STATUS_TIMEOUT_SECONDS = 5
+NATIVE_RUNNER_POLL_SECONDS = 2
+INVESTIGATION_CAPABILITY_HEADER = "X-Diffuse-Investigation-Capability"
 
 
 class AgentRuntime:
@@ -75,24 +83,140 @@ class AgentRuntime:
                 expires_at=session.expires_at,
             )
         )
+        payload = _start_or_reconnect(url, envelope, session)
         try:
-            response = httpx.post(
-                f"{url}/v1/reviews",
-                json={"envelope": envelope},
-                timeout=NATIVE_RUNNER_REQUEST_TIMEOUT_SECONDS,
+            _record_lifecycle(payload, session)
+            deadline = min(
+                session.expires_at.timestamp(),
+                time.time() + NATIVE_RUNNER_REQUEST_TIMEOUT_SECONDS,
             )
-        except httpx.HTTPError as error:
-            raise NativeRunnerError(f"{self._runtime} runner is unavailable") from error
-        if response.status_code == 401:
-            raise ValueError(f"agent_auth_required:{self._runtime}")
-        if response.status_code != 200:
-            raise NativeRunnerError(f"{self._runtime} runner rejected the review")
-        try:
-            payload = response.json()
-            _accept_completion(payload, session)
-            return _report_from_runner(payload, request)
-        except (TypeError, ValueError, KeyError) as error:
+            while payload.get("status") in {"accepted", "running"}:
+                if time.time() >= deadline:
+                    _cancel(url, session)
+                    raise NativeRunnerError(
+                        f"{self._runtime} runner exceeded its investigation deadline"
+                    )
+                time.sleep(NATIVE_RUNNER_POLL_SECONDS)
+                if request.progress_callback is not None:
+                    request.progress_callback()
+                payload = _investigation_status(url, session)
+                _record_lifecycle(payload, session)
+            if (
+                payload.get("status") == "failed"
+                and payload.get("error_code") == "agent_auth_required"
+            ):
+                raise ValueError(f"agent_auth_required:{self._runtime}")
+            if payload.get("status") != "completed" or not isinstance(payload.get("result"), dict):
+                raise NativeRunnerError(
+                    f"{self._runtime} runner did not complete the investigation"
+                )
+            result = payload["result"]
+            _accept_completion(result, session)
+            return _report_from_runner(result, request)
+        except (TypeError, KeyError) as error:
             raise NativeRunnerError(f"{self._runtime} runner returned an invalid result") from error
+
+
+def _start_or_reconnect(
+    url: str, envelope: str, session: NativeSessionDispatch
+) -> dict[str, object]:
+    """Start once, then reconnect by immutable investigation id on an uncertain POST."""
+
+    try:
+        response = httpx.post(
+            f"{url}/v1/investigations",
+            json={"envelope": envelope},
+            timeout=NATIVE_RUNNER_STATUS_TIMEOUT_SECONDS,
+        )
+        if response.status_code == 401:
+            raise ValueError(f"agent_auth_required:{session.runtime}")
+        if response.status_code not in {200, 202}:
+            raise NativeRunnerError(f"{session.runtime} runner rejected the review")
+        return _lifecycle_payload(response)
+    except httpx.HTTPError:
+        # The host might have accepted the signed envelope before the network
+        # response disappeared.  Querying this exact UUID is safe; creating a
+        # second investigation is not.
+        try:
+            return _investigation_status(url, session)
+        except NativeRunnerError as error:
+            raise NativeRunnerError(
+                f"{session.runtime} runner dispatch outcome is unknown"
+            ) from error
+
+
+def _investigation_status(url: str, session: NativeSessionDispatch) -> dict[str, object]:
+    try:
+        response = httpx.get(
+            f"{url}/v1/investigations/{session.session_id}",
+            headers={INVESTIGATION_CAPABILITY_HEADER: session.capability},
+            timeout=NATIVE_RUNNER_STATUS_TIMEOUT_SECONDS,
+        )
+    except httpx.HTTPError as error:
+        raise NativeRunnerError("runner lifecycle status is unavailable") from error
+    if response.status_code != 200:
+        raise NativeRunnerError("runner lifecycle status is unavailable")
+    return _lifecycle_payload(response)
+
+
+def _lifecycle_payload(response: httpx.Response) -> dict[str, object]:
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise NativeRunnerError("runner lifecycle response is invalid") from error
+    if not isinstance(payload, dict):
+        raise NativeRunnerError("runner lifecycle response is invalid")
+    return payload
+
+
+def _cancel(url: str, session: NativeSessionDispatch) -> None:
+    try:
+        response = httpx.post(
+            f"{url}/v1/investigations/{session.session_id}/cancel",
+            headers={INVESTIGATION_CAPABILITY_HEADER: session.capability},
+            timeout=NATIVE_RUNNER_STATUS_TIMEOUT_SECONDS,
+        )
+        if response.status_code != 200:
+            return
+        from indexer.store import get_conn
+
+        with closing(get_conn()) as conn, conn:
+            request_agent_investigation_cancellation(
+                conn,
+                session_id=session.session_id,
+                runtime=session.runtime,
+                capability_id=session.capability_id,
+            )
+    except httpx.HTTPError:
+        # The worker's durable lease expiry and the signed capability limit the
+        # remaining impact when a disconnected host cannot receive cancellation.
+        return
+
+
+def _record_lifecycle(payload: dict[str, object], session: NativeSessionDispatch) -> None:
+    if (
+        payload.get("session_id") != session.session_id
+        or payload.get("capability_id") != session.capability_id
+        or payload.get("runtime") != session.runtime
+    ):
+        raise NativeRunnerError("runner lifecycle does not match dispatched session")
+    status = payload.get("status")
+    if status not in {"accepted", "running"}:
+        return
+    runner_id = payload.get("runner_id")
+    if not isinstance(runner_id, str):
+        raise NativeRunnerError("runner lifecycle does not identify its host")
+    from indexer.store import get_conn
+
+    with closing(get_conn()) as conn, conn:
+        record_agent_investigation_lifecycle(
+            conn,
+            session_id=session.session_id,
+            runtime=session.runtime,
+            capability_id=session.capability_id,
+            runner_id=runner_id,
+            status=status,
+        )
 
 
 def _accept_completion(payload: dict[str, object], session: NativeSessionDispatch) -> None:
@@ -121,10 +245,14 @@ def runner_url(runtime: str) -> str:
     ).rstrip("/")
 
 
-def validate_agent_clients() -> None:
-    """Fail startup when either required independent runner is unavailable."""
+def validate_agent_clients(runtimes: tuple[str, ...] | None = None) -> None:
+    """Fail startup only when a Review Plan's selected runners are unavailable."""
 
-    for runtime in ("claude", "codex"):
+    if runtimes is None:
+        from service.review.agents import hosted_review_agent_name
+
+        runtimes = (hosted_review_agent_name(),)
+    for runtime in runtimes:
         try:
             response = httpx.get(f"{runner_url(runtime)}/v1/status", timeout=5)
             state = response.json().get("state") if response.status_code == 200 else None
