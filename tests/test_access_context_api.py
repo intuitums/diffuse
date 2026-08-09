@@ -91,6 +91,7 @@ async def test_runner_refuses_to_start_without_a_passing_compartment(monkeypatch
     calls: list[object] = []
     monkeypatch.setattr(host, "preflight", lambda: calls.append(True))
     monkeypatch.setattr(host, "validate_dispatch_public_key", lambda: None)
+    monkeypatch.setattr(host, "validate_transport_secret", lambda: None)
 
     async with host.app.router.lifespan_context(host.app):
         assert calls == [True]

@@ -62,11 +62,15 @@ The following are explicitly **in scope**:
   despite `--strict-mcp-config`, or running below the version floor so
   sandbox settings are silently ignored.
 - **Credential exposure.** Any path that leaks the GitHub App private key,
-  an installation token, or other live operator credentials into a clone URL
-  sent to an unintended origin, into model input, into published review
-  output, into logs, or into an image layer. Historical `DIFFUSE_API_TOKEN`
-  / repository-scoped service-token surfaces are removed from v1; leftover
-  schema rows are not a live auth boundary.
+  an installation token, a delivery signing key, a Review Access Grant bearer,
+  or other live operator credentials into a clone URL sent to an unintended
+  origin, into model input, into published review output, into logs, into an
+  image layer, or as plaintext in the hosted integration database / dispatch
+  envelope. Hosted reversible secrets must remain AES-GCM sealed under
+  `DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK`; dispatch envelopes must keep
+  capability bearers sealed under `DIFFUSE_REVIEW_AGENT_TRANSPORT_SECRET`.
+  Historical `DIFFUSE_API_TOKEN` / repository-scoped service-token surfaces are
+  removed from v1; leftover schema rows are not a live auth boundary.
 - **Authorization bypass.** Reading or writing another repository's index or
   findings outside the repository the authenticated installation or operator
   session is authorized for.

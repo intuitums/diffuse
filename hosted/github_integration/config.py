@@ -73,6 +73,29 @@ def token_key() -> bytes:
     return decoded
 
 
+CREDENTIAL_KEK_VARIABLE = "DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK"
+CREDENTIAL_KEK_PREVIOUS_VARIABLE = "DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK_PREVIOUS"
+EVENT_SIGNING_KEY_AAD = "github_integration.event_signing_key"
+
+
+def credential_keks() -> tuple[bytes, ...]:
+    """Return the rotatable KEKs that seal provider credentials at rest."""
+    from .sealed_secret import SealedSecretError, load_keks_from_env
+
+    try:
+        return load_keks_from_env(
+            CREDENTIAL_KEK_VARIABLE,
+            previous_variable=CREDENTIAL_KEK_PREVIOUS_VARIABLE,
+        )
+    except SealedSecretError as error:
+        raise HostedConfigurationError(str(error)) from error
+
+
+def credential_kek() -> bytes:
+    """Return the current KEK used for new sealed credential writes."""
+    return credential_keks()[0]
+
+
 @dataclass(frozen=True)
 class OAuthConfiguration:
     client_id: str

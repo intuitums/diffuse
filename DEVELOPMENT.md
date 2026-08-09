@@ -148,9 +148,12 @@ Compose refuses to start with
 cp .env.example .env
 # Edit .env and set POSTGRES_PASSWORD.
 # It is in the "REQUIRED" block at the top of the file.
-# Use URL-safe values, for example: openssl rand -hex 32
+# Capability and transport secrets may use: openssl rand -hex 32
+# Dispatch Ed25519 keys must be base64url-encoded raw 32-byte values
+# (see the generation comments in .env.example — not openssl -hex).
 #
-# Configure REVIEW_AGENT and the Agent Dispatch keys before starting the worker.
+# Configure REVIEW_AGENT, Agent Dispatch keys, and
+# DIFFUSE_REVIEW_AGENT_TRANSPORT_SECRET before starting the worker.
 
 docker compose up -d db
 ```

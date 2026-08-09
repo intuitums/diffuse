@@ -2533,9 +2533,11 @@ def validate_worker_configuration(*, verify_agent_clients: bool = True) -> None:
     session_capability_signing_key()
     if verify_agent_clients:
         from service.agents.dispatch import validate_dispatch_private_key
+        from service.agents.transport_secret import validate_transport_secret
         from service.review.agent_client import validate_agent_clients
 
         validate_dispatch_private_key()
+        validate_transport_secret()
         validate_agent_clients()
 
 

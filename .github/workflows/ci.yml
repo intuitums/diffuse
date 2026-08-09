@@ -464,6 +464,8 @@ jobs:
           # secret in the repository. This generated CI file is removed in teardown.
           printf 'DIFFUSE_REVIEW_AGENT_CAPABILITY_SIGNING_KEY=%s\n' \
             "$(openssl rand -hex 48)" >> ci.env
+          printf 'DIFFUSE_REVIEW_AGENT_TRANSPORT_SECRET=%s\n' \
+            "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" >> ci.env
           printf 'DIFFUSE_REVIEW_AGENT_DISPATCH_PRIVATE_KEY=%s\n' \
             "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" >> ci.env
 
