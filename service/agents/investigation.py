@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import time
+from threading import Event
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -100,7 +101,14 @@ class SessionRun:
 Runner = Callable[[list[str], dict[str, str], Path, int], SessionRun]
 
 
-def subprocess_runner(argv: list[str], env: dict[str, str], cwd: Path, timeout: int) -> SessionRun:
+def subprocess_runner(
+    argv: list[str],
+    env: dict[str, str],
+    cwd: Path,
+    timeout: int,
+    *,
+    cancel_event: Event | None = None,
+) -> SessionRun:
     """Run an agent in a new process group and remove that group on timeout."""
 
     process = subprocess.Popen(
@@ -113,7 +121,22 @@ def subprocess_runner(argv: list[str], env: dict[str, str], cwd: Path, timeout: 
         start_new_session=True,
     )
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
+        if cancel_event is None:
+            stdout, stderr = process.communicate(timeout=timeout)
+        else:
+            deadline = time.monotonic() + timeout
+            while True:
+                if cancel_event.is_set():
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                try:
+                    stdout, stderr = process.communicate(
+                        timeout=min(1, max(0.01, deadline - time.monotonic()))
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() >= deadline:
+                        raise
+                    continue
     except subprocess.TimeoutExpired as error:
         # Agent CLIs spawn MCP and sandbox descendants. Killing only the parent
         # leaks those processes and lets them keep touching a completed review.
@@ -143,6 +166,7 @@ def run_structured[T: BaseModel](
     capability: str | None = None,
     tool_url: str | None = None,
     total_timeout_seconds: int | None = None,
+    cancel_event: Event | None = None,
     runner: Runner = subprocess_runner,
 ) -> tuple[T, int, int]:
     """Run one structured CLI turn and mirror `_call_structured`'s return shape.
@@ -223,7 +247,13 @@ def run_structured[T: BaseModel](
             mcp_config=mcp_config,
             profile=profile,
             environment=environment,
-            runner=runner,
+            runner=(
+                lambda argv, env, cwd, timeout: subprocess_runner(
+                    argv, env, cwd, timeout, cancel_event=cancel_event
+                )
+                if runner is subprocess_runner
+                else runner(argv, env, cwd, timeout)
+            ),
             total_timeout_seconds=total_timeout_seconds,
         )
 

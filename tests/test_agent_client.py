@@ -6,10 +6,11 @@ from repository_policy.models import PolicyLayer, RepositoryConfig, RepositoryPo
 from repository_policy.resolve import resolve_review_policy
 from service.models.review import CandidateFinding
 from service.review.agent_client import (
-    NATIVE_RUNNER_REQUEST_TIMEOUT_SECONDS,
+    NATIVE_RUNNER_STATUS_TIMEOUT_SECONDS,
     AgentRuntime,
     NativeSessionDispatch,
     _report_from_runner,
+    validate_agent_clients,
 )
 from service.review.report_assembly import fingerprint
 from service.review.request import ReviewRequest
@@ -26,10 +27,16 @@ diff --git a/app.py b/app.py
 
 
 class _Response:
-    status_code = 200
+    def __init__(self, payload, status_code=200):
+        self.status_code = status_code
+        self._payload = payload
 
     def json(self):
-        return {
+        return self._payload
+
+
+def _result():
+    return {
             "runtime": "codex",
             "session_id": "session-1",
             "capability_id": "capability-1",
@@ -50,7 +57,7 @@ class _Response:
             ],
             "prompt_tokens": 12,
             "completion_tokens": 8,
-        }
+    }
 
 
 def test_native_runtime_calls_only_its_matching_isolated_runner(monkeypatch):
@@ -58,11 +65,37 @@ def test_native_runtime_calls_only_its_matching_isolated_runner(monkeypatch):
 
     def post(url, *, json, timeout):
         seen.update(url=url, json=json, timeout=timeout)
-        return _Response()
+        return _Response(
+            {
+                "runtime": "codex",
+                "session_id": "session-1",
+                "capability_id": "capability-1",
+                "runner_id": "host-codex-1",
+                "status": "accepted",
+            },
+            202,
+        )
+
+    def get(url, *, timeout, headers):
+        seen["status_url"] = url
+        assert headers == {"X-Diffuse-Investigation-Capability": "capability-token"}
+        return _Response(
+            {
+                "runtime": "codex",
+                "session_id": "session-1",
+                "capability_id": "capability-1",
+                "runner_id": "host-codex-1",
+                "status": "completed",
+                "result": _result(),
+            }
+        )
 
     monkeypatch.setattr("service.review.agent_client.httpx.post", post)
+    monkeypatch.setattr("service.review.agent_client.httpx.get", get)
     monkeypatch.setattr("service.review.agent_client.sign_dispatch", lambda _envelope: "signed")
     monkeypatch.setattr("service.review.agent_client._accept_completion", lambda *_args: None)
+    monkeypatch.setattr("service.review.agent_client._record_lifecycle", lambda *_args: None)
+    monkeypatch.setattr("service.review.agent_client.time.sleep", lambda *_args: None)
     report = AgentRuntime("codex").generate(
         ReviewRequest(
             diff_text=(
@@ -83,9 +116,9 @@ def test_native_runtime_calls_only_its_matching_isolated_runner(monkeypatch):
         )
     )
 
-    assert seen["url"] == "http://agent-host-codex:8010/v1/reviews"
+    assert seen["url"] == "http://agent-host-codex:8010/v1/investigations"
     assert seen["json"] == {"envelope": "signed"}
-    assert seen["timeout"] == NATIVE_RUNNER_REQUEST_TIMEOUT_SECONDS
+    assert seen["timeout"] == NATIVE_RUNNER_STATUS_TIMEOUT_SECONDS
     assert report.findings[0].fingerprint
     assert report.prompt_tokens == 12
 
@@ -149,3 +182,18 @@ def test_native_report_cannot_publish_a_policy_disabled_diff():
     assert report.skip_reason == "all_files_disabled"
     assert not report.publication_enabled
     assert not report.inline_comments_enabled
+
+
+def test_startup_validates_only_the_selected_review_runtime(monkeypatch):
+    checked = []
+
+    def get(url, *, timeout):
+        checked.append((url, timeout))
+        return _Response({"state": "ready"})
+
+    monkeypatch.setenv("REVIEW_AGENT", "codex")
+    monkeypatch.setattr("service.review.agent_client.httpx.get", get)
+
+    validate_agent_clients()
+
+    assert checked == [("http://agent-host-codex:8010/v1/status", 5)]
