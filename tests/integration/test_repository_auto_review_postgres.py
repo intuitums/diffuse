@@ -46,8 +46,17 @@ def _event(
             "updated_at": "2026-08-09T12:00:00Z",
             "delivery_id": delivery_id,
             "github_repository_id": github_repository_id,
+            "author": "",
+            "base_branch": "",
+            "head_branch": "",
+            "is_draft": False,
+            "labels": [],
+            "title": "",
+            "description": "",
             "trigger_kind": trigger_kind,
             "trigger_id": "operator-request" if trigger_kind == "manual" else "",
+            "metadata_complete": False,
+            "changed_file_count": 0,
         }
     )
 
