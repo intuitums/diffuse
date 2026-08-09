@@ -37,6 +37,7 @@ class AgentInvestigationReviewAttempt:
 
 
 _ABANDONED_SESSION_STATUSES = frozenset({"failed", "cancelled"})
+_RUNNER_SESSION_STATUSES = frozenset({"accepted", "running"})
 
 
 def create_agent_investigation(
@@ -111,7 +112,7 @@ def resolve_agent_investigation_review_attempt(
               AND session.pull_request_id = %s
               AND session.snapshot_id = %s
               AND session.head_sha = %s
-              AND session.status = 'dispatched'
+              AND session.status IN ('dispatched', 'accepted', 'running')
               AND session.expires_at > now()
               AND review.status = 'generating'
               AND session.created_at >= review.started_at
@@ -160,9 +161,99 @@ def abandon_agent_investigation(
             WHERE id = %s::uuid
               AND runtime = %s
               AND capability_id = %s
-              AND status = 'dispatched'
+              AND status IN ('dispatched', 'accepted', 'running')
             """,
             (status, session_id, runtime, capability_id),
+        )
+        return cursor.rowcount == 1
+
+
+def record_agent_investigation_lifecycle(
+    conn,
+    *,
+    session_id: str,
+    runtime: str,
+    capability_id: str,
+    runner_id: str,
+    status: str,
+) -> bool:
+    """Record a runner's accepted/running heartbeat without widening its scope.
+
+    The Agent Host has no database credentials.  The worker observes its
+    private lifecycle protocol and records only monotonic transitions here.
+    A runner id becomes immutable on first acceptance, which prevents a stale
+    response from a different host being mistaken for the assigned execution.
+    """
+
+    if status not in _RUNNER_SESSION_STATUSES:
+        raise ValueError("agent investigation lifecycle status must be accepted or running")
+    if not runner_id or len(runner_id) > 255:
+        raise ValueError("agent investigation runner id is invalid")
+    allowed_prior = ("dispatched",) if status == "accepted" else ("dispatched", "accepted")
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE agent_investigations
+            SET status = %s,
+                runner_id = COALESCE(runner_id, %s),
+                accepted_at = CASE
+                    WHEN accepted_at IS NULL THEN now() ELSE accepted_at END,
+                started_at = CASE
+                    WHEN %s = 'running' AND started_at IS NULL THEN now() ELSE started_at END,
+                last_heartbeat_at = now()
+            WHERE id = %s::uuid
+              AND runtime = %s
+              AND capability_id = %s
+              AND (runner_id IS NULL OR runner_id = %s)
+              AND status = ANY(%s)
+            """,
+            (
+                status,
+                runner_id,
+                status,
+                session_id,
+                runtime,
+                capability_id,
+                runner_id,
+                list(allowed_prior),
+            ),
+        )
+        if cursor.rowcount == 1:
+            return True
+        cursor.execute(
+            """
+            SELECT status, runner_id
+            FROM agent_investigations
+            WHERE id = %s::uuid AND runtime = %s AND capability_id = %s
+            """,
+            (session_id, runtime, capability_id),
+        )
+        existing = cursor.fetchone()
+    if existing and existing[1] in {None, runner_id} and existing[0] == status:
+        return False
+    raise AgentInvestigationReplayError("agent investigation lifecycle does not match dispatch")
+
+
+def request_agent_investigation_cancellation(
+    conn,
+    *,
+    session_id: str,
+    runtime: str,
+    capability_id: str,
+) -> bool:
+    """Durably record a cancellation request without racing host completion."""
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE agent_investigations
+            SET cancel_requested_at = COALESCE(cancel_requested_at, now())
+            WHERE id = %s::uuid
+              AND runtime = %s
+              AND capability_id = %s
+              AND status IN ('dispatched', 'accepted', 'running')
+            """,
+            (session_id, runtime, capability_id),
         )
         return cursor.rowcount == 1
 
@@ -186,7 +277,7 @@ def accept_agent_investigation_completion(
             WHERE id = %s::uuid
               AND runtime = %s
               AND capability_id = %s
-              AND status = 'dispatched'
+              AND status IN ('dispatched', 'accepted', 'running')
               AND expires_at > now()
             """,
             (digest, session_id, runtime, capability_id),

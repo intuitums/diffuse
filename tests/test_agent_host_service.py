@@ -121,3 +121,42 @@ def test_runner_refuses_concurrent_review_before_processing_the_envelope(monkeyp
         host.review(host.ReviewInvocation(envelope="dispatch"))
 
     assert error.value.status_code == 429
+
+
+def test_runner_accepts_an_idempotent_investigation_and_exposes_cancel_state(monkeypatch):
+    dispatch = SimpleNamespace(
+        runtime="claude",
+        session_id="session-lifecycle-1",
+        capability_id="capability-lifecycle-1",
+        capability="capability-token",
+        diff_text="diff --git a/a.py b/a.py",
+        source_artifact=object(),
+    )
+    slots = BoundedSemaphore(value=1)
+    monkeypatch.setenv("REVIEW_AGENT", "claude")
+    monkeypatch.setattr(host, "_review_slots", slots)
+    monkeypatch.setattr(host, "verify_dispatch", lambda _envelope: dispatch)
+
+    class _Thread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(host.threading, "Thread", _Thread)
+    with host._reviews_lock:
+        host._active_reviews.clear()
+
+    accepted = host.start_review(host.ReviewInvocation(envelope="dispatch"))
+    replayed = host.start_review(host.ReviewInvocation(envelope="dispatch"))
+    cancelled = host.cancel_review(dispatch.session_id, capability="capability-token")
+
+    assert accepted["status"] == "accepted"
+    assert accepted["runner_id"]
+    assert replayed == accepted
+    assert cancelled["status"] == "cancel_requested"
+    with pytest.raises(HTTPException, match="invalid investigation capability"):
+        host.review_status(dispatch.session_id)
+    with host._reviews_lock:
+        host._active_reviews.clear()
