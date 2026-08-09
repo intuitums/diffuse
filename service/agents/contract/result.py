@@ -1,4 +1,4 @@
-"""Schema-validated structured results from an agent-runner session.
+"""Schema-validated structured results from an agent-host session.
 
 The runner returns findings through this contract. Diffuse alone validates the
 payload, applies policy, and publishes as the GitHub App. Validation failures
@@ -85,8 +85,8 @@ class AgentFinding(StrictModel):
         return self
 
 
-class AgentSessionResult(StrictModel):
-    """The schema-validated payload an agent-runner must return."""
+class AgentInvestigationResult(StrictModel):
+    """The schema-validated payload an agent-host must return."""
 
     schema_version: Literal[1] = RESULT_SCHEMA_VERSION
     runtime: Literal["claude", "codex"]
@@ -133,7 +133,7 @@ def _classify_pydantic_error(error: dict[str, Any]) -> ResultValidationFailureCo
     return ResultValidationFailureCode.SCHEMA_MISMATCH
 
 
-def validate_agent_session_result(payload: str | bytes | dict[str, Any]) -> AgentSessionResult:
+def validate_agent_investigation_result(payload: str | bytes | dict[str, Any]) -> AgentInvestigationResult:
     """Parse and validate a runner result, raising a taxonomy-coded error on failure."""
 
     if isinstance(payload, (str, bytes)):
@@ -163,7 +163,7 @@ def validate_agent_session_result(payload: str | bytes | dict[str, Any]) -> Agen
         )
 
     try:
-        result = AgentSessionResult.model_validate(loaded)
+        result = AgentInvestigationResult.model_validate(loaded)
     except ValidationError as error:
         first = error.errors()[0]
         location = ".".join(str(part) for part in first.get("loc", ())) or None

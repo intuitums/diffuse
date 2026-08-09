@@ -245,8 +245,8 @@ jobs:
   #
   # Its other job is to keep the `test-runner` stage alive. That stage existed for
   # months with nothing building it and rotted exactly the way an unbuilt stage
-  # does: it installed version ranges instead of the lock (litellm 1.95.0 against
-  # a shipped 1.93.0), had no `git` for the twenty tests that shell out to it, and
+  # does: it installed version ranges instead of the lock, had no `git` for the
+  # twenty tests that shell out to it, and
   # was missing every fixture file the suite reads from disk. 35 failures, none of
   # them a code bug. Deleting this job puts the stage back on that path. See DEV-320.
   test-container:
@@ -316,14 +316,7 @@ jobs:
       # public key for configuration validation only; it has no corresponding
       # private key in CI and cannot sign a dispatch envelope.
       DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY: Yfs8wlT_0BUOdJOjbOpcJ2khTWvDZi4y-K8XZOVxeFE
-      # Set here rather than read from deploy/env.example, which now ships this
-      # commented out: a customer who copies that file and gets a working review
-      # model has been handed the same guess the code default was deleted for.
-      # CI has to name a model like any other operator, and this job is the only
-      # thing that noticed. The value matches the example file's recommendation
-      # so the smoke test boots the configuration the file actually documents.
-      # Never used to call a provider -- the worker validates and then idles.
-      REVIEW_MODEL: anthropic/claude-sonnet-5
+      REVIEW_AGENT: codex
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -424,14 +417,6 @@ jobs:
               \( -name "*.py" -o -name "*.pyc" -o -name "*.pyo" \) \
               -print -quit | grep -q .
           '
-          # `diffuse evaluate` is documented but evals/ was not packaged, so the
-          # documented command had no file to point at inside the image. Run it with
-          # the DEFAULT thresholds only: the committed fixture records a 0%-recall
-          # run, so it correctly exits 1 under the thresholds in evals/README.md.
-          # Gating on that exit code here would only invite someone to weaken a
-          # quality gate to make a packaging check pass.
-          docker run --rm --entrypoint diffuse diffuse:test \
-            evaluate /opt/diffuse/_internal/evals/baseline.example.json
           # Parser distribution metadata must ship, or INDEX_FORMAT_VERSION
           # stops tracking grammar upgrades and stale indexes survive an
           # upgrade. See indexer/index_version.py.
@@ -475,20 +460,12 @@ jobs:
               -e "s|^DIFFUSE_PUBLIC_URL=.*|DIFFUSE_PUBLIC_URL=${DIFFUSE_PUBLIC_URL}|" \
               env.example > ci.env
 
-          # REVIEW_MODEL is commented out in env.example on purpose, so it is
-          # appended rather than substituted. Appending also proves the file has
-          # no live assignment left to override -- a sed substitution would have
-          # kept passing if someone uncommented it again.
-          if grep -q "^REVIEW_MODEL=" ci.env; then
-            echo "::error::deploy/env.example assigns REVIEW_MODEL; it must ship commented out" >&2
-            exit 1
-          fi
-          echo "REVIEW_MODEL=${REVIEW_MODEL}" >> ci.env
-
           # Keep the startup capability check enabled without storing a signing
           # secret in the repository. This generated CI file is removed in teardown.
-          printf 'DIFFUSE_AGENT_CAPABILITY_SIGNING_KEY=%s\n' \
+          printf 'DIFFUSE_REVIEW_AGENT_CAPABILITY_SIGNING_KEY=%s\n' \
             "$(openssl rand -hex 48)" >> ci.env
+          printf 'DIFFUSE_REVIEW_AGENT_DISPATCH_PRIVATE_KEY=%s\n' \
+            "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" >> ci.env
 
           # Publish the database on an ephemeral host port for this boot only.
           # compose.yaml ships 127.0.0.1:5432 because that is the right default for a

@@ -17,8 +17,8 @@ APP_ENVIRONMENT = (
     "GITHUB_APP_PRIVATE_KEY_FILE",
     "GITHUB_APP_PRIVATE_KEY",
     "GITHUB_TOKEN",
-    "DIFFUSE_HOSTED_TOKEN_BROKER_URL",
-    "DIFFUSE_HOSTED_INSTANCE_TOKEN",
+    "DIFFUSE_GITHUB_INTEGRATION_URL",
+    "DIFFUSE_GITHUB_INTEGRATION_TOKEN",
 )
 
 
@@ -53,9 +53,9 @@ def test_static_token_is_only_the_unconfigured_fallback(monkeypatch):
     assert github_app.github_token() == "fallback-token"
 
 
-def test_hosted_broker_is_preferred_and_cached(monkeypatch):
-    monkeypatch.setenv("DIFFUSE_HOSTED_TOKEN_BROKER_URL", "https://api.diffuse.website")
-    monkeypatch.setenv("DIFFUSE_HOSTED_INSTANCE_TOKEN", "x" * 32)
+def test_integration_broker_is_preferred_and_cached(monkeypatch):
+    monkeypatch.setenv("DIFFUSE_GITHUB_INTEGRATION_URL", "https://api.diffuse.website")
+    monkeypatch.setenv("DIFFUSE_GITHUB_INTEGRATION_TOKEN", "x" * 32)
     monkeypatch.setenv("GITHUB_TOKEN", "must-not-be-used")
     monkeypatch.setattr(github_app.time, "monotonic", lambda: 100.0)
     calls: list[tuple[str, dict[str, str]]] = []
@@ -82,9 +82,9 @@ def test_hosted_broker_is_preferred_and_cached(monkeypatch):
     ]
 
 
-def test_hosted_broker_and_local_app_are_mutually_exclusive(monkeypatch, private_key):
-    monkeypatch.setenv("DIFFUSE_HOSTED_TOKEN_BROKER_URL", "https://api.diffuse.website")
-    monkeypatch.setenv("DIFFUSE_HOSTED_INSTANCE_TOKEN", "x" * 32)
+def test_integration_broker_and_local_app_are_mutually_exclusive(monkeypatch, private_key):
+    monkeypatch.setenv("DIFFUSE_GITHUB_INTEGRATION_URL", "https://api.diffuse.website")
+    monkeypatch.setenv("DIFFUSE_GITHUB_INTEGRATION_TOKEN", "x" * 32)
     configure_app(monkeypatch, private_key)
 
     with pytest.raises(github_app.GitHubAppConfigurationError, match="not both"):
@@ -177,9 +177,7 @@ def test_app_jwt_uses_github_claims_and_rs256(monkeypatch, private_key):
 def test_worker_startup_rejects_a_private_key_that_cannot_sign(monkeypatch):
     from service.hosted import worker
 
-    # REVIEW_MODEL has no default and is probed before this one, so without a
-    # valid value the refusal would name REVIEW_MODEL rather than the App.
-    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("REVIEW_AGENT", "codex")
     configure_app(
         monkeypatch,
         "-----BEGIN PRIVATE KEY-----\nnot-a-real-rsa-key\n-----END PRIVATE KEY-----",
@@ -276,8 +274,7 @@ def test_token_exchange_errors_do_not_include_response_bodies(
 def test_worker_configuration_names_partial_app_authentication(monkeypatch):
     from service.hosted import worker
 
-    # See the note above: REVIEW_MODEL is probed first and has no default.
-    monkeypatch.setenv("REVIEW_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("REVIEW_AGENT", "codex")
     monkeypatch.setenv("GITHUB_APP_ID", "123")
 
     with pytest.raises(ValueError, match="GitHub App authentication is invalid"):

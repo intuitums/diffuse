@@ -5,7 +5,7 @@ from service.review.provenance import (
     classify_pull_request_provenance,
     model_family,
     select_review_model_plan,
-    select_review_runtime_plan,
+    select_review_agent_plan,
 )
 
 
@@ -515,8 +515,8 @@ def test_cli_runner_routing_defaults_to_codex_and_opposes_trusted_families():
             metadata_complete=True,
         )
 
-    assert select_review_runtime_plan(provenance(None)).runtime == "codex"
-    assert select_review_runtime_plan(provenance("openai", 0.98)).runtime == "claude"
-    assert select_review_runtime_plan(provenance("anthropic", 0.98)).runtime == "codex"
+    assert select_review_agent_plan(provenance(None)).runtime == "codex"
+    assert select_review_agent_plan(provenance("openai", 0.98)).runtime == "claude"
+    assert select_review_agent_plan(provenance("anthropic", 0.98)).runtime == "codex"
     # Weak or forgeable evidence cannot influence selection.
-    assert select_review_runtime_plan(provenance("openai", 0.7)).runtime == "codex"
+    assert select_review_agent_plan(provenance("openai", 0.7)).runtime == "codex"

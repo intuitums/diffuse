@@ -35,13 +35,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && python -m pip install --require-hashes -r requirements-build.lock \
     && python -m pip check
 
-# Only the two files pyproject.toml's data-files list ships, not the whole
-# directory. evals/fixtures/ holds .py sources used as review fixtures, and
-# `--add-data /src/evals:evals` below is recursive -- copying those in would put
-# .py files in the frozen image and trip the assertion at the end of the
-# pyinstaller step. They are development tooling for scripts/eval.sh and have no
-# place in the runtime image.
-COPY evals/baseline.example.json evals/README.md ./evals/
 COPY indexer ./indexer
 COPY repository_policy ./repository_policy
 COPY retriever ./retriever
@@ -56,7 +49,6 @@ RUN pyinstaller \
         --distpath /build \
         --workpath /tmp/pyinstaller \
         --specpath /tmp/pyinstaller-spec \
-        --collect-data litellm \
         --collect-data mcp \
         --collect-submodules mcp.server \
         --collect-submodules mcp.shared \
@@ -67,8 +59,6 @@ RUN pyinstaller \
         --collect-submodules repository_policy \
         --collect-submodules retriever \
         --collect-submodules service \
-        --collect-data tiktoken \
-        --collect-submodules tiktoken_ext \
         --copy-metadata tree-sitter \
         --copy-metadata tree-sitter-c \
         --copy-metadata tree-sitter-cpp \
@@ -81,11 +71,9 @@ RUN pyinstaller \
         --copy-metadata tree-sitter-typescript \
         --add-data /src/service/hosted/git_askpass.sh:service/hosted \
         --add-data /src/sql:sql \
-        --add-data /src/evals:evals \
         /src/service/runtime.py \
     && test -x /build/diffuse/diffuse \
     && test -f /build/diffuse/_internal/sql/schema.sql \
-    && test -f /build/diffuse/_internal/evals/baseline.example.json \
     && test -x /build/diffuse/_internal/service/hosted/git_askpass.sh \
     && for dist in tree_sitter tree_sitter_c tree_sitter_cpp tree_sitter_go \
             tree_sitter_java tree_sitter_javascript tree_sitter_php \
@@ -121,10 +109,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # The lock FIRST, hash-checked, exactly as the builder stage and CI do it. This
 # stage used to install requirements-dev.txt alone, which re-resolves the
-# version RANGES in requirements.txt on every build: it produced litellm 1.95.0,
-# fastapi 0.141.1, and openai 2.53.0 against a shipped image pinned to 1.93.0,
-# 0.139.2, and 2.48.0. The stage meant to test what ships was the one stage not
-# testing it.
+# version ranges in requirements.txt on every build. The stage meant to test
+# what ships must install the exact runtime dependency graph first.
 #
 # requirements-dev.txt goes on top and adds test tooling only. It re-states
 # requirements.txt, but every range there is already satisfied by the locked
@@ -148,14 +134,13 @@ COPY tests ./tests
 
 # Files the suite reads as fixtures rather than imports. Each one is load-bearing
 # for a test that fails without it, and each was absent while nothing built this
-# stage: evals/ for the harness fixtures (test_eval_harness), .env.example and
+# stage: .env.example and
 # deploy/env.example for the documented-configuration checks
 # (test_env_documentation, test_deploy_env_example), both Compose profiles for
 # the compartment-boundary assertions, and the workflow definitions for the
 # release-provenance assertions.
-COPY evals ./evals
 COPY deploy ./deploy
-COPY agent-runners ./agent-runners
+COPY agents ./agents
 COPY .env.example ./.env.example
 COPY docker-compose.yml ./docker-compose.yml
 COPY .github ./.github
@@ -217,7 +202,7 @@ ENV DIFFUSE_SQL_DIR=/opt/diffuse/_internal/sql \
 # 0755 default after the fact, so assert the mode in the build.
 #
 # `agent/home` is created here and not only by `agent_login_home()`. Compose
-# sets HOME to it for the opt-in `agent-runner` service (not the worker), but
+# sets HOME to it for the opt-in `agent-host` service (not the worker), but
 # that helper only runs during `agent login` / `agent logout`, so on a stack
 # that has never signed in to an agent the runner would boot pointing at a
 # directory that does not exist. Both are on the volume path, so Docker seeds
@@ -275,7 +260,7 @@ USER root
 COPY --from=runner-node /usr/local/ /usr/local/
 
 FROM runner-base AS runner-claude
-COPY agent-runners/claude/package.json agent-runners/claude/package-lock.json /opt/diffuse/agent-cli/
+COPY agents/claude/package.json agents/claude/package-lock.json /opt/diffuse/agent-cli/
 # Claude's native executable is installed by this package's lifecycle script.
 # Run that one lockfile-verified script explicitly rather than enabling scripts
 # for every dependency in the npm tree.
@@ -288,7 +273,7 @@ ENV DISABLE_AUTOUPDATER=1 \
 USER diffuse
 
 FROM runner-base AS runner-codex
-COPY agent-runners/codex/package.json agent-runners/codex/package-lock.json /opt/diffuse/agent-cli/
+COPY agents/codex/package.json agents/codex/package-lock.json /opt/diffuse/agent-cli/
 RUN npm ci --prefix /opt/diffuse/agent-cli --omit=dev --ignore-scripts --no-audit --no-fund \
     && ln -s /opt/diffuse/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
     && codex --version

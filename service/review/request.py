@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from repository_policy.resolve import ResolvedReviewPolicy
     from retriever.context_models import CrossRepositoryContextPlan
     from retriever.retrieve import RetrievedContext
-    from service.review.native_runner import NativeSessionDispatch
+    from service.review.agent_client import NativeSessionDispatch
     from service.review.tools import ReviewToolProvider
 
 
@@ -44,7 +44,7 @@ class ReviewRequest:
     tools: ReviewToolProvider | None = None
     #: Optional opaque identity for logging (review_run id as text, fixture id).
     review_identity: str | None = None
-    agent_session: NativeSessionDispatch | None = None
+    agent_investigation: NativeSessionDispatch | None = None
 
     def with_tools(self, tools: ReviewToolProvider) -> ReviewRequest:
         """Return a copy that carries `tools` without mutating this request."""
@@ -60,5 +60,5 @@ class ReviewRequest:
             context_plan=self.context_plan,
             tools=tools,
             review_identity=self.review_identity,
-            agent_session=self.agent_session,
+            agent_investigation=self.agent_investigation,
         )

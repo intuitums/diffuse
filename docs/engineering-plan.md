@@ -16,9 +16,8 @@ Status is recorded per item so a reader picking this up cold knows what is left.
 Delete an item once it has landed and stayed landed for a release.
 
 **Product shape:** Diffuse is the control plane; Claude Code / Codex run on an
-isolated agent-runner under a session-capability contract. LiteLLM remains a
-transitional in-process review path until Gate E. See
-[agent-runtimes.md](agent-runtimes.md) and the Linear
+isolated Agent Host under a session-capability contract. See
+[agents.md](agents.md) and the Linear
 [CLI-native agent operation plan](https://linear.app/intuitum/document/cli-native-agent-operation-plan-6ccec382faef).
 
 ## Open questions that gate the work below
@@ -32,7 +31,7 @@ them say so.
   one and unblocks the most: everything needed is committed and working, see
   [`../evals/CAPTURE.md`](../evals/CAPTURE.md).
 - **Source-execution validation** (executing pull-request code in a sandbox):
-  keep, defer, or drop. Distinct from `REVIEW_RUNTIME` and agent CLIs.
+  keep, defer, or drop. Distinct from `REVIEW_AGENT` and agent CLIs.
 - **Learned rules** — who works the approval queue, or whether there is an
   auto-activation path. This gates the "grows with you" claim; see the open
   questions in [roadmap.md](roadmap.md).
@@ -49,15 +48,14 @@ them say so.
 Nothing after this is verifiable without it.
 
 - **Capture and commit the review baseline; wire `scripts/eval.sh` into CI.**
-  *Blocked on capturing the baseline.* Measures the one-shot API review runtime
-  — not retrieval, not policy, not an agent CLI. Prove it can fail against a
+  *Blocked on capturing the baseline.* Measures the Agent review runtime — not
+  retrieval or policy. Prove it can fail against a
   seeded regression before
   trusting it (`../evals/CAPTURE.md` §6); a gate that has never failed is not
   yet known to be a gate.
 - **Make token cost observable.** *Done.* Cache-read and cache-write counts
-  accumulate through the review engine. Note that LiteLLM's `prompt_tokens`
-  already includes the cached portions, unlike Anthropic's native
-  `input_tokens` — summing all three double-counts.
+  accumulate through the review engine. Agent-reported token accounting is
+  retained as telemetry and must not be double-counted.
 
 ## Wave 1 — the defects
 
@@ -75,21 +73,19 @@ Nothing after this is verifiable without it.
 
 Diffuse owns the contract (`ReviewReport`, policy, publication). The CLI-native
 operation layer is delivered through the Linear plan gates; see
-[agent-runtimes.md](agent-runtimes.md).
+[agents.md](agents.md).
 
 - **Freeze the CLI-native contract (Gate A).** *Done.* `service.agents.contract`
   defines runtime / session-capability / structured-result modules; Compose
-  references the `agent-runner` skeleton; worker no longer mounts agent
+  references the `agent-host` skeleton; worker no longer mounts agent
   credentials.
-- **`ReviewRuntime` seam at `generate_review`.** *Done (transitional).*
-  `LiteLLMRuntime` remains the default implementation (`REVIEW_RUNTIME=litellm`);
-  hosted `claude` and `codex` selections dispatch through the isolated runner
-  while Gate C is proven in a controlled pilot.
+- **`ReviewAgent` seam at `generate_review`.** *Done.* Hosted `claude` and
+  `codex` selections dispatch through the isolated Agent Host.
 - **Agent CLI host plumbing.** *Done for Claude and Codex.* Config dir, sandbox
   policy, version floor (measured for Claude; not yet set for Codex),
   `diffuse agent login|status|write-policy`. Execution moves to the isolated
-  agent-runner (Gate B/C), not a worker-spawned CLI.
-- **Read-only agent-runner + capability tools (Gate B).** *In progress.* The
+  agent-host (Gate B/C), not a worker-spawned CLI.
+- **Read-only agent-host + capability tools (Gate B).** *In progress.* The
   long-lived runner starts only after its compartment assertions pass. The
   worker creates a bounded, deterministic archive from its exact mirror
   checkout, binds it into the signed dispatch, and the runner materializes it
@@ -100,28 +96,27 @@ operation layer is delivered through the Linear plan gates; see
   16 MiB archive / 128 MiB expanded-tree ceiling until delivery is
   object-backed. Builds on the review-compartment / credential-home work
   already landed.
-- **Move review execution to CLIs (Gate C).** *In progress.* `REVIEW_RUNTIME`
+- **Move review execution to CLIs (Gate C).** *In progress.* `REVIEW_AGENT`
   can dispatch Codex or Claude to the isolated matching runner; the control
   plane still validates the structured result through the shared changed-line,
   policy, confidence, severity, publication-cap, and fingerprint rules before
   it publishes. Complete the end-to-end Compose proof and controlled pilot,
-  then replace the transitional LiteLLM candidate/diagram/verifier path.
+  then complete the end-to-end controlled pilot.
 - **`ReviewRequest` + internal tool provider.** *Done (preflight).* Runtimes
   take a `ReviewRequest` (diff, policy, optional worktree / context plan /
   tools). `ReviewToolProvider.search_code` wraps `search_codebase`
-  and records every call (memory or Postgres). Local `diffuse review`
-  builds tools onto the request; the one-shot runtime still ignores them.
+  and records every call (memory or Postgres). Hosted Review Agents receive
+  the private tool contract as part of their Investigation.
 - **Tool-call log.** *Done for `search_code`.* `review_tool_calls` (migration
   0011) records every remote native-session lookup with its session-bound
   review attempt, so an agentic investigation stays replayable.
 - **Retrievers as tools.** `search_code` remains an internal review tool.
-  Public MCP exposure and `ask_codebase` are removed from v1. The agent-runner
+  Public MCP exposure and `ask_codebase` are removed from v1. The agent-host
   capability tools should consume `search_code`. *Blocked on Gate B/C, on the
   reproducibility trade-off, and — for measurement — on the retrieval corpus.*
 - **Extend the harness to exercise retrieval.** *Blocked on the retrieval corpus.*
-- **Retire one-shot pass scaffolding** (`REVIEW_PASSES` fan-out, diff chunking,
-  pre-fused blob, verifier pass) from being the default story — and from the
-  agent path — only after Gate C/E cutover. Not before.
+- **Retire one-shot pass scaffolding.** *Done.* Review Agents own their
+  investigations and return the common report contract.
 - **Codex on the same runner contract.** Restores cross-family verification
   across CLIs. Empirics still unmeasured.
 - **Record runtime (+ CLI version) on eval runs and review runs.** Partial:
@@ -171,7 +166,7 @@ repositories. That gap has no answer yet.
 `service/hosted/` holds the webhook ingress, durable queue, worker, and private
 runner transport. They are the fleet/fork-PR path and are **not** obsolete.
 Public REST/MCP are not part of this package's v1 surface. The isolated
-agent-runner (Gate B) sits beside them; the worker remains the control-plane
+agent-host (Gate B) sits beside them; the worker remains the control-plane
 job executor and never hosts a CLI. Edges into this package are listed in
 `service/hosted/__init__.py`.
 

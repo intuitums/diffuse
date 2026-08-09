@@ -39,8 +39,8 @@ they describe something an operator cannot simply configure away.
 This is the defining property of the threat model. Diffuse clones repositories,
 indexes their source, reads in-repository configuration (`.diffuse` and
 agent/editor instruction files), ingests webhook payloads, and
-feeds diffs, retrieved code, and pull-request text to a
-language model. **All of that content is attacker-influencable** — by an
+feeds diffs, retrieved code, and pull-request text to an isolated Review Agent.
+**All of that content is attacker-influencable** — by an
 external contributor opening a pull request, by a compromised dependency
 vendored into a repository, or by anyone who can get a branch pushed.
 
@@ -48,7 +48,7 @@ The following are explicitly **in scope**:
 
 - **Prompt injection.** Repository content, diffs, pull-request titles and
   descriptions, commit messages, review threads, or in-repository configuration
-  that steers the review model or an agent-CLI session into leaking data it was
+  that steers a Review Agent into leaking data it was
   given, taking an unintended action (publishing, approving, re-triggering),
   suppressing findings for other changes, or escaping the constraints of the
   review runtime.
@@ -57,8 +57,7 @@ The following are explicitly **in scope**:
   causes code execution, filesystem access, or network access outside the
   disposable worktree or mirror — including escaping the repository root,
   bypassing `DIFFUSE_MAX_REPOSITORY_BYTES`, or reaching the host from a
-  container. For agent-CLI local review (when selectable): escaping the
-  Diffuse-owned child environment, weakening or bypassing the CLI OS sandbox
+  container: escaping the Diffuse-owned Agent Environment, weakening or bypassing the CLI OS sandbox
   policy Diffuse writes, loading a repository- or user-supplied MCP server
   despite `--strict-mcp-config`, or running below the version floor so
   sandbox settings are silently ignored.
@@ -89,12 +88,12 @@ scope.
 
 ### Agent-CLI review boundary
 
-Diffuse's target architecture is control plane + isolated agent-runner: the
+Diffuse's architecture is control plane + isolated Agent Host: the
 worker never executes a CLI or mounts agent credentials. Session capabilities
 and structured results are defined in `service.agents.contract`. The
-self-hosted controlled pilot can select `REVIEW_RUNTIME=claude` or `codex` and
-dispatch it to the matching runner; local review stays on the transitional API
-path until it uses that same session contract. The boundaries are:
+self-hosted deployment selects `REVIEW_AGENT=claude` or `codex` and dispatches
+it to the matching Agent Host. Local branch review is unavailable until it can
+use that same Review Access Grant contract. The boundaries are:
 
 1. **Child environment allowlist** — credentials Diffuse does not name never
    reach the CLI process (`GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, `AWS_*`,
@@ -113,7 +112,7 @@ invariants are in scope.
 
 #### Self-hosted container decision
 
-The self-hosted agent-runner drives an agent CLI only from a dedicated review
+The self-hosted agent-host drives an agent CLI only from a dedicated review
 compartment. The invariant is not `sandbox.enabled == true`; it is: **the
 process that reads untrusted content holds no control-plane credential and
 reaches no resource whose compromise matters.** The worker and API container do
@@ -152,7 +151,7 @@ passed, and an assertion minted for one profile is not accepted for another. An
 adapter that selects the profile and skips the preflight therefore gets an
 error rather than an unsandboxed review.
 
-The preflight is implemented in `service.review.agent_compartment`. The runner
+The preflight is implemented in `service.review.agent_sandbox`. The runner
 executes it at startup and obtains a fresh profile-matching assertion before
 each CLI session, checking identity, read-only root and agent home, absence of
 control-plane credentials, database isolation, and constrained model egress.

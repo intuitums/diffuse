@@ -47,8 +47,8 @@ APP_ID_VARIABLE = "GITHUB_APP_ID"
 INSTALLATION_ID_VARIABLE = "GITHUB_APP_INSTALLATION_ID"
 PRIVATE_KEY_FILE_VARIABLE = "GITHUB_APP_PRIVATE_KEY_FILE"
 PRIVATE_KEY_VARIABLE = "GITHUB_APP_PRIVATE_KEY"
-HOSTED_TOKEN_BROKER_URL_VARIABLE = "DIFFUSE_HOSTED_TOKEN_BROKER_URL"
-HOSTED_INSTANCE_TOKEN_VARIABLE = "DIFFUSE_HOSTED_INSTANCE_TOKEN"
+GITHUB_INTEGRATION_URL_VARIABLE = "DIFFUSE_GITHUB_INTEGRATION_URL"
+GITHUB_INTEGRATION_TOKEN_VARIABLE = "DIFFUSE_GITHUB_INTEGRATION_TOKEN"
 DEFAULT_GITHUB_API_VERSION = "2026-03-10"
 
 MAX_PRIVATE_KEY_BYTES = 16_384
@@ -212,10 +212,10 @@ def app_credentials() -> AppCredentials | None:
 
 
 @dataclass(frozen=True)
-class HostedTokenBroker:
-    """The narrow hosted credential bridge for the shared Diffuse-Agent App.
+class GitHubIntegrationTokenBroker:
+    """The narrow credential bridge for the Diffuse GitHub App.
 
-    The customer-operated instance proves only its own enrollment credential to
+    The customer-operated instance proves only its own connection credential to
     this endpoint. It never receives the shared App private key.
     """
 
@@ -223,26 +223,26 @@ class HostedTokenBroker:
     instance_token: str
 
 
-def hosted_token_broker() -> HostedTokenBroker | None:
-    url = os.environ.get(HOSTED_TOKEN_BROKER_URL_VARIABLE, "").strip().rstrip("/")
-    instance_token = os.environ.get(HOSTED_INSTANCE_TOKEN_VARIABLE, "").strip()
+def github_integration_token_broker() -> GitHubIntegrationTokenBroker | None:
+    url = os.environ.get(GITHUB_INTEGRATION_URL_VARIABLE, "").strip().rstrip("/")
+    instance_token = os.environ.get(GITHUB_INTEGRATION_TOKEN_VARIABLE, "").strip()
     if not url and not instance_token:
         return None
     if not url or not instance_token:
         raise GitHubAppConfigurationError(
-            "Hosted Diffuse-Agent authentication is partially configured; set both "
-            f"{HOSTED_TOKEN_BROKER_URL_VARIABLE} and {HOSTED_INSTANCE_TOKEN_VARIABLE}."
+            "GitHub Integration Service authentication is partially configured; set both "
+            f"{GITHUB_INTEGRATION_URL_VARIABLE} and {GITHUB_INTEGRATION_TOKEN_VARIABLE}."
         )
-    parsed = normalize_base_url(url, field_name=HOSTED_TOKEN_BROKER_URL_VARIABLE)
+    parsed = normalize_base_url(url, field_name=GITHUB_INTEGRATION_URL_VARIABLE)
     if not parsed.startswith("https://"):
         raise GitHubAppConfigurationError(
-            f"{HOSTED_TOKEN_BROKER_URL_VARIABLE} must be an HTTPS origin"
+            f"{GITHUB_INTEGRATION_URL_VARIABLE} must be an HTTPS origin"
         )
     if len(instance_token) < 32:
         raise GitHubAppConfigurationError(
-            f"{HOSTED_INSTANCE_TOKEN_VARIABLE} is too short"
+            f"{GITHUB_INTEGRATION_TOKEN_VARIABLE} is too short"
         )
-    return HostedTokenBroker(parsed, instance_token)
+    return GitHubIntegrationTokenBroker(parsed, instance_token)
 
 
 def _mint_app_jwt(credentials: AppCredentials) -> str:
@@ -273,12 +273,12 @@ def validate_app_configuration() -> None:
     malformed PEM is deterministic configuration. Catch it at worker startup
     rather than dead-lettering the first claimed review job.
     """
-    broker = hosted_token_broker()
+    broker = github_integration_token_broker()
     credentials = app_credentials()
     if broker is not None and credentials is not None:
         raise GitHubAppConfigurationError(
-            "Configure either local GitHub App credentials or the hosted Diffuse-Agent "
-            "token broker, not both."
+            "Configure either local GitHub App credentials or GitHub Integration Service "
+            "credentials, not both."
         )
     if credentials is not None:
         _mint_app_jwt(credentials)
@@ -375,13 +375,15 @@ def installation_token(credentials: AppCredentials | None = None) -> str:
         return token
 
 
-def hosted_installation_token(broker: HostedTokenBroker | None = None) -> str:
-    """Get a cached installation token from the hosted Diffuse-Agent broker."""
+def integration_installation_token(broker: GitHubIntegrationTokenBroker | None = None) -> str:
+    """Get a cached installation token from the GitHub Integration Service."""
     global _cached_token, _cached_expires_at, _cached_identity
 
-    broker = broker or hosted_token_broker()
+    broker = broker or github_integration_token_broker()
     if broker is None:
-        raise GitHubAppConfigurationError("Hosted Diffuse-Agent authentication is not configured")
+        raise GitHubAppConfigurationError(
+            "GitHub Integration Service authentication is not configured"
+        )
     identity = (
         "hosted",
         f"{broker.url}:{sha256(broker.instance_token.encode()).hexdigest()}",
@@ -402,22 +404,25 @@ def hosted_installation_token(broker: HostedTokenBroker | None = None) -> str:
             )
         except httpx.HTTPError as error:
             raise GitHubAppError(
-                f"Could not reach the Diffuse-Agent token broker: {error}"
+                f"Could not reach the GitHub Integration Service: {error}"
             ) from error
         if response.status_code in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
             raise GitHubAppConfigurationError(
-                "Diffuse-Agent rejected this self-hosted instance credential; reconnect it."
+                "GitHub Integration Service rejected this self-hosted instance credential; reconnect it."
             )
         if response.status_code >= httpx.codes.BAD_REQUEST:
             raise GitHubAppError(
-                f"Diffuse-Agent could not mint an installation token (HTTP {response.status_code})"
+                "GitHub Integration Service could not mint an installation token "
+                f"(HTTP {response.status_code})"
             )
         try:
             token = response.json()["token"]
         except (ValueError, KeyError, TypeError) as error:
-            raise GitHubAppError("Diffuse-Agent returned an invalid installation token") from error
+            raise GitHubAppError(
+                "GitHub Integration Service returned an invalid installation token"
+            ) from error
         if not isinstance(token, str) or not token:
-            raise GitHubAppError("Diffuse-Agent returned an empty installation token")
+            raise GitHubAppError("GitHub Integration Service returned an empty installation token")
         _cached_token = token
         _cached_expires_at = time.monotonic() + 3600.0
         _cached_identity = identity
@@ -440,9 +445,9 @@ def github_token() -> str:
     permissions and installation rather than to a person, and expires on its
     own. Falls back to ``GITHUB_TOKEN`` when no App is configured.
     """
-    broker = hosted_token_broker()
+    broker = github_integration_token_broker()
     if broker is not None:
-        return hosted_installation_token(broker)
+        return integration_installation_token(broker)
     credentials = app_credentials()
     if credentials is not None:
         return installation_token(credentials)

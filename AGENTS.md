@@ -37,17 +37,8 @@ the native localhost Postgres.
 
 ### `.env` no longer leaks into the test process
 
-`litellm` calls `load_dotenv()` on import, so importing any service module auto-loads `.env`
-from the current directory into the process environment. That used to break otherwise-passing
-tests whenever a developer had followed the setup instructions and created one.
-
-`tests/conftest.py` now sets `LITELLM_MODE=PRODUCTION` before the first litellm import, which
-disables that load for the test process only. Running tests with `.env` in place is fine; the
-old `mv .env .env.bak` dance is no longer needed. The app and worker still load `.env`
-normally, which is what you want for local development.
-
-That guard only stops litellm from auto-loading the on-disk `.env`; it cannot undo variables
-you export yourself. So do **not** run `pytest` from a shell where you have already done
+Tests do not load `.env` automatically. Running tests with `.env` in place is fine, but do
+**not** run `pytest` from a shell where you have already done
 `set -a; source .env` (which is how you launch the app/worker below). Run the app in one shell
 and tests in a separate, un-sourced shell.
 
@@ -81,30 +72,19 @@ With that set, `mirrorState` reaches `ready` and the worker clones/fetches/check
 normally. (This only affects Diffuse's git subprocesses; keep your normal shell `HOME` for your
 own `git commit`/`git push`.)
 
-### Both the app and the worker validate config at startup — `.env` ships placeholders
+### Both the app and worker validate Agent configuration at startup
 
-`service.webhook_server:app` runs `validate_worker_configuration` in its lifespan, so the API
-server — not just the worker — refuses to boot unless `REVIEW_MODEL` is set and its credential
-is resolvable. That check is offline: it confirms the model identifier and a resolvable
-credential *name*, and never calls the provider. A placeholder key therefore satisfies startup;
-only real review calls fail on a bad one. The committed CI smoke test (`ci.yml`
-`build-container`) relies on exactly this, booting with `REVIEW_MODEL=anthropic/claude-sonnet-5`
-and a fake provider key.
-
-The dev `.env` on this VM is set up the same way: `REVIEW_MODEL=anthropic/claude-sonnet-5` plus
-placeholder provider keys, so the app and worker boot and the whole control plane (onboarding,
-CLI, GitHub webhook ingestion, private runner transport, `/health`, and `/ready`) works.
-Replace those placeholders with real keys before expecting a review to complete. Indexing needs
-no model credential.
+`service.webhook_server:app` runs `validate_worker_configuration` in its lifespan. Set
+`REVIEW_AGENT` and configure Agent Dispatch plus Review Access Grants before starting either
+process. The worker also checks that the isolated Agent Hosts are ready.
 
 ### External secrets for full end-to-end review
 
 Onboarding *and indexing* a repo works with no external secrets: retrieval is graph and
-lexical search inside PostgreSQL, so a complete snapshot needs no model credential. Review
-additionally needs:
+lexical search inside PostgreSQL. Review additionally needs:
 
-- `REVIEW_MODEL` plus that provider's key (or `REVIEW_API_BASE`). The worker refuses to start
-  until `REVIEW_MODEL` is set, naming the variable.
+- `REVIEW_AGENT`, Agent Dispatch signing, a Review Access Grant signing key, and an authenticated
+  isolated Agent Host.
 - `GITHUB_TOKEN` + webhook secret — to clone private repos and publish reviews. Public repos
   clone with no token (verified by onboarding `octocat/Hello-World` to `mirrorState: ready`).
 

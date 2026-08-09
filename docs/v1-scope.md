@@ -36,8 +36,8 @@ swarm.
 
 ## Required v1 capabilities
 
-- A guided, verified connection to the shared **Diffuse-Agent** GitHub App.
-  The hosted setup confirms the GitHub installation, then enrolls the existing
+- A guided, verified connection to the **Diffuse GitHub App**.
+  The GitHub connection flow confirms the installation, then connects the existing
   self-hosted Diffuse instance. It is one setup journey, not a Diffuse-user
   account or a generic GitHub OAuth login.
 - GitHub App authentication, signed webhook ingestion, and idempotent
@@ -59,10 +59,10 @@ swarm.
 
 - Public MCP server, MCP service tokens, MCP write tools, and agent handoffs.
 - Automatic pull-request approval.
-- A hosted review SaaS or per-user Diffuse account system. Diffuse-Agent is
+- A hosted review SaaS or per-user Diffuse account system. The GitHub Integration Service is
   limited to setup, signed webhook ingress, event routing, and short-lived
   installation-token brokering; it never runs reviews or stores code, mirrors,
-  findings, model credentials, or review output.
+  findings, Agent credentials, or review output.
 - General public REST API as a product surface. Narrow private worker-to-runner
   transport is allowed.
 - General repository Q&A, analytics reporting, cross-repository context, and
@@ -76,9 +76,8 @@ swarm.
 - Nested/cascading repository policy, custom context, and organization policy.
 - Advanced provenance-based model routing. It may return only after the
   baseline review team is measured.
-- A full CLI-native replacement for every former LiteLLM operation. LiteLLM
-  remains only while a CLI review path reaches the required quality and
-  operational parity; it is not the v1 product identity.
+- Local-branch reviews until they can receive the same Agent Host access grant
+  as a pull-request review.
 
 ## Terminology
 
@@ -86,11 +85,11 @@ Use product terms that describe the work performed:
 
 | Retire | Use instead |
 | --- | --- |
-| agent runner | CLI review runner |
-| agent session | review investigation |
-| native runtime | CLI review engine |
-| capability tool gateway | private review transport |
-| `REVIEW_RUNTIME` | `REVIEW_ENGINE` |
+| agent runner | Agent Host |
+| agent session | Agent Investigation |
+| native runtime | Review Agent |
+| capability tool gateway | Context Service |
+| `REVIEW_ENGINE` | `REVIEW_AGENT` |
 
 The runner is an implementation detail. Diffuse is a review system, not a
 general-purpose agent platform.
@@ -99,10 +98,10 @@ general-purpose agent platform.
 
 1. **Documentation and work-plan reset.** Remove conflicting feature claims;
    align Linear with this scope.
-2. **GitHub App connection.** Build the guided shared Diffuse-Agent setup:
+2. **GitHub App connection.** Build the guided Diffuse GitHub App connection:
    direct installation, verify the operator controls it, enroll the existing
    self-hosted instance, and surface a clear ready/not-ready diagnostic.
-   GitHub webhooks terminate at the hosted relay; each customer instance pulls
+   GitHub webhooks terminate at the GitHub Integration Service; each customer instance polls
    signed events over outbound HTTPS and needs no public inbound endpoint.
 3. **Excision.** Delete MCP and auto-approval code paths, configuration,
    tests, documentation, and public routes. Do not destructively drop their
@@ -136,8 +135,7 @@ migration.
 7. **Feedback-backed learning.** Use feedback to make human-approved guidance
    useful and observable. Do not silently learn or suppress protected finding
    categories.
-8. **LiteLLM retirement.** Decide only after the CLI review team has evaluation
-   and pilot evidence.
+8. **Direct model API retirement.** Complete before an Agent-only release.
 
 ## Documentation rule
 

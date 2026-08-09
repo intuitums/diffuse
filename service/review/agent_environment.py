@@ -5,7 +5,7 @@ from __future__ import annotations
 # The credential directory is intentionally explicit so container preflight can
 # require the same path the agent host will use, rather than trusting a default
 # selected from an ambient HOME.
-AGENT_HOME_VARIABLE = "DIFFUSE_AGENT_HOME"
+AGENT_HOME_VARIABLE = "DIFFUSE_REVIEW_AGENT_HOME"
 
 # Named here only so tests and the review-compartment preflight can assert their
 # absence individually. The child allowlist remains the stronger control: it
