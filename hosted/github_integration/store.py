@@ -22,7 +22,7 @@ from .config import (
     database_url,
     token_key,
 )
-from .sealed_secret import SealedSecretError, seal, unseal
+from .sealed_secret import SealedSecretError, is_sealed, key_id_for, seal, unseal
 
 OAUTH_STATE_LIFETIME = timedelta(minutes=10)
 ENROLLMENT_CODE_LIFETIME = timedelta(minutes=15)
@@ -35,6 +35,10 @@ def connection() -> Iterator[psycopg2.extensions.connection]:
     conn = psycopg2.connect(database_url())
     try:
         yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -70,6 +74,42 @@ def _unseal_event_signing_key(value: str) -> str:
         )
     except SealedSecretError as error:
         raise ValueError("stored event signing key could not be decrypted") from error
+
+
+def _event_signing_key_needs_reseal(stored: str) -> bool:
+    """True when the row is plaintext or sealed under a previous KEK."""
+    if not is_sealed(stored):
+        return True
+    parts = stored.split(".")
+    if len(parts) != 4:
+        return True
+    return parts[2] != key_id_for(credential_kek())
+
+
+def _maybe_reseal_event_signing_key(
+    cursor: psycopg2.extensions.cursor,
+    *,
+    instance_id: str,
+    stored: str,
+    plaintext: str,
+) -> None:
+    """Best-effort upgrade of legacy / previous-KEK ciphertext onto the current KEK."""
+    if not _event_signing_key_needs_reseal(stored):
+        return
+    try:
+        resealed = _seal_event_signing_key(plaintext)
+    except Exception:  # noqa: BLE001 — never fail authentication on re-seal
+        return
+    cursor.execute(
+        """
+        UPDATE self_hosted_instances
+        SET event_signing_key = %s, updated_at = now()
+        WHERE id = %s::uuid
+          AND revoked_at IS NULL
+          AND event_signing_key = %s
+        """,
+        (resealed, instance_id, stored),
+    )
 
 
 def create_oauth_state(installation_id: int) -> str:
@@ -213,12 +253,22 @@ def authenticate_instance(token: str) -> Instance | None:
             (_hash(token),),
         )
         row = cursor.fetchone()
-    if row is None:
-        return None
+        if row is None:
+            return None
+        instance_id = str(row[0])
+        installation_id = int(row[1])
+        stored = str(row[2])
+        plaintext = _unseal_event_signing_key(stored)
+        _maybe_reseal_event_signing_key(
+            cursor,
+            instance_id=instance_id,
+            stored=stored,
+            plaintext=plaintext,
+        )
     return Instance(
-        id=str(row[0]),
-        installation_id=int(row[1]),
-        event_signing_key=_unseal_event_signing_key(str(row[2])),
+        id=instance_id,
+        installation_id=installation_id,
+        event_signing_key=plaintext,
     )
 
 
