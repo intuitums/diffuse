@@ -43,4 +43,5 @@ def repository_index_event(
         after_sha=commit_sha,
         pushed_at=requested_at.isoformat(),
         delivery_id=delivery_id,
+        github_repository_id=repository.github_repository_id or 0,
     )

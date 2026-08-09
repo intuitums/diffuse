@@ -11,6 +11,7 @@ from typing import Any
 
 import psycopg2.extras
 
+from service.repositories import resolve_github_repository
 from service.scm import (
     FeedbackSyncEvent,
     PullRequestEvent,
@@ -273,21 +274,16 @@ def enqueue_review_event(
             "SELECT pg_advisory_xact_lock(%s)",
             (_advisory_lock_id(event.scope_key),),
         )
-        cursor.execute(
-            """
-            SELECT id
-            FROM repositories
-            WHERE scm_provider = %s
-              AND scm_base_url = %s
-              AND full_name = %s
-              AND enabled = TRUE
-            """,
-            (event.provider, event.scm_base_url, event.repo_full_name),
+        repository = resolve_github_repository(
+            conn,
+            scm_base_url=event.scm_base_url,
+            github_repository_id=event.github_repository_id,
+            full_name=event.repo_full_name,
         )
-        repository = cursor.fetchone()
-        if not repository:
+        if repository is None or not repository.enabled:
             raise RepositoryNotOnboardedError(event.repo_full_name)
-        repository_id = int(repository[0])
+        repository_id = repository.id
+        auto_review = repository.auto_review
 
         cursor.execute(
             """
@@ -333,6 +329,12 @@ def enqueue_review_event(
                 state=f"duplicate_delivery:{job_status or 'recorded'}",
             )
         delivery_id = int(delivery[0])
+
+        # A disabled automatic trigger must not be retroactively revived by a
+        # later settings change or a GitHub redelivery. Manual review requests
+        # remain available for enabled repositories.
+        if event.trigger_kind == "automatic" and not auto_review:
+            return EnqueueResult(job_id=None, state="auto_review_disabled")
 
         cursor.execute(
             """
@@ -616,21 +618,15 @@ def enqueue_review_conversation_event(
             "SELECT pg_advisory_xact_lock(%s)",
             (_advisory_lock_id(event.scope_key),),
         )
-        cursor.execute(
-            """
-            SELECT id
-            FROM repositories
-            WHERE scm_provider = %s
-              AND scm_base_url = %s
-              AND full_name = %s
-              AND enabled = TRUE
-            """,
-            (event.provider, event.scm_base_url, event.repo_full_name),
+        repository = resolve_github_repository(
+            conn,
+            scm_base_url=event.scm_base_url,
+            github_repository_id=event.github_repository_id,
+            full_name=event.repo_full_name,
         )
-        repository = cursor.fetchone()
-        if not repository:
+        if repository is None or not repository.enabled:
             raise RepositoryNotOnboardedError(event.repo_full_name)
-        repository_id = int(repository[0])
+        repository_id = repository.id
 
         cursor.execute(
             """
@@ -1009,25 +1005,16 @@ def enqueue_repository_index_event(
             "SELECT pg_advisory_xact_lock(%s)",
             (_advisory_lock_id(event.scope_key),),
         )
-        cursor.execute(
-            """
-            SELECT id, default_branch, enabled, clone_url
-            FROM repositories
-            WHERE scm_provider = %s
-              AND scm_base_url = %s
-              AND full_name = %s
-            """,
-            (event.provider, event.scm_base_url, event.repo_full_name),
+        repository = resolve_github_repository(
+            conn,
+            scm_base_url=event.scm_base_url,
+            github_repository_id=event.github_repository_id,
+            full_name=event.repo_full_name,
+            default_branch=event.default_branch,
         )
-        repository = cursor.fetchone()
-        if (
-            not repository
-            or not repository[2]
-            or not repository[3]
-            or repository[1] != event.default_branch
-        ):
+        if repository is None or not repository.enabled or not repository.clone_url:
             raise RepositoryNotOnboardedError(event.repo_full_name)
-        repository_id = int(repository[0])
+        repository_id = repository.id
 
         cursor.execute(
             """

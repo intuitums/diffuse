@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 
 from service.github.api import normalize_pull_request_event, normalize_push_event
+from service.repositories import RepositoryIdentityConflictError
 from service.scm import normalize_base_url, scm_api_timeout_seconds
 
 from service.hosted.webhook_server import (
@@ -124,7 +125,11 @@ def ingest_event(*, delivery_id: str, event_name: str, payload: dict[str, Any]) 
         except RepositoryNotOnboardedError:
             _record_not_onboarded(event, event_name="push")
             return "ignored:repository_not_onboarded"
-        except (DeliveryConflictError, EventOrderConflictError) as error:
+        except (
+            DeliveryConflictError,
+            EventOrderConflictError,
+            RepositoryIdentityConflictError,
+        ) as error:
             raise GitHubDeliveryPollerError(
                 "GitHub delivery push conflicts with local workflow state"
             ) from error
@@ -142,10 +147,16 @@ def ingest_event(*, delivery_id: str, event_name: str, payload: dict[str, Any]) 
     except RepositoryNotOnboardedError:
         _record_not_onboarded(event, event_name="pull_request")
         return "ignored:repository_not_onboarded"
-    except (DeliveryConflictError, EventOrderConflictError) as error:
+    except (
+        DeliveryConflictError,
+        EventOrderConflictError,
+        RepositoryIdentityConflictError,
+    ) as error:
         raise GitHubDeliveryPollerError(
             "GitHub delivery pull request conflicts with local workflow state"
         ) from error
+    if result.state == "auto_review_disabled":
+        return "ignored:auto_review_disabled"
     return "accepted" if result.accepted else "deduplicated"
 
 

@@ -36,6 +36,7 @@ from service.hosted.workflow import (
     enqueue_review_event,
     record_webhook_rejection,
 )
+from service.repositories import RepositoryIdentityConflictError
 from service.review.description import is_managed_review_description_change
 from service.scm import (
     PullRequestEvent,
@@ -283,7 +284,11 @@ async def github_webhook(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Repository must be onboarded before indexing can be queued",
             ) from error
-        except (DeliveryConflictError, EventOrderConflictError) as error:
+        except (
+            DeliveryConflictError,
+            EventOrderConflictError,
+            RepositoryIdentityConflictError,
+        ) as error:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Webhook delivery conflicts with previously accepted state",
@@ -291,7 +296,13 @@ async def github_webhook(
 
         response.status_code = status.HTTP_202_ACCEPTED
         return {
-            "status": "accepted" if result.accepted else "deduplicated",
+            "status": (
+                "accepted"
+                if result.accepted
+                else "skipped"
+                if result.state == "auto_review_disabled"
+                else "deduplicated"
+            ),
             "repo": event.repo_full_name,
             "revision": event.after_sha,
             "delivery": event.delivery_id,
@@ -323,7 +334,11 @@ async def github_webhook(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Repository must be indexed before reviews can be queued",
             ) from error
-        except (DeliveryConflictError, EventOrderConflictError) as error:
+        except (
+            DeliveryConflictError,
+            EventOrderConflictError,
+            RepositoryIdentityConflictError,
+        ) as error:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Webhook delivery conflicts with previously accepted state",
@@ -364,6 +379,11 @@ async def github_webhook(
                         "can be recorded"
                     ),
                 ) from error
+            except RepositoryIdentityConflictError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Webhook delivery conflicts with previously accepted state",
+                ) from error
         conversation = normalize_review_conversation_event(
             payload,
             delivery_id=x_github_delivery,
@@ -392,7 +412,7 @@ async def github_webhook(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Repository must be indexed before review questions can be queued",
             ) from error
-        except DeliveryConflictError as error:
+        except (DeliveryConflictError, RepositoryIdentityConflictError) as error:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Webhook delivery conflicts with previously accepted state",
@@ -442,7 +462,11 @@ async def github_webhook(
             status_code=status.HTTP_409_CONFLICT,
             detail="Repository must be indexed before reviews can be queued",
         ) from error
-    except (DeliveryConflictError, EventOrderConflictError) as error:
+    except (
+        DeliveryConflictError,
+        EventOrderConflictError,
+        RepositoryIdentityConflictError,
+    ) as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Webhook delivery conflicts with previously accepted state",

@@ -12,6 +12,7 @@ from service.models.feedback import (
     ReviewFeedbackSummary,
     ReviewReaction,
 )
+from service.repositories import resolve_github_repository
 from service.scm import FeedbackSyncEvent, ReviewFeedbackCommentEvent
 
 
@@ -38,6 +39,14 @@ def record_review_comment_feedback(
     """Record an authorized human reply only when it targets a Diffuse finding."""
     if not re.fullmatch(r"[0-9a-f]{64}", payload_sha256):
         raise ValueError("payload_sha256 must be a lowercase SHA-256 digest")
+    repository = resolve_github_repository(
+        conn,
+        scm_base_url=event.scm_base_url,
+        github_repository_id=event.github_repository_id,
+        full_name=event.repo_full_name,
+    )
+    if repository is None or not repository.enabled:
+        return "ignored:not_diffuse_thread"
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
         cursor.execute(
             """
@@ -70,18 +79,13 @@ def record_review_comment_feedback(
                 ORDER BY candidate.id DESC
                 LIMIT 1
             ) AS finding ON TRUE
-            WHERE repository.scm_provider = %s
-              AND repository.scm_base_url = %s
-              AND repository.full_name = %s
-              AND repository.enabled = TRUE
+            WHERE repository.id = %s
             """,
             (
                 event.number,
                 event.provider,
                 event.root_comment_id,
-                event.provider,
-                event.scm_base_url,
-                event.repo_full_name,
+                repository.id,
             ),
         )
         target = cursor.fetchone()
