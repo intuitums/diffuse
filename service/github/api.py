@@ -77,7 +77,9 @@ def normalize_pull_request_event(
     api_base_url_override: str | None = None,
 ) -> PullRequestEvent:
     try:
-        repo_full_name = payload["repository"]["full_name"]
+        repository = payload["repository"]
+        repo_full_name = repository["full_name"]
+        github_repository_id = repository.get("id", 0)
         pull_request = payload["pull_request"]
         pr_number = int(pull_request["number"])
         pr_url = pull_request["html_url"]
@@ -124,6 +126,9 @@ def normalize_pull_request_event(
     valid = (
         isinstance(repo_full_name, str)
         and GITHUB_REPOSITORY_PATTERN.fullmatch(repo_full_name)
+        and isinstance(github_repository_id, int)
+        and not isinstance(github_repository_id, bool)
+        and github_repository_id >= 0
         and pr_number > 0
         and isinstance(pr_url, str)
         and pr_url.startswith(f"{scm_base_url}/")
@@ -175,6 +180,7 @@ def normalize_pull_request_event(
                 "base_sha": base_sha.lower(),
                 "updated_at": updated_at,
                 "delivery_id": delivery_id,
+                "github_repository_id": github_repository_id,
                 "author": author,
                 "base_branch": base_branch,
                 "head_branch": head_branch,
@@ -262,7 +268,9 @@ def normalize_review_conversation_event(
     delivery_id: str,
 ) -> ReviewConversationEvent | None:
     try:
-        repo_full_name = payload["repository"]["full_name"]
+        repository = payload["repository"]
+        repo_full_name = repository["full_name"]
+        github_repository_id = repository.get("id", 0)
         pull_request = payload["pull_request"]
         number = int(pull_request["number"])
         state = pull_request["state"]
@@ -290,6 +298,9 @@ def normalize_review_conversation_event(
     valid = (
         isinstance(repo_full_name, str)
         and GITHUB_REPOSITORY_PATTERN.fullmatch(repo_full_name)
+        and isinstance(github_repository_id, int)
+        and not isinstance(github_repository_id, bool)
+        and github_repository_id >= 0
         and number > 0
         and state == "open"
         and isinstance(head_sha, str)
@@ -341,6 +352,7 @@ def normalize_review_conversation_event(
                 "https://api.github.com",
             ),
             repo_full_name=repo_full_name,
+            github_repository_id=github_repository_id,
             number=number,
             delivery_id=delivery_id,
             external_comment_id=external_comment_id,
@@ -370,7 +382,9 @@ def normalize_review_feedback_comment_event(
     delivery_id: str,
 ) -> ReviewFeedbackCommentEvent | None:
     try:
-        repo_full_name = payload["repository"]["full_name"]
+        repository = payload["repository"]
+        repo_full_name = repository["full_name"]
+        github_repository_id = repository.get("id", 0)
         pull_request = payload["pull_request"]
         number = int(pull_request["number"])
         state = pull_request["state"]
@@ -392,6 +406,9 @@ def normalize_review_feedback_comment_event(
     valid = (
         isinstance(repo_full_name, str)
         and GITHUB_REPOSITORY_PATTERN.fullmatch(repo_full_name)
+        and isinstance(github_repository_id, int)
+        and not isinstance(github_repository_id, bool)
+        and github_repository_id >= 0
         and number > 0
         and state == "open"
         and external_comment_id.isdigit()
@@ -429,6 +446,7 @@ def normalize_review_feedback_comment_event(
                 "https://api.github.com",
             ),
             repo_full_name=repo_full_name,
+            github_repository_id=github_repository_id,
             number=number,
             delivery_id=delivery_id,
             external_comment_id=external_comment_id,
@@ -500,7 +518,10 @@ async def fetch_manual_pull_request_event(
         pull_request = await fetch(client)
     return normalize_pull_request_event(
         {
-            "repository": {"full_name": request.repo_full_name},
+            "repository": {
+                "full_name": request.repo_full_name,
+                "id": pull_request.get("base", {}).get("repo", {}).get("id", 0),
+            },
             "pull_request": pull_request,
         },
         delivery_id=delivery_id,
@@ -521,6 +542,7 @@ def normalize_push_event(
     try:
         repository = payload["repository"]
         repo_full_name = repository["full_name"]
+        github_repository_id = repository.get("id", 0)
         default_branch = repository["default_branch"]
         pushed_at = int(repository["pushed_at"])
         ref_name = payload["ref"]
@@ -536,6 +558,9 @@ def normalize_push_event(
     valid = (
         isinstance(repo_full_name, str)
         and GITHUB_REPOSITORY_PATTERN.fullmatch(repo_full_name)
+        and isinstance(github_repository_id, int)
+        and not isinstance(github_repository_id, bool)
+        and github_repository_id >= 0
         and isinstance(default_branch, str)
         and isinstance(ref_name, str)
         and isinstance(before_sha, str)
@@ -569,6 +594,7 @@ def normalize_push_event(
                 "after_sha": after_sha,
                 "pushed_at": pushed_at_iso,
                 "delivery_id": delivery_id,
+                "github_repository_id": github_repository_id,
             }
         )
     except (OSError, OverflowError, ValueError) as error:

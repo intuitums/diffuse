@@ -1,0 +1,2 @@
+ALTER TABLE repositories
+    ADD COLUMN auto_review BOOLEAN NOT NULL DEFAULT TRUE;

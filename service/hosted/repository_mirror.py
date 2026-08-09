@@ -263,7 +263,25 @@ class RepositoryMirror:
                 operation="validate_remote",
             )
             if remote.stdout.strip().rstrip("/") != self.repository.clone_url.rstrip("/"):
-                raise RepositoryMirrorError("Existing repository mirror has an unexpected remote")
+                # A signed GitHub event can rename or transfer an already-bound
+                # repository. Its immutable GitHub ID is what authorized the
+                # database clone URL update, so keep the same bare mirror and
+                # safely move origin to the new canonical URL. Repositories
+                # without that bound identity retain the strict old guard.
+                if self.repository.github_repository_id is None:
+                    raise RepositoryMirrorError(
+                        "Existing repository mirror has an unexpected remote"
+                    )
+                self._run_git(
+                    [
+                        f"--git-dir={self.mirror_path}",
+                        "remote",
+                        "set-url",
+                        "origin",
+                        self.repository.clone_url,
+                    ],
+                    operation="update_renamed_remote",
+                )
             return
 
         temporary_parent = Path(
