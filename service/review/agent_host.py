@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from service.review.agent_environment import AGENT_HOME_VARIABLE
-from service.review.runtimes import CLAUDE_CODE_RUNTIME, CODEX_RUNTIME
+from service.review.agents import CLAUDE_CODE_RUNTIME, CODEX_RUNTIME
 
 #: Where Diffuse keeps the agent configuration it owns. Deliberately not
 #: `~/.claude` or `~/.codex`: Diffuse never reads or writes the developer's own
@@ -274,7 +274,7 @@ CLAUDE_CODE = AgentCli(
 #: Codex host plumbing is live for login/status/write-policy. The version floor
 #: is empty until U4 empirics measure which settings fail silently on older
 #: builds — any parseable `--version` currently passes. The adapter that would
-#: make `REVIEW_RUNTIME=codex` selectable is still Phase 5.
+#: make `REVIEW_AGENT=codex` selectable is still Phase 5.
 CODEX = AgentCli(
     runtime=CODEX_RUNTIME,
     executable="codex",
@@ -306,7 +306,7 @@ CODEX = AgentCli(
 
 #: Every CLI `diffuse agent` will act on. A name is listed once host plumbing
 #: works (login, status, policy), not once a review adapter is selectable —
-#: `RUNTIME_NAMES` is the gate for `REVIEW_RUNTIME`.
+#: `RUNTIME_NAMES` is the gate for `REVIEW_AGENT`.
 AGENT_CLIS: tuple[AgentCli, ...] = (CLAUDE_CODE, CODEX)
 
 #: Inherited verbatim by the agent process. Everything absent from this set is
@@ -364,7 +364,7 @@ def require_supported_platform() -> None:
     if sys.platform.startswith("win"):
         raise AgentHostError(
             "The agent CLI review runtimes need an OS sandbox, and native Windows "
-            "is not supported. Use WSL2, or set REVIEW_RUNTIME=litellm."
+            "is not supported. Use WSL2 to run the Agent Host."
         )
 
 
@@ -697,7 +697,7 @@ def resolve_executable(cli: AgentCli) -> Path:
     if not found:
         raise AgentHostError(
             f"{cli.display_name} is not installed: `{cli.executable}` is not on PATH. "
-            f"Install it, or set REVIEW_RUNTIME=litellm."
+            "Install it, then restart the Agent Host."
         )
     return Path(found)
 
@@ -794,7 +794,7 @@ def version_floor_message(cli: AgentCli, version: tuple[int, int, int]) -> str:
     lines.extend(
         f"  {item.setting} (needs {item.minimum_text}) -- {item.consequence}" for item in missing
     )
-    lines.append(f"Upgrade by {cli.upgrade_hint}, or set REVIEW_RUNTIME=litellm.")
+    lines.append(f"Upgrade with {cli.upgrade_hint}, then restart the Agent Host.")
     return "\n".join(lines)
 
 

@@ -4,7 +4,7 @@
 > describes the broad pre-v1 system. Public MCP, REST, conversations,
 > analytics, cross-repository context, auto-approval, and agent handoffs are
 > **removed or deferred** and must not be read as live product surfaces. Use
-> [v1-scope.md](v1-scope.md) and [agent-runtimes.md](agent-runtimes.md) for
+> [v1-scope.md](v1-scope.md) and [agents.md](agents.md) for
 > active decisions. Do not extend a legacy surface merely because it is
 > described below.
 
@@ -17,12 +17,11 @@ forcing small installations to operate a distributed system.
 
 The review **contract** is native to Diffuse — `ReviewReport`, policy, lineage,
 evidence, conversation and learning, and observability share one coherent data
-model. How a report is *produced* is a pluggable review runtime: today a
-transitional one-shot model-API path (`litellm`); the destination is an
-isolated agent-runner executing Claude Code or Codex under a short-lived
+model. How a report is *produced* is a pluggable review Agent: an isolated
+Agent Host executes Claude Code or Codex under a short-lived
 session capability. The worker never executes a CLI or mounts agent credentials
 in that target architecture. Review generation and SCM publication are separate
-durable stages. See [agent-runtimes.md](agent-runtimes.md).
+durable stages. See [agents.md](agents.md).
 
 PostgreSQL schema changes are also durable workflow boundaries. Version 1 is a
 frozen packaged baseline; subsequent migrations are consecutive append-only
@@ -54,14 +53,13 @@ GitHub / CLI / MCP / Web app
                      |
            PostgreSQL / cache / object store
                      |
-              isolated agent-runner (CLI)
+              isolated agent-host (CLI)
 ```
 
 > **Target, with a controlled-pilot slice now present.** The web app,
 > source-execution validator and its sandbox, cache, and object store are not
-> implemented. LiteLLM remains the default review runtime; a self-hosted worker
-> can now dispatch a signed, bounded native CLI session to the isolated matching
-> runner. The sections below describe the remaining pilot and cutover work.
+> implemented. A self-hosted worker dispatches a signed, bounded Agent
+> investigation to the isolated matching Agent Host.
 
 ## Deployment and ownership boundary
 
@@ -290,23 +288,18 @@ same GitHub thread is called again.
 
 ### Review contract and runtimes
 
-The review workflow is stateful. Steps 2 and 4 describe the target for the
-one-shot API runtime; the parenthetical notes record what ships today. Agent-CLI
-runtimes replace steps 3–5 with tool-driven investigation rather than a
-pre-fused blob and pass fan-out — see [agent-runtimes.md](agent-runtimes.md).
+The review workflow is stateful. The historical direct-model path is retired;
+Review Agents use tool-driven investigations rather than a pre-fused blob and
+pass fan-out — see [agents.md](agents.md).
 
 1. Normalize PR metadata and diff into changed symbols and line ranges.
 2. Resolve applicable organization/team/repository/directory policy.
    (Organization and team layers are planned; only the version-controlled
    `.diffuse/` repository and directory layers exist today.)
 3. Build an impact set through graph traversal and hybrid retrieval.
-   (One-shot API runtime: pre-fused context blob. Agent-CLI destination: the
-   same retriever exposed as tools.)
-4. Produce candidate findings. (Shipped API runtime: specialized passes —
-   exactly `correctness`, `security`, `performance`, and `tests`. Agent-CLI
-   destination: one investigation across concerns.)
-5. Verify and deduplicate. (API runtime: independent verifier pass. Agent-CLI
-   destination: separate session/subagent or cross-CLI provenance pair.)
+   (The Agent uses the same retriever through private context tools.)
+4. Produce candidate findings through one bounded Agent Investigation.
+5. Verify and deduplicate through Diffuse's shared report contract.
 6. Assign category, severity, confidence, evidence, and suggested fix.
 7. Build the summary, risk score, issue table, optional diagrams, and status.
 8. Publish/update SCM comments idempotently.
@@ -315,18 +308,13 @@ pre-fused blob and pass fan-out — see [agent-runtimes.md](agent-runtimes.md).
 Model output is parsed into a versioned schema. Raw model text is never posted
 directly as an SCM action.
 
-Steps 4 through 7 are a *review runtime*, selected by `REVIEW_RUNTIME`. The seam
-is a whole `ReviewReport`, not a single model call: a runtime decides for itself
-how many calls a review is. **Current state:** only `litellm` is selectable —
-the one-shot API implementation above. The API and worker accept only that
-value. **Destination:** `claude` and `codex` for `diffuse review` only,
-driving a locally installed, locally authenticated agent CLI. Host plumbing for
-Claude and Codex has landed (`diffuse agent login claude|codex` drives each
-vendor's own auth into a Diffuse-owned config dir); no agent adapter is
-selectable yet. A server has no developer CLI to drive, and the self-hosted
-worker reviews pull requests from anyone who can open one, which is a different
-threat model. `ReviewReport` is unchanged across runtimes, so the same
-evaluation harness can score them on the same fixtures.
+Steps 4 through 7 are a *review runtime*, selected by `REVIEW_AGENT`. The seam
+is a whole `ReviewReport`, not a single model call: an Agent decides for itself
+how many investigations a review needs. `claude` and `codex` are selectable for
+self-hosted pull-request reviews through the isolated Agent Host. A server has
+no developer CLI to drive, and the self-hosted worker reviews pull requests from
+anyone who can open one, which is a different threat model. `ReviewReport` is
+unchanged across Agents, so the same evaluation fixtures can score them.
 
 For a local agent-CLI review, it sits behind three independent boundaries,
 because none of them covers the others: its environment is built from an
@@ -348,10 +336,10 @@ compartment, not a weakened worker container and not an opt-in host-wide
 user-namespace change. Before it can run an agent, that compartment must assert
 at runtime that the untrusted-content process is non-root, has no control-plane
 credential, cannot reach the database or other control-plane resources, and has
-only the intended egress. This is a target boundary, not a selectable runtime;
-the API and worker continue to accept only `litellm`. See
+only the intended egress. This is the boundary used by selectable Review Agents.
+See
 [SECURITY.md](../SECURITY.md) for the measured matrix and
-[agent-runtimes.md](agent-runtimes.md) for the runtime split.
+[agents.md](agents.md) for the runtime split.
 
 Before any review-model call, the worker fetches a bounded list of commit
 metadata from the SCM and classifies authors, committers, verified bot
@@ -538,7 +526,7 @@ approval.
 > never executes pull-request code today: the review path reads source, queries
 > the index, and calls model and SCM APIs (or, for local agent-CLI review, drives
 > a sandboxed developer CLI that still must not execute untrusted repo content
-> as Diffuse policy). This is distinct from `REVIEW_RUNTIME` agent-CLI review.
+> as Diffuse policy). This is distinct from `REVIEW_AGENT` agent-CLI review.
 > `docs/capabilities.md` records source-execution validation as `planned`.
 
 The source-execution validator will:
@@ -557,16 +545,10 @@ the API or review container is prohibited.
 
 ### Developer surfaces
 
-- The unified CLI manages repository onboarding/lifecycle, cross-repository
-  clusters, learned-rule moderation, agent-CLI host sign-in, and local review.
-  Local review uses the working-tree merge base, self-hosted active snapshot,
-  cross-repository context, cascading policy, and approved learned rules. Today
-  it deliberately still runs the API one-shot runtime; hosted CLI-native
-  sessions are selected by the worker until local review adopts the same
-  session contract. It emits human, inline-diff, versioned JSON, or
-  terminal-safe agent text.
-  A Git-common-dir state record permits failed/interrupted requests to restart
-  only when every immutable input identity still matches.
+- The unified CLI manages repository onboarding/lifecycle, clusters, learned
+  guidance moderation, Agent Host sign-in, and GitHub integration. Local
+  branch review is unavailable until it can use the same Review Access Grant
+  contract as a hosted pull-request review.
 - Complete the CLI with remote API authentication, optional remote job
   submission to the operator's self-hosted worker, partial-stage continuation,
   and shell completion.

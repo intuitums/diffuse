@@ -18,9 +18,6 @@ from pathlib import Path
 from typing import Literal, TextIO
 from urllib.parse import urlsplit, urlunsplit
 
-# litellm builds its provider errors on the openai SDK hierarchy, so openai.OpenAIError
-# is the only base that catches every model failure litellm can raise.
-import openai
 import psycopg2
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,16 +41,10 @@ from service.cli import (
     database as database_cli,
 )
 from service.cli import (
-    evaluation as evaluation_cli,
-)
-from service.cli import (
-    hosted as hosted_cli,
+    github as github_cli,
 )
 from service.cli import (
     learning as learning_cli,
-)
-from service.cli import (
-    model as model_cli,
 )
 from service.cli import (
     repository as repository_cli,
@@ -61,18 +52,14 @@ from service.cli import (
 from service.code_query import code_query_target_for_plan
 from service.cross_repository import resolve_cross_repository_context_plan
 from service.diff_parser import ParsedDiff, parse_unified_diff
-from service.model_providers import resolve_provider
 from service.models.review import ReviewFinding, ReviewReport
 from service.repositories import RegisteredRepository, list_repositories
 from service.review.engine import (
     PROMPT_VERSION,
     generate_review,
-    resolve_review_depth_support,
-    review_model,
-    review_verifier_model,
 )
 from service.review.request import ReviewRequest
-from service.review.runtimes import LITELLM_RUNTIME, review_runtime_name
+from service.review.agents import review_agent_name
 from service.review.tools import MemoryToolRecorder, build_review_tool_provider
 from service.scm import validate_branch_name
 from service.storage.custom_context import load_active_custom_contexts
@@ -111,7 +98,7 @@ SECRET_ENV_NAMES = (
 # except OpenAI while naming a DIFFUSE_WEBHOOK_SECRET that does not exist
 # anywhere in the codebase. The suffix scan covers new providers, per-installation
 # credentials, and anything an operator adds, while deliberately not matching
-# non-secret configuration such as REVIEW_API_BASE or VERTEXAI_PROJECT, whose
+# non-secret configuration such as VERTEXAI_PROJECT, whose
 # values are useful in a diagnostic.
 _SECRET_ENV_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PRIVATE_KEY")
 
@@ -212,10 +199,10 @@ class CliReviewState(BaseModel):
     include_untracked: bool
     index_snapshot_id: int = Field(gt=0)
     policy_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    #: Which REVIEW_RUNTIME produced (or will produce) this run. Defaults for
+    #: Which REVIEW_AGENT produced (or will produce) this run. Defaults for
     #: state files written before the field existed; resume still compares it
     #: once both sides have a value.
-    review_runtime: str = Field(default=LITELLM_RUNTIME, min_length=1, max_length=64)
+    review_agent: str = Field(min_length=1, max_length=64)
     review_model: str = Field(min_length=1, max_length=512)
     # Both stages are part of the run's identity. Recording only the candidate
     # let `--resume` retry with a verifier the operator changed between
@@ -648,22 +635,17 @@ def run_local_review(
         discover_repository_policy(root),
         changed_paths,
     )
-    # Runtime first: an agent-CLI adapter must not inherit API-model credential
-    # requirements or pre-fused retrieval just because local review historically
-    # shared that path with the worker. Only `litellm` is selectable today.
-    selected_runtime = review_runtime_name()
-    if previous_state is not None and previous_state.review_runtime != selected_runtime:
+    # Local branches cannot safely receive an Agent Host access grant yet. Keep
+    # the command explicit rather than falling back to an in-process model API.
+    selected_runtime = review_agent_name()
+    if previous_state is not None and previous_state.review_agent != selected_runtime:
         raise ValueError(
-            "REVIEW_RUNTIME changed after the unfinished run; start a new review"
+            "REVIEW_AGENT changed after the unfinished run; start a new review"
         )
-    if selected_runtime != LITELLM_RUNTIME:
-        raise ValueError(
-            f"REVIEW_RUNTIME={selected_runtime} is not implemented for local "
-            "review yet; use litellm, or wait for the agent-CLI adapter"
-        )
-    selected_review_model = review_model()
-    selected_verifier_model = review_verifier_model()
-    report_review_depth()
+    raise ValueError(
+        "Local branch review is unavailable in Agent-only Diffuse. "
+        "Push the branch and let the configured Agent Host review the pull request."
+    )
     with closing(get_conn()) as conn:
         snapshot_id = active_snapshot_id_for_repository(conn, repository.id)
         if snapshot_id is None:
@@ -689,7 +671,7 @@ def run_local_review(
     if previous_state is not None and (
         previous_state.index_snapshot_id != snapshot_id
         or previous_state.policy_fingerprint != policy.fingerprint
-        or previous_state.review_runtime != selected_runtime
+        or previous_state.review_agent != selected_runtime
         or previous_state.review_model != selected_review_model
         or previous_state.review_verifier_model != selected_verifier_model
         or previous_state.prompt_version != PROMPT_VERSION
@@ -706,7 +688,7 @@ def run_local_review(
         include_untracked=include_untracked,
         index_snapshot_id=snapshot_id,
         policy_fingerprint=policy.fingerprint,
-        review_runtime=selected_runtime,
+        review_agent=selected_runtime,
         review_model=selected_review_model,
         review_verifier_model=selected_verifier_model,
         prompt_version=PROMPT_VERSION,
@@ -1103,29 +1085,17 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
     )
     database_cli.configure_parser(database)
 
-    evaluate = subparsers.add_parser(
-        "evaluate",
-        help="Score a labeled review-quality evaluation set",
-    )
-    evaluation_cli.configure_parser(evaluate)
-
-    model = subparsers.add_parser(
-        "model",
-        help="Inspect or verify the configured review model",
-    )
-    model_cli.configure_parser(model)
-
     agent = subparsers.add_parser(
         "agent",
         help="Sign in to and inspect agent CLIs Diffuse can host for local review",
     )
     agent_cli.configure_parser(agent)
 
-    hosted = subparsers.add_parser(
-        "hosted",
-        help="Enroll this self-hosted instance with the shared Diffuse-Agent App",
+    github = subparsers.add_parser(
+        "github",
+        help="Connect this self-hosted instance to the Diffuse GitHub App",
     )
-    hosted_cli.configure_parser(hosted)
+    github_cli.configure_parser(github)
 
     # Every subparser must appear here, or an unknown flag typed on that
     # subcommand is reported against the top-level parser and prints the wrong
@@ -1136,10 +1106,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
         "cluster": cluster,
         "learning": learning,
         "database": database,
-        "evaluate": evaluate,
-        "model": model,
         "agent": agent,
-        "hosted": hosted,
+        "github": github,
     }
     return parser, commands
 
@@ -1198,45 +1166,6 @@ def database_error_message(error: psycopg2.Error) -> str:
     )
 
 
-def model_error_message(error: openai.OpenAIError) -> str:
-    try:
-        model = review_model()
-    except ValueError:
-        model = os.environ.get("REVIEW_MODEL", "").strip() or "<unset>"
-    detail = str(error).strip() or error.__class__.__name__
-    if isinstance(error, openai.AuthenticationError | openai.PermissionDeniedError):
-        # Name the credential this model actually authenticates with. litellm raises
-        # the openai exception hierarchy for every provider, so hardcoding
-        # OPENAI_API_KEY here sent anyone who typo'd an Anthropic key -- the default
-        # provider -- to fix a variable that has nothing to do with the failure.
-        credentials = " or ".join(resolve_provider(model).credential_env_names)
-        head = (
-            f"The review model provider rejected the credential for REVIEW_MODEL={model}.\n"
-            f"{detail}\n"
-            f"Set {credentials} to a key valid for that model."
-        )
-    elif isinstance(error, openai.APIConnectionError):
-        head = (
-            f"Cannot reach the review model endpoint for REVIEW_MODEL={model}.\n"
-            f"{detail}\n"
-            "Check network access and REVIEW_API_BASE, then retry with `diffuse review --resume`."
-        )
-    elif isinstance(error, openai.RateLimitError):
-        head = (
-            f"The review model provider rate-limited REVIEW_MODEL={model}.\n"
-            f"{detail}\n"
-            "Wait and retry with `diffuse review --resume`."
-        )
-    else:
-        head = (
-            f"The review model request failed for REVIEW_MODEL={model}.\n"
-            f"{detail}\n"
-            "Verify REVIEW_MODEL and REVIEW_API_BASE, then retry with "
-            "`diffuse review --resume`."
-        )
-    return head
-
-
 def format_cli_error(message: str) -> str:
     """Render a possibly multi-line message as a readable, usage-free CLI error."""
     lines = [line.rstrip() for line in redact_secrets(message).strip().splitlines()]
@@ -1271,10 +1200,6 @@ def run_handler(args: argparse.Namespace) -> None:
         if debug:
             raise
         _fail(database_error_message(error), EXIT_CONFIG)
-    except openai.OpenAIError as error:
-        if debug:
-            raise
-        _fail(model_error_message(error), EXIT_CONFIG)
     except (OSError, RuntimeError, ValueError) as error:
         if debug:
             raise

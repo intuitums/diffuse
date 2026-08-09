@@ -8,12 +8,11 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from service.agents.contract.runtime import (
+from service.agents.contract.agent import (
     AGENT_RUNTIME_CLAUDE,
     AGENT_RUNTIME_CODEX,
     parse_agent_runtime_name,
 )
-from service.model_providers import model_family as resolve_model_family
 
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
 TRAILER_PATTERN = re.compile(
@@ -198,7 +197,7 @@ class ReviewModelPlan:
 
 
 @dataclass(frozen=True)
-class ReviewRuntimePlan:
+class ReviewAgentPlan:
     """A capability-safe CLI runner selection for one pull request.
 
     The default is an operator policy. Provenance may only move away from it
@@ -218,12 +217,12 @@ class ReviewRuntimePlan:
             raise ValueError("Unsupported provenance model family")
 
 
-def select_review_runtime_plan(
+def select_review_agent_plan(
     provenance: PullRequestProvenance,
     *,
     default_runtime: str = AGENT_RUNTIME_CODEX,
     minimum_confidence: float = PROVENANCE_CONFIDENCE_DEFAULT,
-) -> ReviewRuntimePlan:
+) -> ReviewAgentPlan:
     """Select the independent CLI family for a review.
 
     Codex is the normal default. A confidently OpenAI/Codex-authored pull
@@ -246,7 +245,7 @@ def select_review_runtime_plan(
         "anthropic": AGENT_RUNTIME_CODEX,
     }.get(origin)
     if opposing is not None:
-        return ReviewRuntimePlan(
+        return ReviewAgentPlan(
             runtime=opposing,
             reason_code=f"opposing_{origin}_runner",
             detected_family=origin,
@@ -261,7 +260,7 @@ def select_review_runtime_plan(
         reason = "low_confidence_default_runner"
     else:
         reason = "default_runner"
-    return ReviewRuntimePlan(
+    return ReviewAgentPlan(
         runtime=selected_default,
         reason_code=reason,
         detected_family=provenance.model_family,
@@ -565,13 +564,16 @@ def classify_pull_request_provenance(
 
 
 def model_family(model: str) -> str | None:
-    """Infer a provider family from a LiteLLM/OpenRouter model identifier.
+    """Infer a broad family from a retained historical review identity."""
 
-    Re-exported from :mod:`service.model_providers`, which is the single prefix
-    table shared with credential and base-URL resolution.
-    """
-
-    return resolve_model_family(model)
+    normalized = model.strip().lower()
+    if "claude" in normalized or "anthropic" in normalized:
+        return "anthropic"
+    if "gemini" in normalized or "google" in normalized:
+        return "google"
+    if "gpt" in normalized or "openai" in normalized or "codex" in normalized:
+        return "openai"
+    return None
 
 
 def select_review_model_plan(
@@ -604,8 +606,8 @@ def select_review_model_plan(
             # Routing permutes the configured pair; it never contracts it. Using
             # the opposing model for both stages would make the model that
             # proposes findings the same one that verifies them, losing the
-            # independent second opinion REVIEW_VERIFIER_MODEL exists to provide
-            # on exactly the changes this feature targets.
+            # independent second opinion on exactly the changes this feature
+            # targets.
             selected = opposing[0]
             remaining = tuple(model for model in configured if model != selected)
             return ReviewModelPlan(

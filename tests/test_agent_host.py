@@ -45,7 +45,7 @@ from service.review.agent_host import (
     version_floor_message,
     write_sandbox_settings,
 )
-from service.review.runtimes import CLAUDE_CODE_RUNTIME, CODEX_RUNTIME, RUNTIME_NAMES
+from service.review.agents import CLAUDE_CODE_RUNTIME, CODEX_RUNTIME, RUNTIME_NAMES
 
 
 @pytest.fixture
@@ -58,7 +58,7 @@ def owned_home(monkeypatch, tmp_path) -> Path:
     """
 
     home = tmp_path / "agent-home"
-    monkeypatch.setenv("DIFFUSE_AGENT_HOME", str(home))
+    monkeypatch.setenv("DIFFUSE_REVIEW_AGENT_HOME", str(home))
     return home
 
 
@@ -420,12 +420,12 @@ def test_codex_stale_policy_is_detected(owned_home):
 
 
 def test_agent_home_defaults_under_the_diffuse_directory(monkeypatch):
-    monkeypatch.delenv("DIFFUSE_AGENT_HOME", raising=False)
+    monkeypatch.delenv("DIFFUSE_REVIEW_AGENT_HOME", raising=False)
     assert agent_home() == Path("~/.diffuse/agent").expanduser()
 
 
 def test_agent_home_refuses_a_relative_override(monkeypatch):
-    monkeypatch.setenv("DIFFUSE_AGENT_HOME", "agent")
+    monkeypatch.setenv("DIFFUSE_REVIEW_AGENT_HOME", "agent")
     with pytest.raises(AgentHostError, match="absolute path"):
         agent_home()
 
@@ -575,7 +575,7 @@ def test_missing_cli_names_the_executable_and_the_way_out(monkeypatch, owned_hom
     with pytest.raises(AgentHostError) as error:
         require_version_floor(CLAUDE_CODE)
     assert "claude" in str(error.value)
-    assert "REVIEW_RUNTIME=litellm" in str(error.value)
+    assert "restart the Agent Host" in str(error.value)
 
 
 def test_version_probe_reports_a_hang_rather_than_waiting(monkeypatch, owned_home, installed_cli):
@@ -607,7 +607,7 @@ def test_supported_platform_passes(monkeypatch):
 
 
 def test_every_hosted_agent_runtime_has_a_cli():
-    """An agent runtime `REVIEW_RUNTIME` accepts must have host plumbing behind it.
+    """An agent runtime `REVIEW_AGENT` accepts must have host plumbing behind it.
 
     The complement of `test_every_advertised_runtime_resolves`: that one proves a
     named runtime has an adapter, this one proves it has a configuration
@@ -616,8 +616,6 @@ def test_every_hosted_agent_runtime_has_a_cli():
 
     hosted = {cli.runtime for cli in AGENT_CLIS}
     for name in RUNTIME_NAMES:
-        if name == "litellm":
-            continue
         assert name in hosted, f"{name} is selectable but has no agent host entry"
 
 

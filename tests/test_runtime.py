@@ -12,9 +12,9 @@ from service import runtime
         (["serve"], "_run_api", []),
         (["worker", "--once"], "_run_worker", ["--once"]),
         (["healthcheck"], "_run_healthcheck", []),
-        (["agent-runner"], "_run_agent_runner", []),
-        (["agent-runner-healthcheck"], "_run_agent_runner_healthcheck", []),
-        (["agent-tool-gateway"], "_run_agent_tool_gateway", []),
+        (["agent-host"], "_run_agent_runner", []),
+        (["agent-host-healthcheck"], "_run_agent_runner_healthcheck", []),
+        (["context-service"], "_run_context_service", []),
         (["repository", "list"], "_run_cli", ["repository", "list"]),
     ],
 )
@@ -27,7 +27,7 @@ def test_runtime_dispatches_commands(monkeypatch, arguments, target, forwarded):
             "_run_healthcheck",
             "_run_agent_runner",
             "_run_agent_runner_healthcheck",
-            "_run_agent_tool_gateway",
+            "_run_context_service",
             "_run_cli",
         )
     }

@@ -39,54 +39,54 @@ def test_parse_freeze_normalizes_name():
 
 
 def test_parse_lock_skips_comments_and_blank_lines():
-    text = "# comment\n\nlitellm==1.93.0\nfastapi==0.139.2\n"
-    assert parse_lock(text) == [("litellm", "1.93.0"), ("fastapi", "0.139.2")]
+    text = "# comment\n\nhttpx==0.28.1\nfastapi==0.139.2\n"
+    assert parse_lock(text) == [("httpx", "0.28.1"), ("fastapi", "0.139.2")]
 
 
 def test_exact_match_is_not_drift():
-    freeze = "litellm==1.93.0\nfastapi==0.139.2\n"
-    lock = "litellm==1.93.0\nfastapi==0.139.2\n"
+    freeze = "httpx==0.28.1\nfastapi==0.139.2\n"
+    lock = "httpx==0.28.1\nfastapi==0.139.2\n"
     assert compare_freeze_to_lock(freeze, lock) == []
 
 
 def test_version_mismatch_is_drift():
-    freeze = "litellm==1.95.0\n"
-    lock = "litellm==1.93.0\n"
+    freeze = "httpx==0.29.0\n"
+    lock = "httpx==0.28.1\n"
     drifted = compare_freeze_to_lock(freeze, lock)
     assert len(drifted) == 1
-    assert "litellm" in drifted[0]
-    assert "1.95.0" in drifted[0]
-    assert "1.93.0" in drifted[0]
+    assert "httpx" in drifted[0]
+    assert "0.29.0" in drifted[0]
+    assert "0.28.1" in drifted[0]
 
 
 def test_missing_package_is_drift():
     """The bug the previous inline check had: missing was skipped, not reported."""
 
     freeze = "fastapi==0.139.2\n"
-    lock = "litellm==1.93.0\nfastapi==0.139.2\n"
+    lock = "httpx==0.28.1\nfastapi==0.139.2\n"
     drifted = compare_freeze_to_lock(freeze, lock)
-    assert any("litellm" in line and "missing" in line for line in drifted)
+    assert any("httpx" in line and "missing" in line for line in drifted)
     assert not any("fastapi" in line for line in drifted)
 
 
 def test_empty_lock_is_a_parse_failure_not_a_green_pass():
     with pytest.raises(ValueError, match="Compared nothing"):
-        compare_freeze_to_lock("litellm==1.93.0\n", "# nothing pinned\n")
+        compare_freeze_to_lock("httpx==0.28.1\n", "# nothing pinned\n")
 
 
 def test_cli_exits_1_when_a_locked_package_is_missing(tmp_path):
     freeze = tmp_path / "freeze.txt"
     lock = tmp_path / "requirements.lock"
     freeze.write_text("fastapi==0.139.2\n")
-    lock.write_text("litellm==1.93.0\nfastapi==0.139.2\n")
+    lock.write_text("httpx==0.28.1\nfastapi==0.139.2\n")
     assert main([str(freeze), str(lock)]) == 1
 
 
 def test_cli_exits_0_on_exact_match(tmp_path):
     freeze = tmp_path / "freeze.txt"
     lock = tmp_path / "requirements.lock"
-    freeze.write_text("litellm==1.93.0\n")
-    lock.write_text("litellm==1.93.0\n")
+    freeze.write_text("httpx==0.28.1\n")
+    lock.write_text("httpx==0.28.1\n")
     assert main([str(freeze), str(lock)]) == 0
 def test_script_is_runnable_as_a_module_path():
     """ci.yml invokes this file; a missing shebang or bad import fails CI."""

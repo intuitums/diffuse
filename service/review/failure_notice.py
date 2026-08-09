@@ -112,7 +112,7 @@ def agent_auth_required_failure(job_id: int, runtime: str) -> TerminalReviewFail
         raise ValueError("agent auth failure runtime is invalid")
     reconnect = (
         f"docker compose --profile agent-{runtime} run --rm "
-        f"agent-runner-{runtime} agent login {runtime}"
+        f"agent-host-{runtime} agent login {runtime}"
     )
     return TerminalReviewFailure(
         job_id=job_id,

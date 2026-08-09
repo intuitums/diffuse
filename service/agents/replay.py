@@ -7,7 +7,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from service.agents.errors import AgentSessionError
+from service.agents.errors import AgentInvestigationError
 
 
 @dataclass(frozen=True)
@@ -45,8 +45,8 @@ def replay(path: Path, argv: list[str]) -> SessionTranscript:
             stderr=str(raw["stderr"]),
         )
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-        raise AgentSessionError(f"Agent session cassette is unreadable: {path}") from error
+        raise AgentInvestigationError(f"Agent session cassette is unreadable: {path}") from error
     requested = SessionTranscript(tuple(argv), 0, "", "")
     if raw.get("version") != 1 or raw.get("request_key") != requested.request_key:
-        raise AgentSessionError("Agent session cassette does not match this invocation")
+        raise AgentInvestigationError("Agent session cassette does not match this invocation")
     return transcript

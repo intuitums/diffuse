@@ -17,8 +17,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 
 from service.review.workspace import DEFAULT_WORKSPACE_LIMITS, SourceArtifact
 
-PRIVATE_KEY_VARIABLE = "DIFFUSE_AGENT_DISPATCH_PRIVATE_KEY"
-PUBLIC_KEY_VARIABLE = "DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY"
+PRIVATE_KEY_VARIABLE = "DIFFUSE_REVIEW_AGENT_DISPATCH_PRIVATE_KEY"
+PUBLIC_KEY_VARIABLE = "DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY"
 ENVELOPE_PREFIX = "diffuse-dispatch"
 # The native runner receives the whole signed dispatch in memory.  Keep the
 # diff within the same review window as the API runtime and make the maximum

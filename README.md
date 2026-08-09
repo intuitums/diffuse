@@ -51,8 +51,7 @@ unbounded swarm.
 - Structured investigator candidates, independent verification, exact-head
   lineage, and re-review handling.
 - One small root repository configuration and human feedback capture.
-- A representative evaluation corpus measuring accepted findings, false
-  positives, duplicates, latency, and cost.
+- Durable report and tool-call records needed for future Agent evaluation.
 
 ## Explicit non-goals for v1
 

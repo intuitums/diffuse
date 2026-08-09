@@ -6,7 +6,7 @@
 -- rate and writes at 1.25x, so prompt_tokens alone cannot say whether a review
 -- was cheap or full price.
 --
--- No CHECK tying the sum to prompt_tokens: LiteLLM's folding of the two cache
+-- No CHECK tying the sum to prompt_tokens: older runners folded the two cache
 -- counters into prompt_tokens is the contract the engine documents, but a
 -- provider quirk that briefly disagrees must not abort persisting a finished
 -- review.

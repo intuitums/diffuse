@@ -37,14 +37,8 @@ from retriever.retrieve import (
     retrieve_context_from_plan,
     retrieve_context_from_snapshot,
 )
-from service.agents.capability_auth import session_capability_signing_key
+from service.agents.access_grant import session_capability_signing_key
 from service.agents.contract import SessionScope, mint_session_capability
-from service.conversation_engine import (
-    CONVERSATION_PROMPT_VERSION,
-    build_conversation_retrieval_diff,
-    conversation_model,
-    generate_conversation_answer,
-)
 from service.cross_repository import (
     record_dropped_context_repositories,
     resolve_cross_repository_context,
@@ -92,50 +86,32 @@ from service.hosted.workflow import (
     workflow_job_is_latest,
     workflow_queue_depth,
 )
-from service.learning_engine import (
-    RULE_LEARNING_PROMPT_VERSION,
-    generate_suggested_rules,
-    rule_learning_model,
-)
 from service.models.learning import RuleLearningJobEvent, RuleLearningWork
 from service.models.review import ReviewFinding, ReviewReport
 from service.repositories import get_repository, update_mirror_state
 from service.review.engine import (
     PROMPT_VERSION,
     ReviewDepthSupport,
-    _model_api_base,
-    _positive_int,
-    _supports_json_schema,
     generate_review,
-    minimum_review_confidence,
-    model_retries,
-    resolve_review_depth_support,
-    review_depth,
-    review_model,
-    review_passes,
-    review_provenance_minimum_confidence,
-    review_verifier_model,
 )
 from service.review.failure_notice import (
     TerminalReviewFailure,
     agent_auth_required_failure,
     terminal_review_failure,
 )
-from service.review.native_runner import NativeSessionDispatch
+from service.review.agent_client import NativeSessionDispatch
 from service.review.provenance import (
     PullRequestCommits,
     PullRequestProvenance,
     ReviewModelPlan,
     classify_pull_request_provenance,
-    select_review_model_plan,
-    select_review_runtime_plan,
+    select_review_agent_plan,
 )
 from service.review.report_assembly import all_files_disabled_report, reviewable_diff
 from service.review.request import ReviewRequest
-from service.review.runtimes import (
-    LITELLM_RUNTIME,
-    hosted_review_runtime_name,
-    resolve_review_runtime,
+from service.review.agents import (
+    hosted_review_agent_name,
+    resolve_review_agent,
 )
 from service.review.workspace import SourceArtifact, build_source_artifact
 from service.scm import (
@@ -146,7 +122,7 @@ from service.scm import (
     normalize_base_url,
     scm_api_timeout_seconds,
 )
-from service.storage.agent_session import abandon_agent_session, create_agent_session
+from service.storage.agent_investigation import abandon_agent_investigation, create_agent_investigation
 from service.storage.check import (
     MAX_COMPLETION_ATTEMPTS,
     CheckRunHandle,
@@ -629,12 +605,7 @@ def _load_review_policy(
     else:
         with closing(get_conn()) as conn:
             snapshot = load_repository_policy(conn, snapshot_id)
-    resolved = resolve_review_policy(
-        snapshot,
-        paths,
-        default_passes=review_passes(),
-        default_minimum_confidence=minimum_review_confidence(),
-    )
+    resolved = resolve_review_policy(snapshot, paths)
     if repository_id is None:
         return resolved
     with closing(get_conn()) as conn:
@@ -733,7 +704,7 @@ def _continuity_paths(
     return frozenset(touched), aliases
 
 
-def _create_native_agent_session(
+def _create_native_agent_investigation(
     job: WorkflowJob,
     *,
     runtime: str,
@@ -761,7 +732,7 @@ def _create_native_agent_session(
         ),
     )
     with closing(get_conn()) as conn, conn:
-        handle = create_agent_session(
+        handle = create_agent_investigation(
             conn,
             review_job_id=job.id,
             capability=grant.capability,
@@ -812,7 +783,7 @@ def _generate_and_persist_review(
     snapshot_id: int | None = None,
     head_sha: str | None = None,
 ) -> None:
-    agent_session: NativeSessionDispatch | None = None
+    agent_investigation: NativeSessionDispatch | None = None
 
     def report_progress() -> None:
         if not _heartbeat_and_check_current(job.id, worker_id):
@@ -821,38 +792,35 @@ def _generate_and_persist_review(
             )
 
     try:
-        selected_runtime = runtime_name or hosted_review_runtime_name()
-        if selected_runtime != LITELLM_RUNTIME:
-            complete_diff = parse_unified_diff(diff_text)
-            reviewable, ignored_file_count = reviewable_diff(complete_diff, policy)
-            if complete_diff.files and not reviewable.files:
-                # Match the one-shot runtime's early policy exit. Apart from
-                # avoiding a pointless CLI charge, this keeps a path-disabled
-                # review from granting the runner a source artifact at all.
-                report = all_files_disabled_report(
-                    diff_file_count=len(complete_diff.files),
-                    ignored_file_count=ignored_file_count,
-                    policy=policy,
-                )
-                report_progress()
-                with closing(get_conn()) as conn, conn:
-                    persist_review_report(
-                        conn,
-                        review_run_id,
-                        report,
-                        touched_paths=touched_paths,
-                        path_aliases=path_aliases,
-                    )
-                return
-            if snapshot_id is None or head_sha is None:
-                raise NonRetryableError("Native review session is missing immutable scope")
-            agent_session = _create_native_agent_session(
-                job,
-                runtime=selected_runtime,
-                snapshot_id=snapshot_id,
-                head_sha=head_sha,
-                progress_callback=report_progress,
+        selected_runtime = runtime_name or hosted_review_agent_name()
+        complete_diff = parse_unified_diff(diff_text)
+        reviewable, ignored_file_count = reviewable_diff(complete_diff, policy)
+        if complete_diff.files and not reviewable.files:
+            # Do not grant an Agent access to a path-disabled review.
+            report = all_files_disabled_report(
+                diff_file_count=len(complete_diff.files),
+                ignored_file_count=ignored_file_count,
+                policy=policy,
             )
+            report_progress()
+            with closing(get_conn()) as conn, conn:
+                persist_review_report(
+                    conn,
+                    review_run_id,
+                    report,
+                    touched_paths=touched_paths,
+                    path_aliases=path_aliases,
+                )
+            return
+        if snapshot_id is None or head_sha is None:
+            raise NonRetryableError("Agent investigation is missing immutable scope")
+        agent_investigation = _create_native_agent_investigation(
+            job,
+            runtime=selected_runtime,
+            snapshot_id=snapshot_id,
+            head_sha=head_sha,
+            progress_callback=report_progress,
+        )
         report = generate_review(
             diff_text,
             contexts,
@@ -862,7 +830,7 @@ def _generate_and_persist_review(
             # check ran once against the environment as it was then; resolving
             # here means the refusal is a property of the call rather than of
             # boot order.
-            runtime=resolve_review_runtime(selected_runtime),
+            runtime=resolve_review_agent(selected_runtime),
             progress_callback=report_progress,
             policy=policy,
             candidate_model=(
@@ -879,7 +847,7 @@ def _generate_and_persist_review(
                 candidate_model=(model_plan.candidate_model if model_plan is not None else None),
                 verifier_model=(model_plan.verifier_model if model_plan is not None else None),
                 review_identity=str(review_run_id),
-                agent_session=agent_session,
+                agent_investigation=agent_investigation,
             ),
         )
         report_progress()
@@ -893,12 +861,12 @@ def _generate_and_persist_review(
             )
     except ReviewSupersededError:
         with closing(get_conn()) as conn, conn:
-            if agent_session is not None:
-                abandon_agent_session(
+            if agent_investigation is not None:
+                abandon_agent_investigation(
                     conn,
-                    session_id=agent_session.session_id,
-                    runtime=agent_session.runtime,
-                    capability_id=agent_session.capability_id,
+                    session_id=agent_investigation.session_id,
+                    runtime=agent_investigation.runtime,
+                    capability_id=agent_investigation.capability_id,
                     status="cancelled",
                 )
             if not mark_review_superseded(conn, review_run_id, worker_id=worker_id):
@@ -913,12 +881,12 @@ def _generate_and_persist_review(
         raise
     except Exception:
         with closing(get_conn()) as conn, conn:
-            if agent_session is not None:
-                abandon_agent_session(
+            if agent_investigation is not None:
+                abandon_agent_investigation(
                     conn,
-                    session_id=agent_session.session_id,
-                    runtime=agent_session.runtime,
-                    capability_id=agent_session.capability_id,
+                    session_id=agent_investigation.session_id,
+                    runtime=agent_investigation.runtime,
+                    capability_id=agent_investigation.capability_id,
                     status="failed",
                 )
             mark_review_failed(conn, review_run_id)
@@ -1038,12 +1006,7 @@ def _failure_notice_enabled(
     if event is None:
         return True
     try:
-        policy = resolve_review_policy(
-            snapshot,
-            (),
-            default_passes=review_passes(),
-            default_minimum_confidence=minimum_review_confidence(),
-        )
+        policy = resolve_review_policy(snapshot, ())
         decision = _trigger_decision(event, "", policy)
     except (OSError, RuntimeError, ValueError):
         # Narrow deliberately. A broad `except Exception` here hid an
@@ -1123,19 +1086,7 @@ def _mark_conversation_ready(
     snapshot_id: int | None,
     context_chunk_count: int,
 ) -> None:
-    with closing(get_conn()) as conn, conn:
-        mark_conversation_ready(
-            conn,
-            conversation_id,
-            answer=answer.answer,
-            references=answer.references,
-            index_snapshot_id=snapshot_id,
-            model=conversation_model(),
-            prompt_version=CONVERSATION_PROMPT_VERSION,
-            context_chunk_count=context_chunk_count,
-            prompt_tokens=answer.prompt_tokens,
-            completion_tokens=answer.completion_tokens,
-        )
+    raise NonRetryableError("Agent conversations are not available yet")
 
 
 def _ignore_conversation(conversation_id: int, reason_code: str) -> None:
@@ -1200,14 +1151,7 @@ def _begin_rule_learning_job(
     workflow_job_id: int,
     event: RuleLearningJobEvent,
 ) -> RuleLearningWork:
-    with closing(get_conn()) as conn, conn:
-        return begin_rule_learning(
-            conn,
-            workflow_job_id=workflow_job_id,
-            event=event,
-            model=rule_learning_model(),
-            prompt_version=RULE_LEARNING_PROMPT_VERSION,
-        )
+    raise NonRetryableError("Agent learning is not available yet")
 
 
 def _mark_rule_learning_job_failed(workflow_job_id: int) -> None:
@@ -1223,31 +1167,7 @@ def _generate_and_persist_rule_learning(
     work: RuleLearningWork,
     worker_id: str,
 ) -> object:
-    minimum_support = int(os.environ.get("SUGGESTED_RULE_MIN_SUPPORT", "3"))
-    minimum_support_pull_requests = int(
-        os.environ.get("SUGGESTED_RULE_MIN_SUPPORT_PULL_REQUESTS", "3")
-    )
-
-    def report_progress() -> None:
-        if not _heartbeat_lease(job.id, worker_id):
-            raise RuntimeError("Workflow lease was lost during suggested-rule generation")
-
-    suggestions, prompt_tokens, completion_tokens = generate_suggested_rules(
-        work.evidence,
-        minimum_support=minimum_support,
-        minimum_support_pull_requests=minimum_support_pull_requests,
-        progress_callback=report_progress,
-    )
-    with closing(get_conn()) as conn, conn:
-        return persist_rule_suggestions(
-            conn,
-            work=work,
-            suggestions=suggestions,
-            minimum_support=minimum_support,
-            minimum_support_pull_requests=minimum_support_pull_requests,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-        )
+    raise NonRetryableError("Agent learning is not available yet")
 
 
 def _generate_and_persist_conversation(
@@ -1258,24 +1178,7 @@ def _generate_and_persist_conversation(
     snapshot_id: int | None,
     worker_id: str,
 ) -> None:
-    def report_progress() -> None:
-        if not _heartbeat_lease(job.id, worker_id):
-            raise RuntimeError("Workflow lease was lost while answering a review question")
-
-    answer = generate_conversation_answer(
-        event,
-        work.finding,
-        contexts,
-        work.previous_turns,
-        progress_callback=report_progress,
-    )
-    report_progress()
-    _mark_conversation_ready(
-        work.id,
-        answer=answer,
-        snapshot_id=snapshot_id,
-        context_chunk_count=len(contexts),
-    )
+    raise NonRetryableError("Agent conversations are not available yet")
 
 
 async def _publish_native_thread_operations(
@@ -1736,50 +1639,22 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
             )
             await anyio.to_thread.run_sync(partial(_supersede, job.id, worker_id))
             return
-    configured_runtime = hosted_review_runtime_name()
-    runtime_name = configured_runtime
-    if configured_runtime == LITELLM_RUNTIME:
-        model_plan = select_review_model_plan(
-            provenance,
-            candidate_model=review_model(),
-            verifier_model=review_verifier_model(),
-            minimum_confidence=review_provenance_minimum_confidence(),
-        )
-        # Startup validated the *configured* pair. Routing permutes it, so on an
-        # AI-authored pull request the candidate pass runs on the model configured
-        # as the verifier -- a pair no validator has looked at, and one that can
-        # have no reasoning control at all while the configured candidate had one.
-        # Resolve the pair that will actually be used, and record it on the run:
-        # refusing here would dead-letter the pull request over configuration the
-        # operator can only change between runs.
-        depth_support = resolve_review_depth_support(
-            candidate_model=model_plan.candidate_model,
-            verifier_model=model_plan.verifier_model,
-            source=f"routed by provenance: {model_plan.reason_code}",
-        )
-        report_review_depth_support(depth_support)
-    else:
-        runtime_name = select_review_runtime_plan(
-            provenance,
-            default_runtime=configured_runtime,
-            minimum_confidence=review_provenance_minimum_confidence(),
-        ).runtime
-        # Native CLIs own their reasoning settings; do not require or silently
-        # repurpose LiteLLM model controls merely to create an audit record.
-        # The runtime label is deliberately the persisted "model" identity so
-        # cache reuse remains bound to the actual independent reviewer.
-        model_plan = ReviewModelPlan(
-            candidate_model=f"native_{runtime_name}",
-            verifier_model=f"native_{runtime_name}",
-            reason_code="native_cli_runtime",
-            detected_family=None,
-        )
-        depth_support = ReviewDepthSupport(
-            depth=None,
-            variable="REVIEW_DEPTH",
-            plans=(),
-            source="native CLI runtime",
-        )
+    runtime_name = select_review_agent_plan(
+        provenance,
+        default_runtime=hosted_review_agent_name(),
+        minimum_confidence=0.8,
+    ).runtime
+    # The durable columns retain the selected Agent identity so historical runs
+    # remain comparable without a provider/model abstraction.
+    model_plan = ReviewModelPlan(
+        candidate_model=f"agent_{runtime_name}",
+        verifier_model=f"agent_{runtime_name}",
+        reason_code="review_agent",
+        detected_family=None,
+    )
+    depth_support = ReviewDepthSupport(
+        depth=None, variable="REVIEW_DEPTH", plans=(), source="Review Agent"
+    )
 
     review_run = await anyio.to_thread.run_sync(
         partial(
@@ -2022,6 +1897,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
 async def process_conversation_job(job: WorkflowJob, worker_id: str) -> None:
     if job.job_type != "answer_review_comment" or job.pull_request_id is None:
         raise NonRetryableError(f"Unsupported conversation workflow job: {job.job_type}")
+    raise NonRetryableError("Agent conversations are not available yet")
     event = ReviewConversationEvent.from_payload(job.payload)
     if (
         event.base_sha != job.base_revision
@@ -2239,6 +2115,7 @@ async def process_feedback_sync_job(job: WorkflowJob, worker_id: str) -> None:
 async def process_rule_learning_job(job: WorkflowJob, worker_id: str) -> None:
     if job.job_type != "generate_suggested_rules" or job.pull_request_id is not None:
         raise NonRetryableError(f"Unsupported rule-learning workflow job: {job.job_type}")
+    raise NonRetryableError("Agent learning is not available yet")
     event = RuleLearningJobEvent.from_payload(job.payload)
     if (
         event.repository_id != job.repository_id
@@ -2505,17 +2382,6 @@ def _probe_int(name: str) -> None:
         int(value)
 
 
-def _probe_positive_int(name: str) -> None:
-    """Parse a variable the hot path requires to be a positive integer.
-
-    The default handed to the shared parser is a placeholder, not the
-    production default: an unset variable is valid by construction, so the
-    probe only has to agree with production about what a *set* value may be.
-    Repeating the real defaults here would create a second copy to drift.
-    """
-    _positive_int(name, 1)
-
-
 def _probe_base_url(name: str, default: str) -> None:
     normalize_base_url(os.environ.get(name, default), field_name=name)
 
@@ -2538,33 +2404,10 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     # Refused here rather than per job: a runtime this process cannot drive
     # would dead-letter every pull request in the fleet, and fixing the
     # variable afterwards recovers none of them.
-    ("REVIEW_RUNTIME", hosted_review_runtime_name),
+    ("REVIEW_AGENT", hosted_review_agent_name),
     ("WORKER_HEARTBEAT_SECONDS", _heartbeat_seconds),
-    (
-        "REVIEW_DIFF_CHARS_PER_CALL",
-        partial(_probe_positive_int, "REVIEW_DIFF_CHARS_PER_CALL"),
-    ),
-    ("REVIEW_MAX_DIFF_CHUNKS", partial(_probe_positive_int, "REVIEW_MAX_DIFF_CHUNKS")),
-    ("REVIEW_DIAGRAM_DIFF_CHARS", partial(_probe_positive_int, "REVIEW_DIAGRAM_DIFF_CHARS")),
-    (
-        "REVIEW_DIAGRAM_CONTEXT_CHARS",
-        partial(_probe_positive_int, "REVIEW_DIAGRAM_CONTEXT_CHARS"),
-    ),
-    (
-        "REVIEW_DIAGRAM_MAX_OUTPUT_TOKENS",
-        partial(_probe_positive_int, "REVIEW_DIAGRAM_MAX_OUTPUT_TOKENS"),
-    ),
     ("SCM_API_TIMEOUT_SECONDS", scm_api_timeout_seconds),
     ("DIFFUSE_MAX_REPOSITORY_BYTES", max_repository_bytes),
-    ("RULE_LEARNING_MODEL", rule_learning_model),
-    (
-        "RULE_LEARNING_MAX_OUTPUT_TOKENS",
-        partial(_probe_positive_int, "RULE_LEARNING_MAX_OUTPUT_TOKENS"),
-    ),
-    (
-        "RULE_LEARNING_MODEL_TIMEOUT_SECONDS",
-        partial(_probe_positive_int, "RULE_LEARNING_MODEL_TIMEOUT_SECONDS"),
-    ),
     ("SUGGESTED_RULE_MIN_SUPPORT", partial(_probe_int, "SUGGESTED_RULE_MIN_SUPPORT")),
     (
         "SUGGESTED_RULE_MIN_SUPPORT_PULL_REQUESTS",
@@ -2589,81 +2432,27 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("GitHub App authentication", validate_app_configuration),
 )
 
-# LiteLLM is retained as a transition path, but its provider model settings are
-# not a prerequisite for a CLI-native deployment.  Keeping this separate from
-# the universal probes prevents an unused, expired API credential from making
-# Codex/Claude runner mode unavailable at startup.
-_LITELLM_CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
-    ("REVIEW_MODEL", review_model),
-    ("REVIEW_VERIFIER_MODEL", review_verifier_model),
-    ("REVIEW_DEPTH", review_depth),
-    ("REVIEW_PASSES", review_passes),
-    ("MIN_REVIEW_CONFIDENCE", minimum_review_confidence),
-    ("REVIEW_PROVENANCE_MIN_CONFIDENCE", review_provenance_minimum_confidence),
-    ("REVIEW_STRUCTURED_OUTPUT_MODE", lambda: _supports_json_schema(review_model())),
-    ("REVIEW_API_BASE", lambda: _model_api_base(review_model())),
-    ("REVIEW_MAX_OUTPUT_TOKENS", partial(_probe_positive_int, "REVIEW_MAX_OUTPUT_TOKENS")),
-    (
-        "REVIEW_MODEL_TIMEOUT_SECONDS",
-        partial(_probe_positive_int, "REVIEW_MODEL_TIMEOUT_SECONDS"),
-    ),
-    ("REVIEW_MODEL_RETRIES", model_retries),
-)
-
-
-def validate_worker_configuration(*, verify_native_runners: bool = True) -> None:
+def validate_worker_configuration(*, verify_agent_clients: bool = True) -> None:
     """Resolve every hot-path configuration value, naming the one that fails."""
     for name, resolve in _CONFIGURATION_PROBES:
         try:
             resolve()
         except ValueError as error:
             raise ValueError(f"{name} is invalid: {error}") from error
-    if hosted_review_runtime_name() == LITELLM_RUNTIME:
-        for name, resolve in _LITELLM_CONFIGURATION_PROBES:
-            try:
-                resolve()
-            except ValueError as error:
-                raise ValueError(f"{name} is invalid: {error}") from error
-    else:
-        # The API verifies every capability-tool call and the worker mints
-        # them, so native mode cannot start with a key that would fail only
-        # after a pull request has been claimed.
-        session_capability_signing_key()
-        if verify_native_runners:
-            from service.agents.dispatch import validate_dispatch_private_key
-            from service.review.native_runner import validate_native_runners
+    # The API verifies every capability-tool call and the worker mints them,
+    # so an Agent deployment cannot start with a key that would fail only after
+    # a pull request has been claimed.
+    session_capability_signing_key()
+    if verify_agent_clients:
+        from service.agents.dispatch import validate_dispatch_private_key
+        from service.review.agent_client import validate_agent_clients
 
-            validate_dispatch_private_key()
-            validate_native_runners()
+        validate_dispatch_private_key()
+        validate_agent_clients()
 
 
 def validate_worker_model_controls() -> None:
-    """Report what the configured models will be sent, and refuse the unhonorable.
-
-    A third validator alongside the two below for the same reason they are
-    separate from each other: this asks whether the *models* can express what
-    the operator configured, which `validate_worker_configuration` -- a parse
-    check -- cannot answer and should not grow to.
-
-    Diffuse has no structured logging, no metrics, and no alerting, so a
-    parameter dropped mid-review is indistinguishable from silence. Every
-    resolution is reported here, before a single job is claimed, naming what was
-    requested, what the model supports, and what will actually be sent. A
-    candidate model LiteLLM *knows* cannot express the request does not start;
-    see `ReviewDepthSupport.refusal` for why a model it knows nothing about is
-    reported instead.
-
-    This only ever sees the configured pair. `process_review_job` resolves the
-    pair provenance routing actually chose, which startup cannot know.
-    """
-
-    if hosted_review_runtime_name() != LITELLM_RUNTIME:
-        return
-    support = resolve_review_depth_support()
-    report_review_depth_support(support)
-    refusal = support.refusal()
-    if refusal is not None:
-        raise ValueError(refusal)
+    """Compatibility no-op for callers from releases before Agent-only reviews."""
 
 
 def main() -> None:
