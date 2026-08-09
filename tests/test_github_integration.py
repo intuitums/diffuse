@@ -146,6 +146,132 @@ def test_event_signing_key_is_sealed_at_rest_with_legacy_dual_read(monkeypatch):
     assert hosted_store._unseal_event_signing_key("legacy-plaintext") == "legacy-plaintext"
 
 
+def test_authenticate_instance_reseals_legacy_plaintext(monkeypatch):
+    import base64
+
+    kek = b"n" * 32
+    monkeypatch.setenv(
+        hosted_config.CREDENTIAL_KEK_VARIABLE,
+        base64.urlsafe_b64encode(kek).decode().rstrip("="),
+    )
+    monkeypatch.setattr(hosted_store, "token_key", lambda: b"pepper" * 5 + b"xx")
+    statements: list[tuple[str, tuple[object, ...]]] = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, parameters=()):
+            statements.append((query, parameters))
+
+        def fetchone(self):
+            if "SELECT" in statements[-1][0]:
+                return ("inst-1", 42, "legacy-plaintext-key")
+            return (1,)
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    @contextmanager
+    def fake_connection():
+        conn = Connection()
+        yield conn
+        conn.commit()
+
+    monkeypatch.setattr(hosted_store, "connection", fake_connection)
+
+    instance = hosted_store.authenticate_instance("instance-token")
+    assert instance is not None
+    assert instance.event_signing_key == "legacy-plaintext-key"
+    update_params = next(
+        params for query, params in statements if query.lstrip().startswith("UPDATE")
+    )
+    resealed = str(update_params[0])
+    assert hosted_store.is_sealed(resealed)
+    assert hosted_store._unseal_event_signing_key(resealed) == "legacy-plaintext-key"
+
+
+def test_authenticate_instance_reseals_previous_kek_ciphertext(monkeypatch):
+    import base64
+
+    previous = b"p" * 32
+    current = b"c" * 32
+    monkeypatch.setenv(
+        hosted_config.CREDENTIAL_KEK_VARIABLE,
+        base64.urlsafe_b64encode(current).decode().rstrip("="),
+    )
+    monkeypatch.setenv(
+        hosted_config.CREDENTIAL_KEK_PREVIOUS_VARIABLE,
+        base64.urlsafe_b64encode(previous).decode().rstrip("="),
+    )
+    monkeypatch.setattr(hosted_store, "token_key", lambda: b"pepper" * 5 + b"xx")
+    old_sealed = hosted_store.seal(
+        "rotated-delivery-key",
+        kek=previous,
+        aad=hosted_config.EVENT_SIGNING_KEY_AAD,
+    )
+    statements: list[tuple[str, tuple[object, ...]]] = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, parameters=()):
+            statements.append((query, parameters))
+
+        def fetchone(self):
+            if "SELECT" in statements[-1][0]:
+                return ("inst-2", 7, old_sealed)
+            return (1,)
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    @contextmanager
+    def fake_connection():
+        conn = Connection()
+        yield conn
+        conn.commit()
+
+    monkeypatch.setattr(hosted_store, "connection", fake_connection)
+
+    instance = hosted_store.authenticate_instance("instance-token")
+    assert instance is not None
+    assert instance.event_signing_key == "rotated-delivery-key"
+    update_params = next(
+        params for query, params in statements if query.lstrip().startswith("UPDATE")
+    )
+    resealed = str(update_params[0])
+    assert resealed.split(".")[2] == hosted_store.key_id_for(current)
+    assert hosted_store._unseal_event_signing_key(resealed) == "rotated-delivery-key"
+
+
 def test_hosted_database_url_allows_an_explicit_provider_override(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://neon.example/diffuse")
     monkeypatch.setenv(
