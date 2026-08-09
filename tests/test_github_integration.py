@@ -132,6 +132,20 @@ def test_hosted_database_url_uses_vercel_neon_value_when_no_override(monkeypatch
     assert hosted_config.database_url() == "postgresql://neon.example/diffuse"
 
 
+def test_event_signing_key_is_sealed_at_rest_with_legacy_dual_read(monkeypatch):
+    import base64
+
+    kek = b"k" * 32
+    monkeypatch.setenv(
+        hosted_config.CREDENTIAL_KEK_VARIABLE,
+        base64.urlsafe_b64encode(kek).decode().rstrip("="),
+    )
+    sealed = hosted_store._seal_event_signing_key("live-delivery-key")
+    assert "live-delivery-key" not in sealed
+    assert hosted_store._unseal_event_signing_key(sealed) == "live-delivery-key"
+    assert hosted_store._unseal_event_signing_key("legacy-plaintext") == "legacy-plaintext"
+
+
 def test_hosted_database_url_allows_an_explicit_provider_override(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://neon.example/diffuse")
     monkeypatch.setenv(

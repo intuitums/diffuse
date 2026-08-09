@@ -80,6 +80,7 @@ def test_only_the_worker_retains_dispatch_signing_authority():
             runner = _service_block(text, f"agent-host-{runtime}")
             assert "DIFFUSE_REVIEW_AGENT_DISPATCH_PRIVATE_KEY" not in runner
             assert "DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY" in runner
+            assert "DIFFUSE_REVIEW_AGENT_TRANSPORT_SECRET" in runner
 
 
 def test_runner_images_pin_cli_dependencies_and_the_runtime_keeps_the_home_private():

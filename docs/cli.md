@@ -34,10 +34,13 @@ diffuse maintenance reindex acme/api
 diffuse cluster list
 diffuse learning list 1
 diffuse agent status
-diffuse github connect <one-time-code> --name <instance-name>
+diffuse github connect <one-time-code> --name <instance-name> \
+  --write-env /path/to/github-integration.env
 ```
 
-`diffuse token` has been removed. Service-token minting is not part of v1.
+Prefer `--write-env` so one-time connection secrets are written mode `0600`
+instead of printed to stdout. `diffuse token` has been removed. Service-token
+minting is not part of v1.
 
 ## Repository controls
 

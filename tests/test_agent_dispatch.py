@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import json
+import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -19,6 +21,8 @@ from service.agents.dispatch import (
     sign_dispatch,
     verify_dispatch,
 )
+from service.agents.transport_secret import TRANSPORT_SECRET_VARIABLE
+from service.crypto.sealed_secret import is_sealed
 from service.review.workspace import DEFAULT_WORKSPACE_LIMITS, SourceArtifact
 
 
@@ -48,6 +52,7 @@ def dispatch_keys(monkeypatch):
             )
         ),
     )
+    monkeypatch.setenv(TRANSPORT_SECRET_VARIABLE, _base64url(os.urandom(32)))
 
 
 def _envelope(expires_at: datetime) -> DispatchEnvelope:
@@ -70,6 +75,16 @@ def test_dispatch_signature_binds_runtime_scope_and_expiry(dispatch_keys):
     assert actual.runtime == "codex"
     assert actual.capability == "opaque-capability"
     assert actual.source_artifact.archive == b"test source archive"
+
+
+def test_dispatch_envelope_does_not_embed_plaintext_capability(dispatch_keys):
+    token = sign_dispatch(_envelope(datetime.now(UTC) + timedelta(minutes=5)))
+    _prefix, body, _signature = token.split(".")
+    payload = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+
+    assert "opaque-capability" not in token
+    assert is_sealed(payload["capability"])
+    assert payload["capability_id"] == "capability-1"
 
 
 def test_dispatch_rejects_tampering_and_expired_envelopes(dispatch_keys):

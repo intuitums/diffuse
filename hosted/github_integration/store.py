@@ -15,7 +15,14 @@ from datetime import timedelta
 import psycopg2
 import psycopg2.extras
 
-from .config import database_url, token_key
+from .config import (
+    EVENT_SIGNING_KEY_AAD,
+    credential_kek,
+    credential_keks,
+    database_url,
+    token_key,
+)
+from .sealed_secret import SealedSecretError, seal, unseal
 
 OAUTH_STATE_LIFETIME = timedelta(minutes=10)
 ENROLLMENT_CODE_LIFETIME = timedelta(minutes=15)
@@ -47,6 +54,22 @@ def _hash(value: str) -> str:
 
 def _random_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def _seal_event_signing_key(value: str) -> str:
+    return seal(value, kek=credential_kek(), aad=EVENT_SIGNING_KEY_AAD)
+
+
+def _unseal_event_signing_key(value: str) -> str:
+    try:
+        return unseal(
+            value,
+            keks=credential_keks(),
+            aad=EVENT_SIGNING_KEY_AAD,
+            allow_legacy_plaintext=True,
+        )
+    except SealedSecretError as error:
+        raise ValueError("stored event signing key could not be decrypted") from error
 
 
 def create_oauth_state(installation_id: int) -> str:
@@ -160,7 +183,7 @@ def redeem_enrollment_code(code: str, *, display_name: str) -> InstanceCredentia
                 installation_id,
                 display_name.strip(),
                 _hash(instance_token),
-                event_signing_key,
+                _seal_event_signing_key(event_signing_key),
             ),
         )
         stored_instance_id = str(cursor.fetchone()[0])
@@ -190,10 +213,12 @@ def authenticate_instance(token: str) -> Instance | None:
             (_hash(token),),
         )
         row = cursor.fetchone()
-    return (
-        Instance(id=str(row[0]), installation_id=int(row[1]), event_signing_key=str(row[2]))
-        if row
-        else None
+    if row is None:
+        return None
+    return Instance(
+        id=str(row[0]),
+        installation_id=int(row[1]),
+        event_signing_key=_unseal_event_signing_key(str(row[2])),
     )
 
 
