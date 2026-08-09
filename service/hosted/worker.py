@@ -323,7 +323,7 @@ def _backfill_github_repository_identities() -> int:
     operator discovering and running a special command. A later signed webhook
     continues to keep the mutable name current.
     """
-    batch_size = _positive_int("GITHUB_IDENTITY_BACKFILL_BATCH_SIZE", 25)
+    batch_size = _positive_env_int("GITHUB_IDENTITY_BACKFILL_BATCH_SIZE", 25)
     with closing(get_conn()) as conn:
         repositories = list_unbound_github_repositories(conn, limit=batch_size)
 
@@ -2454,6 +2454,14 @@ def _probe_int(name: str) -> None:
         int(value)
 
 
+def _positive_env_int(name: str, default: int) -> int:
+    """Read a positive integer setting with an explicit default."""
+    value = int(os.environ.get(name, str(default)))
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
 def _probe_base_url(name: str, default: str) -> None:
     normalize_base_url(os.environ.get(name, default), field_name=name)
 
@@ -2501,11 +2509,11 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
     ("RULE_LEARNING_BATCH_SIZE", partial(_probe_int, "RULE_LEARNING_BATCH_SIZE")),
     (
         "GITHUB_IDENTITY_BACKFILL_SECONDS",
-        partial(_probe_positive_int, "GITHUB_IDENTITY_BACKFILL_SECONDS"),
+        partial(_positive_env_int, "GITHUB_IDENTITY_BACKFILL_SECONDS", 300),
     ),
     (
         "GITHUB_IDENTITY_BACKFILL_BATCH_SIZE",
-        partial(_probe_positive_int, "GITHUB_IDENTITY_BACKFILL_BATCH_SIZE"),
+        partial(_positive_env_int, "GITHUB_IDENTITY_BACKFILL_BATCH_SIZE", 25),
     ),
     ("GITHUB_API_URL", partial(_probe_base_url, "GITHUB_API_URL", "https://api.github.com")),
     ("GITHUB_WEB_URL", partial(_probe_base_url, "GITHUB_WEB_URL", "https://github.com")),
