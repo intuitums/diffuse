@@ -20,8 +20,9 @@ cloud agent needs.
 Cloud Agents resolve configuration from `.cursor/environment.json` first (then personal /
 team saved environments). That file wires:
 
-- `install` → `.cursor/install.sh` — create/refresh `.venv` from the locked requirements
-  (Build-time / dependency refresh only; must terminate)
+- `install` → `.cursor/install.sh` — ensure PostgreSQL 17 + pgvector packages when
+  missing, then create/refresh `.venv` from the locked requirements (Build-time /
+  dependency refresh only; must terminate; does not start the database)
 - `start` → `.cursor/start.sh` — start PostgreSQL 17, ensure the `diffuse` role + DBs,
   isolated git `HOME`, and `/var/lib/diffuse/repositories`
 
