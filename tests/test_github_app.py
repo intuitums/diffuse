@@ -17,6 +17,8 @@ APP_ENVIRONMENT = (
     "GITHUB_APP_PRIVATE_KEY_FILE",
     "GITHUB_APP_PRIVATE_KEY",
     "GITHUB_TOKEN",
+    "DIFFUSE_HOSTED_TOKEN_BROKER_URL",
+    "DIFFUSE_HOSTED_INSTANCE_TOKEN",
 )
 
 
@@ -49,6 +51,44 @@ def test_static_token_is_only_the_unconfigured_fallback(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "fallback-token")
 
     assert github_app.github_token() == "fallback-token"
+
+
+def test_hosted_broker_is_preferred_and_cached(monkeypatch):
+    monkeypatch.setenv("DIFFUSE_HOSTED_TOKEN_BROKER_URL", "https://api.diffuse.website")
+    monkeypatch.setenv("DIFFUSE_HOSTED_INSTANCE_TOKEN", "x" * 32)
+    monkeypatch.setenv("GITHUB_TOKEN", "must-not-be-used")
+    monkeypatch.setattr(github_app.time, "monotonic", lambda: 100.0)
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"token": "brokered-token"}
+
+    def post(url, *, headers, timeout):
+        calls.append((url, headers))
+        return Response()
+
+    monkeypatch.setattr(github_app.httpx, "post", post)
+
+    assert github_app.github_token() == "brokered-token"
+    assert github_app.github_token() == "brokered-token"
+    assert calls == [
+        (
+            "https://api.diffuse.website/v1/installation-token",
+            {"Authorization": f"Bearer {'x' * 32}"},
+        )
+    ]
+
+
+def test_hosted_broker_and_local_app_are_mutually_exclusive(monkeypatch, private_key):
+    monkeypatch.setenv("DIFFUSE_HOSTED_TOKEN_BROKER_URL", "https://api.diffuse.website")
+    monkeypatch.setenv("DIFFUSE_HOSTED_INSTANCE_TOKEN", "x" * 32)
+    configure_app(monkeypatch, private_key)
+
+    with pytest.raises(github_app.GitHubAppConfigurationError, match="not both"):
+        github_app.validate_app_configuration()
 
 
 def test_partial_app_configuration_fails_closed_instead_of_using_fallback(monkeypatch):

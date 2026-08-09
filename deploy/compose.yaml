@@ -139,6 +139,41 @@ services:
     stop_grace_period: 30s
     networks: [backend, runner_control_claude, runner_control_codex, control_egress]
 
+  # The hosted Diffuse-Agent service receives the shared App webhook. This
+  # process pulls its installation-scoped events into the local durable queue,
+  # so the customer exposes no inbound webhook and never receives the App key.
+  relay:
+    image: ${DIFFUSE_IMAGE:?Set DIFFUSE_IMAGE to the release digest in .env}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command: ["relay"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - ${DIFFUSE_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
+      GITHUB_APP_ID: ""
+      GITHUB_APP_INSTALLATION_ID: ""
+      GITHUB_APP_PRIVATE_KEY_FILE: ""
+      GITHUB_APP_PRIVATE_KEY: ""
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 30s
+    networks: [backend, control_egress]
+
   # Both independently packaged CLIs are deployed because a trusted PR can be
   # routed to the opposing family. Neither service has application credentials.
   agent-runner-claude:
