@@ -447,11 +447,12 @@ jobs:
       #
       # deploy/compose.yaml is used rather than docker-compose.yml on purpose: it is
       # the file customers run. deploy/env.example is used as shipped apart from the
-      # four values it ships empty that something now refuses to start without, and
-      # the image/secrets paths, so the customer env file is proven to boot rather
-      # than merely proven to parse. Keep that substitution list in step with what
-      # startup validation actually requires: a value missing here does not fail to
-      # parse, it boots a container that exits.
+      # values it ships empty that something now refuses to start without, the
+      # image/secrets paths, and the recommended GitHub Integration Service URL
+      # (which without a connect-issued token is "partially configured" and fails
+      # startup). Keep that substitution list in step with what startup validation
+      # actually requires: a value missing here does not fail to parse, it boots a
+      # container that exits.
       - name: Boot the customer stack against the built image
         working-directory: deploy
         run: |
@@ -461,6 +462,8 @@ jobs:
               -e "s|^DIFFUSE_ENV_FILE=.*|DIFFUSE_ENV_FILE=ci.env|" \
               -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" \
               -e "s|^DIFFUSE_PUBLIC_URL=.*|DIFFUSE_PUBLIC_URL=${DIFFUSE_PUBLIC_URL}|" \
+              -e "s|^DIFFUSE_GITHUB_INTEGRATION_URL=.*|DIFFUSE_GITHUB_INTEGRATION_URL=|" \
+              -e "s|^DIFFUSE_GITHUB_INTEGRATION_TOKEN=.*|DIFFUSE_GITHUB_INTEGRATION_TOKEN=|" \
               env.example > ci.env
 
           # Keep the startup capability check enabled without storing a signing
@@ -550,7 +553,7 @@ jobs:
           # Docker copies the image directory's metadata to a fresh empty named
           # volume; without the pinned uid/gid and 0700 mode this fails only on
           # a customer's first agent sign-in.
-          # Each isolated runner gets its own credential volume, so exercise
+          # Each isolated Agent Host gets its own credential volume, so exercise
           # both current service profiles rather than falling back to worker.
           credential_check='set -eu
             test "$(id -u):$(id -g)" = "10001:10001"
@@ -561,7 +564,7 @@ jobs:
           for runner in claude codex; do
             docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
               --profile "agent-${runner}" run --rm --no-deps --entrypoint /bin/sh \
-              "agent-runner-${runner}" \
+              "agent-host-${runner}" \
               -c "$credential_check"
           done
 
