@@ -129,6 +129,7 @@ COPY indexer ./indexer
 COPY repository_policy ./repository_policy
 COPY retriever ./retriever
 COPY service ./service
+COPY hosted ./hosted
 COPY sql ./sql
 COPY tests ./tests
 

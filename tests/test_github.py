@@ -7,6 +7,7 @@ from service.github.api import (
     fetch_pull_request_diff,
     fetch_pull_request_update_diff,
     normalize_manual_review_request,
+    normalize_pull_request_event,
     normalize_review_conversation_event,
     normalize_review_feedback_comment_event,
 )
@@ -98,9 +99,25 @@ def _github_event() -> PullRequestEvent:
     )
 
 
+def test_pull_request_event_preserves_github_repository_identity():
+    event = normalize_pull_request_event(
+        {
+            "repository": {"full_name": "owner/repo", "id": 987654321},
+            "pull_request": _pull_request_json(),
+        },
+        delivery_id="repository-identity",
+        action="opened",
+    )
+
+    assert event.github_repository_id == 987654321
+    assert "github_repository:987654321" in event.scope_key
+
+
 def test_review_conversation_normalizes_explicit_authorized_question():
+    payload = _review_comment_payload()
+    payload["repository"]["id"] = 123456
     event = normalize_review_conversation_event(
-        _review_comment_payload(),
+        payload,
         delivery_id="conversation-delivery-1",
     )
 
@@ -108,8 +125,13 @@ def test_review_conversation_normalizes_explicit_authorized_question():
     assert event.question == "Why can this bypass the tenant check?"
     assert event.root_comment_id == "901"
     assert event.file_path == "service/auth.py"
+    assert event.github_repository_id == 123456
+    assert "github_repository:123456" in event.scope_key
     assert event.scope_key.endswith("pull_request:42:review_thread:901")
     assert ReviewConversationEvent.from_payload(event.to_payload()) == event
+    legacy_payload = event.to_payload()
+    legacy_payload.pop("github_repository_id")
+    assert ReviewConversationEvent.from_payload(legacy_payload).github_repository_id == 0
 
 
 @pytest.mark.parametrize(
@@ -144,16 +166,19 @@ def test_review_conversation_ignores_non_questions_and_unauthorized_comments(
 
 
 def test_review_feedback_records_authorized_context_without_a_mention():
+    payload = _review_comment_payload(
+        body="This is intentional because the caller already scopes the tenant."
+    )
+    payload["repository"]["id"] = 123456
     event = normalize_review_feedback_comment_event(
-        _review_comment_payload(
-            body="This is intentional because the caller already scopes the tenant."
-        ),
+        payload,
         delivery_id="feedback-delivery-1",
     )
 
     assert event is not None
     assert event.root_comment_id == "901"
     assert event.author_association == "COLLABORATOR"
+    assert event.github_repository_id == 123456
     assert event.event_key == "reply:1201:created"
     assert isinstance(event, ReviewFeedbackCommentEvent)
 

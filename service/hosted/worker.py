@@ -59,6 +59,7 @@ from service.github.check import (
 )
 from service.github.conversation import publish_github_conversation_reply
 from service.github.feedback import fetch_github_review_reactions
+from service.github.repository import fetch_github_repository_metadata
 from service.github.review import (
     PublishedReview,
     post_github_review_failure_notice,
@@ -88,7 +89,13 @@ from service.hosted.workflow import (
 )
 from service.models.learning import RuleLearningJobEvent, RuleLearningWork
 from service.models.review import ReviewFinding, ReviewReport
-from service.repositories import get_repository, update_mirror_state
+from service.repositories import (
+    RepositoryIdentityConflictError,
+    get_repository,
+    list_unbound_github_repositories,
+    resolve_github_repository,
+    update_mirror_state,
+)
 from service.review.engine import (
     PROMPT_VERSION,
     ReviewDepthSupport,
@@ -306,6 +313,55 @@ def _schedule_rule_learning() -> int:
             evaluation_interval_seconds=interval_seconds,
             limit=batch_size,
         )
+
+
+def _backfill_github_repository_identities() -> int:
+    """Bind a bounded batch of pre-identity repositories to GitHub IDs.
+
+    The migration itself cannot ask GitHub which immutable ID belongs to an old
+    name. Doing that here means an upgrade repairs existing records without an
+    operator discovering and running a special command. A later signed webhook
+    continues to keep the mutable name current.
+    """
+    batch_size = _positive_env_int("GITHUB_IDENTITY_BACKFILL_BATCH_SIZE", 25)
+    with closing(get_conn()) as conn:
+        repositories = list_unbound_github_repositories(conn, limit=batch_size)
+
+    bound = 0
+    for repository in repositories:
+        try:
+            metadata = fetch_github_repository_metadata(repository)
+            with closing(get_conn()) as conn, conn:
+                resolved = resolve_github_repository(
+                    conn,
+                    scm_base_url=repository.scm_base_url,
+                    github_repository_id=metadata.repository_id,
+                    full_name=metadata.full_name,
+                    default_branch=metadata.default_branch,
+                    actor_label="github-identity-backfill",
+                )
+            if resolved is None:
+                LOGGER.warning(
+                    "GitHub repository identity no longer matches a configured repository repo=%s",
+                    repository.full_name,
+                )
+                continue
+            bound += 1
+        except RepositoryIdentityConflictError:
+            # This needs an operator to choose which configured repository is
+            # authoritative. Keep processing the rest of the batch.
+            LOGGER.exception(
+                "GitHub repository identity conflicts with another configured repository repo=%s",
+                repository.full_name,
+            )
+        except Exception:
+            # A temporary GitHub outage must not delay reviews or stop the
+            # worker; the next scheduled pass retries this legacy record.
+            LOGGER.exception(
+                "Could not backfill GitHub repository identity repo=%s",
+                repository.full_name,
+            )
+    return bound
 
 
 def _reconcile_stranded_reviews() -> tuple[StrandedReviewJob, ...]:
@@ -2314,9 +2370,15 @@ async def run_forever(worker_id: str, poll_seconds: float) -> None:
     )
     if learning_scheduler_seconds <= 0:
         raise ValueError("RULE_LEARNING_SCHEDULER_SECONDS must be positive")
+    identity_backfill_seconds = float(
+        os.environ.get("GITHUB_IDENTITY_BACKFILL_SECONDS", "300")
+    )
+    if identity_backfill_seconds <= 0:
+        raise ValueError("GITHUB_IDENTITY_BACKFILL_SECONDS must be positive")
     heartbeat_seconds = _heartbeat_seconds()
     next_feedback_schedule = 0.0
     next_learning_schedule = 0.0
+    next_identity_backfill = 0.0
     next_stranded_reconcile = 0.0
     # An idle worker used to emit nothing at all, so `docker compose logs worker`
     # was empty whether it was healthy, wedged, or had lost the database. The
@@ -2368,6 +2430,16 @@ async def run_forever(worker_id: str, poll_seconds: float) -> None:
             except Exception:
                 LOGGER.exception("Failed to schedule suggested-rule generation")
             next_learning_schedule = now + learning_scheduler_seconds
+        if now >= next_identity_backfill:
+            try:
+                bound = await anyio.to_thread.run_sync(
+                    _backfill_github_repository_identities
+                )
+                if bound:
+                    LOGGER.info("Backfilled GitHub repository identities count=%s", bound)
+            except Exception:
+                LOGGER.exception("Failed to backfill GitHub repository identities")
+            next_identity_backfill = now + identity_backfill_seconds
         claimed = await run_once(worker_id)
         if claimed:
             processed_since_heartbeat += 1
@@ -2380,6 +2452,14 @@ def _probe_int(name: str) -> None:
     value = os.environ.get(name)
     if value is not None:
         int(value)
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    """Read a positive integer setting with an explicit default."""
+    value = int(os.environ.get(name, str(default)))
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
 
 
 def _probe_base_url(name: str, default: str) -> None:
@@ -2427,6 +2507,14 @@ _CONFIGURATION_PROBES: tuple[tuple[str, object], ...] = (
         partial(_probe_int, "RULE_LEARNING_EVALUATION_INTERVAL_SECONDS"),
     ),
     ("RULE_LEARNING_BATCH_SIZE", partial(_probe_int, "RULE_LEARNING_BATCH_SIZE")),
+    (
+        "GITHUB_IDENTITY_BACKFILL_SECONDS",
+        partial(_positive_env_int, "GITHUB_IDENTITY_BACKFILL_SECONDS", 300),
+    ),
+    (
+        "GITHUB_IDENTITY_BACKFILL_BATCH_SIZE",
+        partial(_positive_env_int, "GITHUB_IDENTITY_BACKFILL_BATCH_SIZE", 25),
+    ),
     ("GITHUB_API_URL", partial(_probe_base_url, "GITHUB_API_URL", "https://api.github.com")),
     ("GITHUB_WEB_URL", partial(_probe_base_url, "GITHUB_WEB_URL", "https://github.com")),
     ("GitHub App authentication", validate_app_configuration),

@@ -47,6 +47,9 @@ from service.cli import (
     learning as learning_cli,
 )
 from service.cli import (
+    maintenance as maintenance_cli,
+)
+from service.cli import (
     repository as repository_cli,
 )
 from service.code_query import code_query_target_for_plan
@@ -650,7 +653,7 @@ def run_local_review(
         snapshot_id = active_snapshot_id_for_repository(conn, repository.id)
         if snapshot_id is None:
             raise RuntimeError(
-                "Repository has no compatible active index; run repository sync first"
+                "Repository has no compatible active index; run maintenance reindex first"
             )
         learned_rules = load_active_learned_rules(
             conn,
@@ -1063,9 +1066,16 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
 
     repository = subparsers.add_parser(
         "repository",
+        aliases=("repo",),
         help="Onboard and manage indexed repositories",
     )
     repository_cli.configure_parser(repository)
+
+    maintenance = subparsers.add_parser(
+        "maintenance",
+        help="Run explicit operator maintenance operations",
+    )
+    maintenance_cli.configure_parser(maintenance)
 
     cluster = subparsers.add_parser(
         "cluster",
@@ -1103,6 +1113,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
     commands = {
         "review": review,
         "repository": repository,
+        "repo": repository,
+        "maintenance": maintenance,
         "cluster": cluster,
         "learning": learning,
         "database": database,
