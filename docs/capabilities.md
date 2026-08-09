@@ -34,8 +34,8 @@ and quality pilot. A future decision may consider per-finding dismissal or safe
 down-ranking from repeated feedback, but not automatic suppression of protected
 categories.
 
-LiteLLM retirement is also deferred. It happens only if the CLI review path
-shows the required quality, reliability, and operating-cost evidence.
+Direct model API execution is retired. Reviews run through the isolated Agent
+Host path.
 
 ## Evidence rule
 

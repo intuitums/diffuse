@@ -71,7 +71,7 @@ def test_auth_failure_notice_has_only_the_generic_reconnect_command():
     body = format_failure_notice(agent_auth_required_failure(4821, "claude"))
 
     assert "agent_auth_required" in body
-    assert "agent-runner-claude agent login claude" in body
+    assert "agent-host-claude agent login claude" in body
     assert "device code" not in body.lower()
     assert "http" not in body.lower()
 

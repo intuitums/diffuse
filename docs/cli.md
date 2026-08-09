@@ -3,16 +3,15 @@
 > **Transitional CLI reference.** Public token, MCP, handoff, and generic-agent
 > commands described historically are removed from v1. The only v1 CLI-adjacent
 > concern is private operator configuration for an isolated Codex or Claude Code
-> review runner; see [agent-runtimes.md](agent-runtimes.md).
+> review runner; see [agents.md](agents.md).
 
 `diffuse` is the command-line interface to a self-hosted installation. Its
 subcommands onboard and manage indexed repositories (`repository`) and
 cross-repository context clusters (`cluster`), inspect and moderate
 feedback-derived rules (`learning`), inspect and migrate the PostgreSQL schema
-(`database`), inspect or verify the configured review model (`model`), sign in
-to and inspect agent CLIs Diffuse can host (`agent`), score a labeled
-review-quality evaluation set (`evaluate`), and review the current local branch
-(`review`).
+(`database`), sign in to and inspect Agent Host CLIs (`agent`), and configure
+the GitHub integration (`github`). Local-branch review is intentionally not
+available until it can use the hosted Review Access Grant contract.
 
 The production image's `diffuse` entrypoint is a superset of the packaged CLI:
 alongside the subcommands below it takes `serve`, `worker`, and `healthcheck`,
@@ -23,40 +22,28 @@ maps `diffuse` to the CLI only, so `diffuse serve` outside the image exits with
 ## Installing
 
 Install the CLI into a local Python environment with `uv pip install -e .` (or
-an equivalent Python installer) to manage the self-hosted server and review a
-local branch using the same index, policy, and learned rules:
+an equivalent Python installer) to manage a self-hosted server:
 
 ```bash
 diffuse repository list
 diffuse cluster list
 diffuse learning list 1
-diffuse review
-diffuse review -b origin/main --diff
-diffuse review --json
-diffuse review --agent
-diffuse review --resume
-diffuse model
-diffuse model --live
 diffuse agent status
-diffuse evaluate evals/baseline.example.json
+diffuse github connect <one-time-code> --name <instance-name>
 ```
 
 `diffuse token` has been removed. Service-token minting is not part of v1.
 
 ## Review runtimes
 
-`REVIEW_RUNTIME` selects what produces a review. See
-[agent-runtimes.md](agent-runtimes.md) for the full split.
+`REVIEW_AGENT` selects what produces a review. See
+[agents.md](agents.md) for the full split.
 
-- **`litellm` (default)** — transitional one-shot structured passes against
-  `REVIEW_MODEL`. Used by the self-hosted API/worker and by `diffuse review`.
-  Pass/chunk/verifier variables in
-  [`.env.example`](../.env.example) apply to this runtime only.
-- **`claude` / `codex` (controlled-pilot path)** — `REVIEW_RUNTIME=claude` or
+- **`claude` / `codex`** — `REVIEW_AGENT=claude` or
   `codex` sends a self-hosted worker review to the isolated matching runner
   under a short-lived session capability. The worker never executes those
-  CLIs. Local `diffuse review` still uses `litellm` until it can use the same
-  session contract.
+  CLIs. Local `diffuse review` is unavailable until it can use the same session
+  contract.
 
 `diffuse agent` manages host plumbing for those CLIs:
 
@@ -84,7 +71,7 @@ operator. `--device-auth` prints a URL and a one-time code you complete from
 anywhere; the default Codex flow instead waits on a browser reaching the host's
 own localhost. Codex's `-c` / `--config` and `-p` / `--profile` are refused,
 because they rewrite or select the `config.toml` Diffuse just persisted; see
-`docs/agent-runtimes.md`.
+`docs/agents.md`.
 
 `diffuse agent status` reports the version floor as well as the sign-in. Claude's
 sandbox settings are version-gated and are *silently ignored* by older builds,
@@ -96,20 +83,13 @@ Windows,
 where these CLIs do not provide the OS sandbox Diffuse relies on, the runtime is
 refused outright.
 
-## Reviewing a local branch
+## Local branch review
 
-The checkout must correspond to an enabled, indexed Diffuse repository; the CLI
-identifies it from `origin`. By default it reviews tracked committed, staged,
-and unstaged changes against the merge base, and untracked files are reported
-but excluded unless `--include-untracked` is supplied. `--json` emits the
-versioned `diffuse-cli-review-v1` document and `--agent` emits terminal-safe
-plain text; progress goes to **stderr** and only when stderr is a terminal, so
-both stdout documents are byte-identical interactively and in CI. An
-interrupted run stores no source or model output, and `--resume` retries only
-while every input identity still matches. `diffuse evaluate` scores a suite of
-labeled findings against a recorded run — see
-[review quality](../README.md#review-quality-is-not-measured-yet). Run `--help`
-on any subcommand for the full flag reference and worked examples.
+`diffuse review` is intentionally unavailable in the Agent-only release. Push
+the branch and open or update a pull request; the configured Agent Host then
+receives the short-lived Review Access Grant and produces the review. This
+avoids a local process inheriting a developer's repository, credentials, or
+unbounded environment.
 
 ## Exit codes
 
@@ -119,9 +99,9 @@ class instead of parsing stderr:
 | Code | Meaning | Typical cause |
 | --- | --- | --- |
 | `0` | Success | The command completed; a review may still report findings |
-| `1` | Findings reported | `diffuse review --fail-on-findings` found at least one finding |
+| `1` | Command-specific failure | A command completed its work but reported a failing result |
 | `2` | Usage error | Unknown flag, missing argument, or an invalid argument value such as a malformed `--base` |
-| `3` | Configuration or environment error | `DATABASE_URL` unreachable, missing or rejected `OPENAI_API_KEY`, repository not onboarded, no compatible index |
+| `3` | Configuration or environment error | `DATABASE_URL` unreachable, a Review Agent is not configured, repository not onboarded, or no compatible index |
 | `4` | Internal error | An unexpected Diffuse defect; please report it |
 
 Failures print a single `diffuse: error: <message>` block on stderr, with
@@ -130,17 +110,5 @@ dump. Messages name the environment variable to fix and never print a
 credential: connection URLs are shown with the password replaced by `***`. Set
 `DIFFUSE_CLI_TRACEBACK=1` to re-raise the original exception when filing a bug.
 
-A CI gate therefore looks like:
-
-```bash
-diffuse review --json --fail-on-findings > review.json
-case $? in
-  0) echo "clean" ;;
-  1) echo "findings reported"; exit 1 ;;
-  *) echo "diffuse could not run"; exit 1 ;;
-esac
-```
-
-The codes are stable and CI depends on them; they are defined once in
-[`service/cli/review.py`](../service/cli/review.py) and repeated in every
-`--help` epilog.
+The codes are stable and are defined in
+[`service/cli/review.py`](../service/cli/review.py).

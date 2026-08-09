@@ -17,8 +17,8 @@ down here.
   running the full stack
 - Git
 
-No model provider credentials or GitHub token are needed to run
-the unit tests or the linter.
+No Agent credentials or GitHub token are needed to run the unit tests or
+the linter.
 
 ## Set up a development environment
 
@@ -34,7 +34,7 @@ shipped image contains. Installing the lock first pins everything, and the
 ranges are then already satisfied so nothing gets upgraded past them. Installing
 `requirements-dev.txt` alone — which is what this file used to tell you to do —
 resolves those ranges fresh against whatever is on PyPI today. That is not
-hypothetical: it resolved litellm 1.95.0 against a CI and image pin of 1.93.0
+hypothetical: it resolved a newer package against a CI and image pin
 and left a clean checkout with a failing suite, while CI stayed green throughout
 (DEV-318).
 
@@ -79,10 +79,8 @@ Roughly 7-12 seconds, no database and no network. This is the suite to run
 constantly while you work. Anything not marked `integration` must pass without
 external services.
 
-The suite is hermetic against a local `.env`. `litellm` calls `load_dotenv()`
-on import, which would otherwise merge your `.env` into the test environment
-and fail tests you did not touch; `tests/conftest.py` disables that for the
-test process. You do not need to move `.env` aside.
+The suite is hermetic against a local `.env`; tests do not load it. You do not
+need to move `.env` aside.
 
 **A bare local run leaves the entire database layer unexercised.** `pytest -m
 "not integration"` reports something like `956 passed, 29 deselected`, which
@@ -105,7 +103,7 @@ platform and dependency set, against a real PostgreSQL. Compose pins
 ```bash
 docker compose -f docker-compose.tests.yml run --rm tests            # everything
 docker compose -f docker-compose.tests.yml run --rm tests -m integration
-docker compose -f docker-compose.tests.yml run --rm tests tests/test_review_engine.py
+docker compose -f docker-compose.tests.yml run --rm tests pytest -m "not integration"
 docker compose -f docker-compose.tests.yml down -v                   # clean up
 ```
 
@@ -123,23 +121,6 @@ time you touch `subprocess`, filesystem paths, the sandbox, or the mirror.
 ```bash
 ruff check .
 ```
-
-## Run the review-quality harness
-
-`pytest` proves the review engine's plumbing; it says nothing about whether the
-engine finds bugs, because every review test stubs the model call.
-`scripts/eval.sh` is the other half: it runs the real engine over the labeled
-fixtures in `evals/fixtures/` and compares the scored result against a baseline.
-
-```bash
-./scripts/eval.sh
-```
-
-It needs `REVIEW_MODEL` and that provider's API key, and it costs money —
-roughly 40 model calls per run. **It currently exits non-zero on any machine,
-because no baseline is committed:** capturing one requires live model calls. See
-[`evals/CAPTURE.md`](evals/CAPTURE.md) for the capture procedure and
-[`evals/README.md`](evals/README.md) for the fixture format.
 
 Ruff is configured in `pyproject.toml` (`E`, `F`, `I`, `UP`, `B`, `SIM`, line
 length 100, target `py312`). CI runs the exact same command and treats any
@@ -169,9 +150,7 @@ cp .env.example .env
 # It is in the "REQUIRED" block at the top of the file.
 # Use URL-safe values, for example: openssl rand -hex 32
 #
-# REVIEW_MODEL ships commented out, so that copying this file cannot hand you a
-# model you never chose. Uncomment it (or name your own) before running a
-# review; the worker refuses to start until you do.
+# Configure REVIEW_AGENT and the Agent Dispatch keys before starting the worker.
 
 docker compose up -d db
 ```

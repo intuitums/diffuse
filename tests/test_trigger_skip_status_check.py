@@ -17,7 +17,6 @@ from retriever.context_models import CrossRepositoryContextPlan
 from service.finding_lineage import ReviewContinuity
 from service.hosted.workflow import WorkflowJob
 from service.models.review import ReviewReport
-from service.review.engine import ReviewDepthSupport
 from service.scm import PullRequestEvent
 from service.storage.check import CheckRunHandle
 from service.storage.review import ReviewRunHandle
@@ -108,6 +107,7 @@ async def test_ineligible_synchronize_still_creates_and_completes_skipped_check(
 ):
     """status_check on + review_updates off must not leave head B checkless."""
     from service.hosted import worker
+    monkeypatch.setenv("REVIEW_AGENT", "codex")
 
     event = _event()
     job = _job(event)
@@ -157,7 +157,6 @@ async def test_ineligible_synchronize_still_creates_and_completes_skipped_check(
     async def fake_fetch(_evt):
         return DIFF
 
-    monkeypatch.setenv("REVIEW_MODEL", "anthropic/claude-sonnet-5")
     monkeypatch.setattr(worker, "_heartbeat_and_check_current", lambda *_a: True)
     monkeypatch.setattr(worker, "_fetch_scm_pull_request_diff", fake_fetch)
     monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_a: 41)
@@ -171,11 +170,6 @@ async def test_ineligible_synchronize_still_creates_and_completes_skipped_check(
             primary_snapshot_id=41,
             primary_commit_sha="c" * 40,
         ),
-    )
-    monkeypatch.setattr(
-        worker,
-        "resolve_review_depth_support",
-        lambda **_k: ReviewDepthSupport(depth=None, variable="REVIEW_DEPTH", plans=()),
     )
     monkeypatch.setattr(worker, "report_review_depth_support", lambda *_a: None)
     monkeypatch.setattr(
@@ -211,6 +205,7 @@ async def test_ineligible_synchronize_still_creates_and_completes_skipped_check(
 @pytest.mark.anyio
 async def test_status_check_off_still_skips_check_creation_on_ineligible(monkeypatch):
     from service.hosted import worker
+    monkeypatch.setenv("REVIEW_AGENT", "codex")
 
     event = _event()
     job = _job(event)
@@ -224,7 +219,6 @@ async def test_status_check_off_still_skips_check_creation_on_ineligible(monkeyp
     async def fake_fetch(_evt):
         return DIFF
 
-    monkeypatch.setenv("REVIEW_MODEL", "anthropic/claude-sonnet-5")
     monkeypatch.setattr(worker, "_heartbeat_and_check_current", lambda *_a: True)
     monkeypatch.setattr(worker, "_fetch_scm_pull_request_diff", fake_fetch)
     monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_a: 41)
@@ -238,11 +232,6 @@ async def test_status_check_off_still_skips_check_creation_on_ineligible(monkeyp
             primary_snapshot_id=41,
             primary_commit_sha="c" * 40,
         ),
-    )
-    monkeypatch.setattr(
-        worker,
-        "resolve_review_depth_support",
-        lambda **_k: ReviewDepthSupport(depth=None, variable="REVIEW_DEPTH", plans=()),
     )
     monkeypatch.setattr(worker, "report_review_depth_support", lambda *_a: None)
     monkeypatch.setattr(

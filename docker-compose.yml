@@ -78,7 +78,7 @@ services:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
       # Dispatch signing is worker-only; migrations never need authority to
       # create a runner job even though their shared env file contains it.
-      DIFFUSE_AGENT_DISPATCH_PRIVATE_KEY: ""
+      DIFFUSE_REVIEW_AGENT_DISPATCH_PRIVATE_KEY: ""
     tmpfs:
       - /tmp:size=64m,mode=1777
     logging:
@@ -111,7 +111,7 @@ services:
       DIFFUSE_PUBLIC_URL: ${DIFFUSE_PUBLIC_URL:?Set DIFFUSE_PUBLIC_URL in .env}
       # The API verifies capability tools but must not be able to mint a
       # worker-to-runner dispatch envelope.
-      DIFFUSE_AGENT_DISPATCH_PRIVATE_KEY: ""
+      DIFFUSE_REVIEW_AGENT_DISPATCH_PRIVATE_KEY: ""
     ports:
       - "127.0.0.1:8000:8000"
     # REMOVED, mirroring deploy/compose.yaml: the read-only browser-sign-in secrets
@@ -165,10 +165,10 @@ services:
     stop_grace_period: 30s
     networks: [backend, runner_control_claude, runner_control_codex, control_egress]
 
-  # Pulls signed, installation-scoped deliveries from the hosted Diffuse-Agent
-  # integration into this customer's local workflow queue. It has no App private
+  # Polls signed, installation-scoped deliveries from the GitHub Integration
+  # Service into this customer's local workflow queue. It has no App private
   # key, source checkout, runner credential, or inbound listener.
-  relay:
+  github-delivery-poller:
     image: ${DIFFUSE_IMAGE:-diffuse:local}
     restart: unless-stopped
     init: true
@@ -176,7 +176,7 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-    command: ["relay"]
+    command: ["github-delivery-poller"]
     healthcheck:
       disable: true
     depends_on:
@@ -186,7 +186,7 @@ services:
       - ${DIFFUSE_ENV_FILE:-.env}
     environment:
       DATABASE_URL: postgresql://diffuse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/diffuse
-      # Diffuse-Agent mints scoped installation tokens remotely; its shared key
+      # The integration service mints scoped installation tokens remotely; its shared key
       # must never enter a customer process.
       GITHUB_APP_ID: ""
       GITHUB_APP_INSTALLATION_ID: ""
@@ -202,12 +202,12 @@ services:
     stop_grace_period: 30s
     networks: [backend, control_egress]
 
-  # Gate B: long-lived credential-isolated agent-runner. The worker never mounts
+  # Gate B: long-lived credential-isolated agent-host. The worker never mounts
   # agent credentials and never executes a CLI. This service is the only Compose
   # writer of `agent_data`. It deliberately has no `env_file` (no database /
   # GitHub / API secrets). Opt in with the matching
   # `docker compose --profile agent-claude` or `--profile agent-codex`.
-  agent-runner-claude:
+  agent-host-claude:
     image: ${DIFFUSE_CLAUDE_RUNNER_IMAGE:-diffuse-runner-claude:local}
     restart: unless-stopped
     init: true
@@ -218,10 +218,10 @@ services:
       - no-new-privileges:true
     # `docker compose run … agent login` still overrides this daemon command for
     # operator sign-in.
-    command: ["agent-runner"]
+    command: ["agent-host"]
     profiles: ["agent-claude"]
     healthcheck:
-      test: ["CMD", "diffuse", "agent-runner-healthcheck"]
+      test: ["CMD", "diffuse", "agent-host-healthcheck"]
       interval: 5s
       timeout: 5s
       retries: 6
@@ -230,20 +230,20 @@ services:
         condition: service_healthy
     environment:
       HOME: /var/lib/diffuse/agent/home
-      DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent
-      DIFFUSE_AGENT_RUNTIME: claude
-      DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY: ${DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY:?Set DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY in .env}
+      DIFFUSE_REVIEW_AGENT_HOME: /var/lib/diffuse/agent
+      REVIEW_AGENT: claude
+      DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY: ${DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY:?Set DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY in .env}
       DIFFUSE_RUNNER_IMAGE_VERSION: ${DIFFUSE_CLAUDE_RUNNER_IMAGE:-diffuse-runner-claude:local}
       # The runner has no direct external network. Route vendor login and future
       # CLI calls through the allowlisted CONNECT proxy instead.
       HTTP_PROXY: http://egress-proxy-claude:3128
       HTTPS_PROXY: http://egress-proxy-claude:3128
-      NO_PROXY: agent-tool-gateway,egress-proxy-claude,localhost,127.0.0.1
-      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_CLAUDE_MODEL_HOST:-api.anthropic.com}
-      DIFFUSE_AGENT_EGRESS_PROXY_HOST: egress-proxy-claude
+      NO_PROXY: context-service,egress-proxy-claude,localhost,127.0.0.1
+      DIFFUSE_REVIEW_AGENT_MODEL_HOST: ${DIFFUSE_CLAUDE_MODEL_HOST:-api.anthropic.com}
+      DIFFUSE_REVIEW_AGENT_EGRESS_PROXY_HOST: egress-proxy-claude
       # The runner can reach only this capability-checked control-plane surface
       # over the private agent_mcp network, with one signed session capability.
-      DIFFUSE_AGENT_TOOL_URL: http://agent-tool-gateway:8011/agent/v1
+      DIFFUSE_CONTEXT_SERVICE_URL: http://context-service:8011/agent/v1
     volumes:
       - claude_agent_data:/var/lib/diffuse/agent
     tmpfs:
@@ -261,7 +261,7 @@ services:
   # Codex keeps an independent executable, login cache, and egress allowlist.
   # It is deployed alongside Claude because trusted PR provenance can route a
   # review to the opposing family.
-  agent-runner-codex:
+  agent-host-codex:
     image: ${DIFFUSE_CODEX_RUNNER_IMAGE:-diffuse-runner-codex:local}
     restart: unless-stopped
     init: true
@@ -270,10 +270,10 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-    command: ["agent-runner"]
+    command: ["agent-host"]
     profiles: ["agent-codex"]
     healthcheck:
-      test: ["CMD", "diffuse", "agent-runner-healthcheck"]
+      test: ["CMD", "diffuse", "agent-host-healthcheck"]
       interval: 5s
       timeout: 5s
       retries: 6
@@ -282,16 +282,16 @@ services:
         condition: service_healthy
     environment:
       HOME: /var/lib/diffuse/agent/home
-      DIFFUSE_AGENT_HOME: /var/lib/diffuse/agent
-      DIFFUSE_AGENT_RUNTIME: codex
-      DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY: ${DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY:?Set DIFFUSE_AGENT_DISPATCH_PUBLIC_KEY in .env}
+      DIFFUSE_REVIEW_AGENT_HOME: /var/lib/diffuse/agent
+      REVIEW_AGENT: codex
+      DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY: ${DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY:?Set DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY in .env}
       DIFFUSE_RUNNER_IMAGE_VERSION: ${DIFFUSE_CODEX_RUNNER_IMAGE:-diffuse-runner-codex:local}
       HTTP_PROXY: http://egress-proxy-codex:3128
       HTTPS_PROXY: http://egress-proxy-codex:3128
-      NO_PROXY: agent-tool-gateway,egress-proxy-codex,localhost,127.0.0.1
-      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_CODEX_MODEL_HOST:-api.openai.com}
-      DIFFUSE_AGENT_EGRESS_PROXY_HOST: egress-proxy-codex
-      DIFFUSE_AGENT_TOOL_URL: http://agent-tool-gateway:8011/agent/v1
+      NO_PROXY: context-service,egress-proxy-codex,localhost,127.0.0.1
+      DIFFUSE_REVIEW_AGENT_MODEL_HOST: ${DIFFUSE_CODEX_MODEL_HOST:-api.openai.com}
+      DIFFUSE_REVIEW_AGENT_EGRESS_PROXY_HOST: egress-proxy-codex
+      DIFFUSE_CONTEXT_SERVICE_URL: http://context-service:8011/agent/v1
     volumes:
       - codex_agent_data:/var/lib/diffuse/agent
     tmpfs:
@@ -308,7 +308,7 @@ services:
 
   # Docker networks do not constrain HTTP paths. The runners join only this
   # credential-free gateway, which exposes the capability tool and nothing else.
-  agent-tool-gateway:
+  context-service:
     image: ${DIFFUSE_IMAGE:-diffuse:local}
     restart: unless-stopped
     init: true
@@ -316,7 +316,7 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-    command: ["agent-tool-gateway"]
+    command: ["context-service"]
     tmpfs:
       - /tmp:size=64m,mode=1777
     networks: [backend, agent_mcp_claude, agent_mcp_codex]
@@ -332,7 +332,7 @@ services:
     command: ["egress-proxy"]
     profiles: ["agent-claude"]
     environment:
-      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_CLAUDE_MODEL_HOST:-api.anthropic.com}
+      DIFFUSE_REVIEW_AGENT_MODEL_HOST: ${DIFFUSE_CLAUDE_MODEL_HOST:-api.anthropic.com}
     healthcheck:
       test: ["CMD", "diffuse", "egress-proxy-healthcheck"]
       interval: 2s
@@ -361,7 +361,7 @@ services:
     command: ["egress-proxy"]
     profiles: ["agent-codex"]
     environment:
-      DIFFUSE_AGENT_MODEL_HOST: ${DIFFUSE_CODEX_MODEL_HOST:-api.openai.com}
+      DIFFUSE_REVIEW_AGENT_MODEL_HOST: ${DIFFUSE_CODEX_MODEL_HOST:-api.openai.com}
     healthcheck:
       test: ["CMD", "diffuse", "egress-proxy-healthcheck"]
       interval: 2s

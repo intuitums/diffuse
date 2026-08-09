@@ -223,7 +223,7 @@ class ReviewReport(StrictModel):
     # no verification stage reports 0 and says so.
     verifier_prompt_tokens: int | None = Field(default=None, ge=0)
     verifier_completion_tokens: int | None = Field(default=None, ge=0)
-    # A breakdown of `prompt_tokens`, never an addition to it. LiteLLM folds both
+    # A breakdown of `prompt_tokens`, never an addition to it. The historical API
     # cache counters into `prompt_tokens` on the Anthropic route, unlike
     # Anthropic's own `input_tokens`, which reports the uncached remainder alone;
     # adding all three together double-counts every cached review. Cache reads
