@@ -127,9 +127,25 @@ def test_delivery_poller_requires_all_connection_values(monkeypatch):
 
 def test_hosted_database_url_uses_vercel_neon_value_when_no_override(monkeypatch):
     monkeypatch.delenv("DIFFUSE_GITHUB_INTEGRATION_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DIFFUSE_SETUP_DATABASE_URL", raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql://neon.example/diffuse")
 
     assert hosted_config.database_url() == "postgresql://neon.example/diffuse"
+
+
+def test_legacy_setup_token_pepper_is_accepted(monkeypatch):
+    import base64
+
+    monkeypatch.delenv("DIFFUSE_GITHUB_INTEGRATION_TOKEN_PEPPER", raising=False)
+    pepper = base64.urlsafe_b64encode(b"p" * 32).decode().rstrip("=")
+    monkeypatch.setenv("DIFFUSE_SETUP_TOKEN_PEPPER", pepper)
+    assert hosted_config.token_key() == b"p" * 32
+
+
+def test_legacy_setup_public_url_is_accepted(monkeypatch):
+    monkeypatch.delenv("DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL", raising=False)
+    monkeypatch.setenv("DIFFUSE_SETUP_PUBLIC_URL", "https://api.diffuse.website")
+    assert hosted_config.public_url() == "https://api.diffuse.website"
 
 
 def test_event_signing_key_is_sealed_at_rest_with_legacy_dual_read(monkeypatch):

@@ -9,6 +9,22 @@ from dataclasses import dataclass
 
 _INSTALLATION_ID = re.compile(r"^[0-9]{1,20}$")
 
+# Production Infisical/Vercel still carries the pre-rename DIFFUSE_SETUP_* names
+# from the first hosted control-plane deploy. Prefer the current names, then
+# fall back so a rename-only code deploy does not strand a live App.
+_PUBLIC_URL_NAMES = (
+    "DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL",
+    "DIFFUSE_SETUP_PUBLIC_URL",
+)
+_DATABASE_URL_NAMES = (
+    "DIFFUSE_GITHUB_INTEGRATION_DATABASE_URL",
+    "DIFFUSE_SETUP_DATABASE_URL",
+)
+_TOKEN_PEPPER_NAMES = (
+    "DIFFUSE_GITHUB_INTEGRATION_TOKEN_PEPPER",
+    "DIFFUSE_SETUP_TOKEN_PEPPER",
+)
+
 
 class HostedConfigurationError(ValueError):
     """The integration service cannot safely start with its current configuration."""
@@ -26,12 +42,26 @@ def optional(name: str) -> str | None:
     return value or None
 
 
+def _first_configured(*names: str) -> tuple[str, str] | None:
+    for name in names:
+        value = optional(name)
+        if value is not None:
+            return name, value
+    return None
+
+
+def _required_any(*names: str) -> tuple[str, str]:
+    found = _first_configured(*names)
+    if found is None:
+        raise HostedConfigurationError(f"{names[0]} must be configured")
+    return found
+
+
 def public_url() -> str:
-    value = required("DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL").rstrip("/")
+    name, value = _required_any(*_PUBLIC_URL_NAMES)
+    value = value.rstrip("/")
     if not value.startswith("https://") or "/" in value[len("https://") :]:
-        raise HostedConfigurationError(
-            "DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL must be an HTTPS origin"
-        )
+        raise HostedConfigurationError(f"{name} must be an HTTPS origin")
     return value
 
 
@@ -58,22 +88,21 @@ def database_url() -> str:
     # attached project. Keep the explicit name as an override for operators who
     # intentionally use another PostgreSQL provider, but do not force them to
     # copy a managed connection string into a second secret store.
-    return optional("DIFFUSE_GITHUB_INTEGRATION_DATABASE_URL") or required("DATABASE_URL")
+    found = _first_configured(*_DATABASE_URL_NAMES)
+    if found is not None:
+        return found[1]
+    return required("DATABASE_URL")
 
 
 def token_key() -> bytes:
     """Return the key that hashes instance credentials in the hosted database."""
-    value = required("DIFFUSE_GITHUB_INTEGRATION_TOKEN_PEPPER")
+    name, value = _required_any(*_TOKEN_PEPPER_NAMES)
     try:
         decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
     except (ValueError, TypeError) as error:
-        raise HostedConfigurationError(
-            "DIFFUSE_GITHUB_INTEGRATION_TOKEN_PEPPER must be base64url text"
-        ) from error
+        raise HostedConfigurationError(f"{name} must be base64url text") from error
     if len(decoded) < 32:
-        raise HostedConfigurationError(
-            "DIFFUSE_GITHUB_INTEGRATION_TOKEN_PEPPER must decode to 32 bytes"
-        )
+        raise HostedConfigurationError(f"{name} must decode to at least 32 bytes")
     return decoded
 
 
