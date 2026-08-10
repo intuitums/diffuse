@@ -16,6 +16,8 @@ import psycopg2
 import psycopg2.extras
 
 from .config import (
+    CONNECT_EVENT_SIGNING_KEY_AAD,
+    CONNECT_INSTANCE_TOKEN_AAD,
     EVENT_SIGNING_KEY_AAD,
     credential_kek,
     credential_keks,
@@ -26,6 +28,7 @@ from .sealed_secret import SealedSecretError, is_sealed, key_id_for, seal, unsea
 
 OAUTH_STATE_LIFETIME = timedelta(minutes=10)
 ENROLLMENT_CODE_LIFETIME = timedelta(minutes=15)
+CONNECT_SESSION_LIFETIME = timedelta(minutes=15)
 EVENT_LEASE_SECONDS = 60
 EVENT_RETENTION_DAYS = 30
 
@@ -112,31 +115,53 @@ def _maybe_reseal_event_signing_key(
     )
 
 
-def create_oauth_state(installation_id: int) -> str:
+@dataclass(frozen=True)
+class OAuthStateTarget:
+    installation_id: int | None
+    connect_session_id: str | None
+
+
+def create_oauth_state(
+    *,
+    installation_id: int | None = None,
+    connect_session_id: str | None = None,
+) -> str:
+    if installation_id is None and connect_session_id is None:
+        raise ValueError("OAuth state requires an installation_id or connect_session_id")
+    if installation_id is not None and installation_id <= 0:
+        raise ValueError("installation_id must be positive")
     state = _random_token()
     with connection() as conn, conn.cursor() as cursor:
         cursor.execute(
             """
-            INSERT INTO setup_oauth_states (state_hash, installation_id, expires_at)
-            VALUES (%s, %s, now() + interval '10 minutes')
+            INSERT INTO setup_oauth_states (
+                state_hash, installation_id, connect_session_id, expires_at
+            ) VALUES (%s, %s, %s::uuid, now() + interval '10 minutes')
             """,
-            (_hash(state), installation_id),
+            (_hash(state), installation_id, connect_session_id),
         )
     return state
 
 
-def consume_oauth_state(state: str) -> int | None:
+def consume_oauth_state(state: str) -> OAuthStateTarget | None:
     with connection() as conn, conn.cursor() as cursor:
         cursor.execute(
             """
             DELETE FROM setup_oauth_states
             WHERE state_hash = %s AND expires_at > now()
-            RETURNING installation_id
+            RETURNING installation_id, connect_session_id::text
             """,
             (_hash(state),),
         )
         row = cursor.fetchone()
-    return int(row[0]) if row else None
+    if row is None:
+        return None
+    installation_id = int(row[0]) if row[0] is not None else None
+    connect_session_id = str(row[1]) if row[1] is not None else None
+    return OAuthStateTarget(
+        installation_id=installation_id,
+        connect_session_id=connect_session_id,
+    )
 
 
 def record_verified_installation(
@@ -183,12 +208,48 @@ class InstanceCredentials:
     installation_id: int
 
 
-def redeem_enrollment_code(code: str, *, display_name: str) -> InstanceCredentials | None:
-    if not 1 <= len(display_name.strip()) <= 200:
-        raise ValueError("display_name must contain 1 to 200 characters")
+def _insert_instance_credentials(
+    cursor: psycopg2.extensions.cursor,
+    *,
+    installation_id: int,
+    display_name: str,
+) -> InstanceCredentials:
     instance_token = _random_token()
     event_signing_key = _random_token()
     instance_id = str(uuid.uuid4())
+    cursor.execute(
+        """
+        INSERT INTO self_hosted_instances (
+            id, github_installation_id, display_name, credential_hash, event_signing_key
+        ) VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (github_installation_id) WHERE revoked_at IS NULL
+        DO UPDATE SET
+            display_name = EXCLUDED.display_name,
+            credential_hash = EXCLUDED.credential_hash,
+            event_signing_key = EXCLUDED.event_signing_key,
+            updated_at = now()
+        RETURNING id::text
+        """,
+        (
+            instance_id,
+            installation_id,
+            display_name.strip(),
+            _hash(instance_token),
+            _seal_event_signing_key(event_signing_key),
+        ),
+    )
+    stored_instance_id = str(cursor.fetchone()[0])
+    return InstanceCredentials(
+        instance_id=stored_instance_id,
+        instance_token=instance_token,
+        event_signing_key=event_signing_key,
+        installation_id=installation_id,
+    )
+
+
+def redeem_enrollment_code(code: str, *, display_name: str) -> InstanceCredentials | None:
+    if not 1 <= len(display_name.strip()) <= 200:
+        raise ValueError("display_name must contain 1 to 200 characters")
     with connection() as conn, conn.cursor() as cursor:
         cursor.execute(
             """
@@ -204,35 +265,11 @@ def redeem_enrollment_code(code: str, *, display_name: str) -> InstanceCredentia
         row = cursor.fetchone()
         if row is None:
             return None
-        installation_id = int(row[0])
-        cursor.execute(
-            """
-            INSERT INTO self_hosted_instances (
-                id, github_installation_id, display_name, credential_hash, event_signing_key
-            ) VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (github_installation_id) WHERE revoked_at IS NULL
-            DO UPDATE SET
-                display_name = EXCLUDED.display_name,
-                credential_hash = EXCLUDED.credential_hash,
-                event_signing_key = EXCLUDED.event_signing_key,
-                updated_at = now()
-            RETURNING id::text
-            """,
-            (
-                instance_id,
-                installation_id,
-                display_name.strip(),
-                _hash(instance_token),
-                _seal_event_signing_key(event_signing_key),
-            ),
+        return _insert_instance_credentials(
+            cursor,
+            installation_id=int(row[0]),
+            display_name=display_name,
         )
-        stored_instance_id = str(cursor.fetchone()[0])
-    return InstanceCredentials(
-        instance_id=stored_instance_id,
-        instance_token=instance_token,
-        event_signing_key=event_signing_key,
-        installation_id=installation_id,
-    )
 
 
 @dataclass(frozen=True)
@@ -500,3 +537,307 @@ def instance_status(token: str) -> InstanceStatus | None:
         created_at=row[4].isoformat(),
         updated_at=row[5].isoformat(),
     )
+
+
+@dataclass(frozen=True)
+class ConnectSessionCreated:
+    session_id: str
+    poll_secret: str
+    expires_in_seconds: int
+
+
+@dataclass(frozen=True)
+class ConnectSessionRow:
+    session_id: str
+    display_name: str
+    status: str
+    installation_id: int | None
+    candidate_installations: tuple[dict[str, object], ...]
+    authorized_github_user_id: int | None
+    authorized_github_login: str | None
+    error_message: str | None
+    expires_at: str
+
+
+@dataclass(frozen=True)
+class ConnectSessionClaim:
+    status: str
+    credentials: InstanceCredentials | None = None
+    error_message: str | None = None
+    expires_in_seconds: int | None = None
+
+
+def create_connect_session(*, display_name: str) -> ConnectSessionCreated:
+    if not 1 <= len(display_name.strip()) <= 200:
+        raise ValueError("display_name must contain 1 to 200 characters")
+    session_id = str(uuid.uuid4())
+    poll_secret = _random_token()
+    with connection() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO connect_sessions (
+                id, poll_secret_hash, display_name, status, expires_at
+            ) VALUES (
+                %s::uuid, %s, %s, 'pending', now() + interval '15 minutes'
+            )
+            """,
+            (session_id, _hash(poll_secret), display_name.strip()),
+        )
+    return ConnectSessionCreated(
+        session_id=session_id,
+        poll_secret=poll_secret,
+        expires_in_seconds=int(CONNECT_SESSION_LIFETIME.total_seconds()),
+    )
+
+
+def get_pending_connect_session(session_id: str) -> ConnectSessionRow | None:
+    with connection() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                id::text,
+                display_name,
+                status,
+                github_installation_id,
+                candidate_installations,
+                authorized_github_user_id,
+                authorized_github_login,
+                error_message,
+                expires_at
+            FROM connect_sessions
+            WHERE id = %s::uuid
+              AND expires_at > now()
+              AND status IN ('pending', 'ready')
+            """,
+            (session_id,),
+        )
+        row = cursor.fetchone()
+    if row is None:
+        return None
+    candidates_raw = row[4] or []
+    if isinstance(candidates_raw, str):
+        candidates_raw = json.loads(candidates_raw)
+    candidates = tuple(dict(item) for item in candidates_raw)
+    return ConnectSessionRow(
+        session_id=str(row[0]),
+        display_name=str(row[1]),
+        status=str(row[2]),
+        installation_id=int(row[3]) if row[3] is not None else None,
+        candidate_installations=candidates,
+        authorized_github_user_id=int(row[5]) if row[5] is not None else None,
+        authorized_github_login=str(row[6]) if row[6] is not None else None,
+        error_message=str(row[7]) if row[7] is not None else None,
+        expires_at=row[8].isoformat(),
+    )
+
+
+def set_connect_session_candidates(
+    session_id: str,
+    *,
+    candidates: tuple[dict[str, object], ...],
+    github_user_id: int,
+    github_login: str,
+) -> bool:
+    with connection() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE connect_sessions
+            SET candidate_installations = %s::jsonb,
+                authorized_github_user_id = %s,
+                authorized_github_login = %s,
+                updated_at = now()
+            WHERE id = %s::uuid
+              AND status = 'pending'
+              AND expires_at > now()
+            RETURNING id
+            """,
+            (json.dumps(list(candidates)), github_user_id, github_login, session_id),
+        )
+        return cursor.fetchone() is not None
+
+
+def fail_connect_session(session_id: str, message: str) -> None:
+    with connection() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE connect_sessions
+            SET status = 'failed',
+                error_message = %s,
+                candidate_installations = NULL,
+                updated_at = now()
+            WHERE id = %s::uuid AND status = 'pending'
+            """,
+            (message[:500], session_id),
+        )
+
+
+def complete_connect_session(
+    session_id: str,
+    *,
+    installation_id: int,
+    github_user_id: int,
+    github_login: str,
+    allowed_installation_ids: set[int] | None = None,
+) -> InstanceCredentials | None:
+    if installation_id <= 0:
+        raise ValueError("installation_id must be positive")
+    with connection() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT display_name, status, candidate_installations
+            FROM connect_sessions
+            WHERE id = %s::uuid
+              AND expires_at > now()
+            FOR UPDATE
+            """,
+            (session_id,),
+        )
+        row = cursor.fetchone()
+        if row is None or str(row[1]) != "pending":
+            return None
+        display_name = str(row[0])
+        allowed = allowed_installation_ids
+        if allowed is None and row[2] is not None:
+            candidates = row[2]
+            if isinstance(candidates, str):
+                candidates = json.loads(candidates)
+            allowed = {int(item["id"]) for item in candidates}
+        if allowed is not None and installation_id not in allowed:
+            return None
+        cursor.execute(
+            """
+            INSERT INTO app_installations (
+                github_installation_id, github_user_id, github_login, active
+            ) VALUES (%s, %s, %s, TRUE)
+            ON CONFLICT (github_installation_id) DO UPDATE SET
+                github_user_id = EXCLUDED.github_user_id,
+                github_login = EXCLUDED.github_login,
+                active = TRUE,
+                updated_at = now()
+            """,
+            (installation_id, github_user_id, github_login),
+        )
+        credentials = _insert_instance_credentials(
+            cursor,
+            installation_id=installation_id,
+            display_name=display_name,
+        )
+        cursor.execute(
+            """
+            UPDATE connect_sessions
+            SET status = 'ready',
+                github_installation_id = %s,
+                instance_id = %s::uuid,
+                instance_token_sealed = %s,
+                event_signing_key_sealed = %s,
+                candidate_installations = NULL,
+                updated_at = now()
+            WHERE id = %s::uuid AND status = 'pending'
+            RETURNING id
+            """,
+            (
+                installation_id,
+                credentials.instance_id,
+                seal(
+                    credentials.instance_token,
+                    kek=credential_kek(),
+                    aad=CONNECT_INSTANCE_TOKEN_AAD,
+                ),
+                seal(
+                    credentials.event_signing_key,
+                    kek=credential_kek(),
+                    aad=CONNECT_EVENT_SIGNING_KEY_AAD,
+                ),
+                session_id,
+            ),
+        )
+        if cursor.fetchone() is None:
+            return None
+    return credentials
+
+
+def claim_connect_session(session_id: str, poll_secret: str) -> ConnectSessionClaim:
+    with connection() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                status,
+                instance_id::text,
+                github_installation_id,
+                instance_token_sealed,
+                event_signing_key_sealed,
+                error_message,
+                EXTRACT(EPOCH FROM (expires_at - now()))
+            FROM connect_sessions
+            WHERE id = %s::uuid AND poll_secret_hash = %s
+            FOR UPDATE
+            """,
+            (session_id, _hash(poll_secret)),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return ConnectSessionClaim(status="not_found")
+        status = str(row[0])
+        expires_in = max(0, int(row[6] or 0))
+        if status == "pending":
+            if expires_in <= 0:
+                cursor.execute(
+                    """
+                    UPDATE connect_sessions
+                    SET status = 'failed',
+                        error_message = 'Connect session expired',
+                        updated_at = now()
+                    WHERE id = %s::uuid AND status = 'pending'
+                    """,
+                    (session_id,),
+                )
+                return ConnectSessionClaim(
+                    status="expired",
+                    error_message="Connect session expired",
+                )
+            return ConnectSessionClaim(status="pending", expires_in_seconds=expires_in)
+        if status == "ready":
+            instance_id = str(row[1])
+            installation_id = int(row[2])
+            try:
+                instance_token = unseal(
+                    str(row[3]),
+                    keks=credential_keks(),
+                    aad=CONNECT_INSTANCE_TOKEN_AAD,
+                )
+                event_signing_key = unseal(
+                    str(row[4]),
+                    keks=credential_keks(),
+                    aad=CONNECT_EVENT_SIGNING_KEY_AAD,
+                )
+            except SealedSecretError as error:
+                raise ValueError("stored connect credentials could not be decrypted") from error
+            cursor.execute(
+                """
+                UPDATE connect_sessions
+                SET status = 'consumed',
+                    instance_token_sealed = NULL,
+                    event_signing_key_sealed = NULL,
+                    updated_at = now()
+                WHERE id = %s::uuid AND status = 'ready'
+                RETURNING id
+                """,
+                (session_id,),
+            )
+            if cursor.fetchone() is None:
+                return ConnectSessionClaim(status="consumed")
+            return ConnectSessionClaim(
+                status="ready",
+                credentials=InstanceCredentials(
+                    instance_id=instance_id,
+                    instance_token=instance_token,
+                    event_signing_key=event_signing_key,
+                    installation_id=installation_id,
+                ),
+            )
+        if status == "consumed":
+            return ConnectSessionClaim(status="consumed")
+        return ConnectSessionClaim(
+            status="failed" if status == "failed" else status,
+            error_message=str(row[5]) if row[5] is not None else None,
+        )

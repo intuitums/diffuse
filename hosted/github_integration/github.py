@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 
 import httpx
 import jwt
@@ -14,6 +15,13 @@ GITHUB_API = "https://api.github.com"
 
 class GitHubSetupError(RuntimeError):
     """GitHub could not verify a setup user or mint an installation token."""
+
+
+@dataclass(frozen=True)
+class GitHubInstallation:
+    id: int
+    account_login: str
+    account_type: str
 
 
 def oauth_authorize_url(state: str) -> str:
@@ -34,7 +42,7 @@ def _app_jwt() -> str:
     )
 
 
-def exchange_oauth_code(code: str) -> tuple[int, str, set[int]]:
+def exchange_oauth_code(code: str) -> tuple[int, str, tuple[GitHubInstallation, ...]]:
     config = oauth_configuration()
     response = httpx.post(
         "https://github.com/login/oauth/access_token",
@@ -64,10 +72,19 @@ def exchange_oauth_code(code: str) -> tuple[int, str, set[int]]:
     try:
         user_id = int(user["id"])
         login = str(user["login"])
-        installation_ids = {int(item["id"]) for item in installations}
+        parsed: list[GitHubInstallation] = []
+        for item in installations:
+            account = item.get("account") or {}
+            parsed.append(
+                GitHubInstallation(
+                    id=int(item["id"]),
+                    account_login=str(account.get("login") or f"installation-{item['id']}"),
+                    account_type=str(account.get("type") or "Organization"),
+                )
+            )
     except (KeyError, TypeError, ValueError) as error:
         raise GitHubSetupError("GitHub returned an invalid user authorization response") from error
-    return user_id, login, installation_ids
+    return user_id, login, tuple(parsed)
 
 
 def mint_installation_token(installation_id: int) -> tuple[str, str]:

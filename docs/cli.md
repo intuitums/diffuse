@@ -34,17 +34,20 @@ diffuse maintenance reindex acme/api
 diffuse cluster list
 diffuse learning list 1
 diffuse agent status
-diffuse github connect <one-time-code> --name <instance-name> \
+diffuse github connect --name <instance-name> \
   --write-env /path/to/github-integration.env
 diffuse github status
 diffuse github disconnect
 ```
 
-Prefer `--write-env` so one-time connection secrets are written mode `0600`
-instead of printed to stdout. `diffuse github status` checks the Integration
-Service binding (ready/not-ready). `diffuse github disconnect` revokes the
-instance credential. `diffuse token` has been removed. Service-token minting is
-not part of v1.
+`diffuse github connect` opens a browser against the GitHub Integration Service,
+authorizes your GitHub account, and binds an App installation (install the App
+first when you can). Prefer `--write-env` so one-time connection secrets are
+written mode `0600` instead of printed to stdout. Use `--no-browser` to print
+the URL, or `--code` only for the advanced setup-page fallback. `diffuse github
+status` checks the Integration Service binding (ready/not-ready). `diffuse
+github disconnect` revokes the instance credential. `diffuse token` has been
+removed. Service-token minting is not part of v1.
 
 ## Repository controls
 

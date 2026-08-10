@@ -7,6 +7,8 @@ import json
 import os
 import stat
 import sys
+import time
+import webbrowser
 from pathlib import Path
 
 import httpx
@@ -18,18 +20,64 @@ _ENV_KEYS = (
     "DIFFUSE_GITHUB_INTEGRATION_TOKEN",
     "DIFFUSE_GITHUB_DELIVERY_SIGNING_KEY",
 )
+_POLL_INTERVAL_SECONDS = 2.0
+_DEFAULT_POLL_TIMEOUT_SECONDS = 15 * 60
 
 
-def _connect(args: argparse.Namespace) -> None:
+def _emit_credentials(
+    *,
+    base_url: str,
+    instance_token: str,
+    event_signing_key: str,
+    installation_id: object,
+    instance_id: object,
+    write_path: Path | None,
+    write_fd: int | None,
+) -> None:
+    credentials = {
+        "DIFFUSE_GITHUB_INTEGRATION_URL": base_url,
+        "DIFFUSE_GITHUB_INTEGRATION_TOKEN": instance_token,
+        "DIFFUSE_GITHUB_DELIVERY_SIGNING_KEY": event_signing_key,
+        "installation_id": installation_id,
+        "instance_id": instance_id,
+    }
+    if write_path is not None and write_fd is not None:
+        try:
+            _write_env_file(write_fd, credentials)
+        except OSError as error:
+            print(
+                f"Warning: failed to write {write_path}: {error}. "
+                "Printing one-time connection secrets to stdout so they are not lost.",
+                file=sys.stderr,
+            )
+            print(json.dumps(credentials, indent=2, sort_keys=True))
+            raise RuntimeError(f"Could not write connection secrets to {write_path}") from error
+        print(
+            json.dumps(
+                {
+                    "wrote_env": str(write_path),
+                    "installation_id": credentials["installation_id"],
+                    "instance_id": credentials["instance_id"],
+                    "secrets_shown_once": True,
+                    "ready": True,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    print(
+        "Warning: printing one-time connection secrets to stdout. "
+        "Prefer --write-env PATH (mode 0600).",
+        file=sys.stderr,
+    )
+    print(json.dumps(credentials, indent=2, sort_keys=True))
+
+
+def _connect_with_code(args: argparse.Namespace, *, write_path: Path | None, write_fd: int | None) -> None:
     base_url = normalize_base_url(args.url.rstrip("/"), field_name="--url")
     if not base_url.startswith("https://"):
         raise ValueError("--url must be an HTTPS origin")
-    write_path: Path | None = None
-    write_fd: int | None = None
-    if args.write_env is not None:
-        # Validate and lock down the destination before redeeming the one-time
-        # enrollment code so a local write failure cannot burn the code.
-        write_path, write_fd = _prepare_write_env_path(Path(args.write_env))
     try:
         response = httpx.post(
             f"{base_url}/v1/instances/register",
@@ -51,48 +99,143 @@ def _connect(args: argparse.Namespace) -> None:
             ) from error
         if not isinstance(instance_token, str) or not isinstance(event_signing_key, str):
             raise RuntimeError("GitHub Integration Service returned invalid connection credentials")
-        credentials = {
-            "DIFFUSE_GITHUB_INTEGRATION_URL": base_url,
-            "DIFFUSE_GITHUB_INTEGRATION_TOKEN": instance_token,
-            "DIFFUSE_GITHUB_DELIVERY_SIGNING_KEY": event_signing_key,
-            "installation_id": payload.get("installation_id"),
-            "instance_id": payload.get("instance_id"),
-        }
-        if write_path is not None and write_fd is not None:
-            try:
-                _write_env_file(write_fd, credentials)
-            except OSError as error:
-                print(
-                    f"Warning: failed to write {write_path}: {error}. "
-                    "Printing one-time connection secrets to stdout so they are not lost.",
-                    file=sys.stderr,
-                )
-                print(json.dumps(credentials, indent=2, sort_keys=True))
-                raise RuntimeError(f"Could not write connection secrets to {write_path}") from error
-            finally:
-                # _write_env_file always consumes and closes the descriptor.
-                write_fd = None
-            print(
-                json.dumps(
-                    {
-                        "wrote_env": str(write_path),
-                        "installation_id": credentials["installation_id"],
-                        "instance_id": credentials["instance_id"],
-                        "secrets_shown_once": True,
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return
-        print(
-            "Warning: printing one-time connection secrets to stdout. "
-            "Prefer --write-env PATH (mode 0600).",
-            file=sys.stderr,
+        _emit_credentials(
+            base_url=base_url,
+            instance_token=instance_token,
+            event_signing_key=event_signing_key,
+            installation_id=payload.get("installation_id"),
+            instance_id=payload.get("instance_id"),
+            write_path=write_path,
+            write_fd=write_fd,
         )
-        print(json.dumps(credentials, indent=2, sort_keys=True))
     except httpx.HTTPError as error:
         raise RuntimeError(f"Could not reach the GitHub Integration Service: {error}") from error
+
+
+def _connect_with_browser(
+    args: argparse.Namespace, *, write_path: Path | None, write_fd: int | None
+) -> None:
+    base_url = normalize_base_url(args.url.rstrip("/"), field_name="--url")
+    if not base_url.startswith("https://"):
+        raise ValueError("--url must be an HTTPS origin")
+    try:
+        create_response = httpx.post(
+            f"{base_url}/v1/connect/sessions",
+            json={"display_name": args.name},
+            timeout=scm_api_timeout_seconds(),
+        )
+    except httpx.HTTPError as error:
+        raise RuntimeError(f"Could not reach the GitHub Integration Service: {error}") from error
+    if create_response.status_code >= httpx.codes.BAD_REQUEST:
+        raise ValueError(
+            "GitHub Integration Service rejected the connect session "
+            f"(HTTP {create_response.status_code})"
+        )
+    try:
+        created = create_response.json()
+        session_id = created["session_id"]
+        poll_secret = created["poll_secret"]
+        browser_url = created["browser_url"]
+        expires_in = int(created.get("expires_in_seconds") or _DEFAULT_POLL_TIMEOUT_SECONDS)
+    except (ValueError, KeyError, TypeError) as error:
+        raise RuntimeError(
+            "GitHub Integration Service returned an invalid connect session response"
+        ) from error
+    if not isinstance(session_id, str) or not isinstance(poll_secret, str):
+        raise RuntimeError("GitHub Integration Service returned invalid connect session secrets")
+    if not isinstance(browser_url, str) or not browser_url.startswith("https://"):
+        raise RuntimeError("GitHub Integration Service returned an invalid browser URL")
+
+    opened = False
+    if not args.no_browser:
+        try:
+            opened = bool(webbrowser.open(browser_url))
+        except webbrowser.Error:
+            opened = False
+    if opened:
+        print(f"Opened browser to connect GitHub. Waiting for authorization…", file=sys.stderr)
+    else:
+        print(
+            "Open this URL to connect GitHub:\n"
+            f"  {browser_url}\n"
+            "Waiting for authorization…",
+            file=sys.stderr,
+        )
+
+    deadline = time.monotonic() + max(30, expires_in)
+    while time.monotonic() < deadline:
+        try:
+            poll_response = httpx.get(
+                f"{base_url}/v1/connect/sessions/{session_id}",
+                headers={"Authorization": f"Bearer {poll_secret}"},
+                timeout=scm_api_timeout_seconds(),
+            )
+        except httpx.HTTPError as error:
+            raise RuntimeError(
+                f"Could not reach the GitHub Integration Service: {error}"
+            ) from error
+        if poll_response.status_code == httpx.codes.NOT_FOUND:
+            raise ValueError("Connect session was not found")
+        if poll_response.status_code == httpx.codes.GONE:
+            detail = "Connect session expired or credentials were already claimed"
+            try:
+                detail = str(poll_response.json().get("detail") or detail)
+            except ValueError:
+                pass
+            raise ValueError(detail)
+        if poll_response.status_code >= httpx.codes.BAD_REQUEST:
+            detail = "connect session failed"
+            try:
+                detail = str(poll_response.json().get("detail") or detail)
+            except ValueError:
+                pass
+            raise ValueError(detail)
+        try:
+            payload = poll_response.json()
+        except ValueError as error:
+            raise RuntimeError(
+                "GitHub Integration Service returned invalid connect poll JSON"
+            ) from error
+        status = payload.get("status")
+        if status == "pending":
+            time.sleep(_POLL_INTERVAL_SECONDS)
+            continue
+        if status != "ready":
+            raise RuntimeError(f"Unexpected connect session status: {status!r}")
+        instance_token = payload.get("instance_token")
+        event_signing_key = payload.get("event_signing_key")
+        if not isinstance(instance_token, str) or not isinstance(event_signing_key, str):
+            raise RuntimeError("GitHub Integration Service returned invalid connection credentials")
+        _emit_credentials(
+            base_url=base_url,
+            instance_token=instance_token,
+            event_signing_key=event_signing_key,
+            installation_id=payload.get("installation_id"),
+            instance_id=payload.get("instance_id"),
+            write_path=write_path,
+            write_fd=write_fd,
+        )
+        return
+    raise TimeoutError(
+        "Timed out waiting for GitHub authorization. Re-run "
+        "`diffuse github connect --name …` and complete the browser step."
+    )
+
+
+def _connect(args: argparse.Namespace) -> None:
+    write_path: Path | None = None
+    write_fd: int | None = None
+    if args.write_env is not None:
+        # Validate and lock down the destination before redeeming one-time
+        # credentials so a local write failure cannot burn the session/code.
+        write_path, write_fd = _prepare_write_env_path(Path(args.write_env))
+    try:
+        if args.code:
+            _connect_with_code(args, write_path=write_path, write_fd=write_fd)
+            write_fd = None
+            return
+        _connect_with_browser(args, write_path=write_path, write_fd=write_fd)
+        write_fd = None
     finally:
         if write_fd is not None:
             os.close(write_fd)
@@ -220,7 +363,18 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "connect",
         help="Connect this self-hosted instance to the Diffuse GitHub App",
     )
-    connect.add_argument("code", help="One-time code shown after the GitHub App setup callback")
+    connect.add_argument(
+        "code",
+        nargs="?",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    connect.add_argument(
+        "--code",
+        dest="code_flag",
+        default=None,
+        help="Optional one-time code from the setup page (advanced; prefer browser flow)",
+    )
     connect.add_argument(
         "--name",
         required=True,
@@ -239,7 +393,12 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
             "them to stdout"
         ),
     )
-    connect.set_defaults(handler=_connect)
+    connect.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Print the authorization URL instead of opening a browser",
+    )
+    connect.set_defaults(handler=_connect_entry)
 
     status = subparsers.add_parser(
         "status",
@@ -262,3 +421,9 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         help="Override DIFFUSE_GITHUB_INTEGRATION_URL",
     )
     disconnect.set_defaults(handler=_disconnect)
+
+
+def _connect_entry(args: argparse.Namespace) -> None:
+    code = args.code_flag or args.code
+    args.code = code
+    _connect(args)

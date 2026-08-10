@@ -453,11 +453,22 @@ def test_hosted_webhook_suspends_without_revoking_instances(monkeypatch):
 
 
 def test_callback_returns_html_for_browsers(monkeypatch):
-    monkeypatch.setattr(hosted_app, "consume_oauth_state", lambda state: 42)
+    from github_integration.github import GitHubInstallation
+    from github_integration.store import OAuthStateTarget
+
+    monkeypatch.setattr(
+        hosted_app,
+        "consume_oauth_state",
+        lambda state: OAuthStateTarget(installation_id=42, connect_session_id=None),
+    )
     monkeypatch.setattr(
         hosted_app,
         "exchange_oauth_code",
-        lambda code: (1, "owner", {42}),
+        lambda code: (
+            1,
+            "owner",
+            (GitHubInstallation(id=42, account_login="acme", account_type="Organization"),),
+        ),
     )
     monkeypatch.setattr(hosted_app, "record_verified_installation", lambda *args, **kwargs: None)
     monkeypatch.setattr(hosted_app, "create_enrollment_code", lambda installation_id: "c" * 40)
@@ -469,16 +480,29 @@ def test_callback_returns_html_for_browsers(monkeypatch):
         hosted_app.github_callback(CallbackRequest(), code="oauth-code", state="state")
     )
     assert isinstance(response, hosted_app.HTMLResponse)
-    assert "diffuse github connect" in response.body.decode()
-    assert "c" * 40 in response.body.decode()
+    body = response.body.decode()
+    assert "diffuse github connect --name" in body
+    assert "Advanced: one-time connection code" in body
+    assert "c" * 40 in body
 
 
 def test_callback_returns_json_when_requested(monkeypatch):
-    monkeypatch.setattr(hosted_app, "consume_oauth_state", lambda state: 42)
+    from github_integration.github import GitHubInstallation
+    from github_integration.store import OAuthStateTarget
+
+    monkeypatch.setattr(
+        hosted_app,
+        "consume_oauth_state",
+        lambda state: OAuthStateTarget(installation_id=42, connect_session_id=None),
+    )
     monkeypatch.setattr(
         hosted_app,
         "exchange_oauth_code",
-        lambda code: (1, "owner", {42}),
+        lambda code: (
+            1,
+            "owner",
+            (GitHubInstallation(id=42, account_login="acme", account_type="Organization"),),
+        ),
     )
     monkeypatch.setattr(hosted_app, "record_verified_installation", lambda *args, **kwargs: None)
     monkeypatch.setattr(hosted_app, "create_enrollment_code", lambda installation_id: "c" * 40)
@@ -491,6 +515,86 @@ def test_callback_returns_json_when_requested(monkeypatch):
     )
     assert isinstance(response, hosted_app.JSONResponse)
     assert json.loads(response.body.decode())["connection_code"] == "c" * 40
+
+
+def test_connect_session_callback_auto_binds_single_installation(monkeypatch):
+    from github_integration.github import GitHubInstallation
+    from github_integration.store import InstanceCredentials, OAuthStateTarget
+
+    session_id = "11111111-1111-1111-1111-111111111111"
+    monkeypatch.setattr(
+        hosted_app,
+        "consume_oauth_state",
+        lambda state: OAuthStateTarget(installation_id=None, connect_session_id=session_id),
+    )
+    monkeypatch.setattr(
+        hosted_app,
+        "exchange_oauth_code",
+        lambda code: (
+            9,
+            "owner",
+            (GitHubInstallation(id=42, account_login="acme", account_type="Organization"),),
+        ),
+    )
+    monkeypatch.setattr(
+        hosted_app,
+        "get_pending_connect_session",
+        lambda sid: hosted_store.ConnectSessionRow(
+            session_id=sid,
+            display_name="prod",
+            status="pending",
+            installation_id=None,
+            candidate_installations=(),
+            authorized_github_user_id=None,
+            authorized_github_login=None,
+            error_message=None,
+            expires_at="2026-08-10T00:00:00+00:00",
+        ),
+    )
+    completed: list[object] = []
+
+    def fake_complete(sid, **kwargs):
+        completed.append((sid, kwargs))
+        return InstanceCredentials(
+            instance_id="inst-1",
+            instance_token="token",
+            event_signing_key="signing",
+            installation_id=42,
+        )
+
+    monkeypatch.setattr(hosted_app, "complete_connect_session", fake_complete)
+
+    class CallbackRequest:
+        headers = {"accept": "text/html"}
+        cookies = {}
+
+    response = asyncio.run(
+        hosted_app.github_callback(CallbackRequest(), code="oauth-code", state="state")
+    )
+    assert isinstance(response, hosted_app.HTMLResponse)
+    assert "close this window" in response.body.decode().lower()
+    assert completed[0][0] == session_id
+    assert completed[0][1]["installation_id"] == 42
+
+
+def test_connect_sessions_create_returns_browser_url(monkeypatch):
+    monkeypatch.setattr(
+        hosted_app,
+        "create_connect_session",
+        lambda *, display_name: hosted_store.ConnectSessionCreated(
+            session_id="11111111-1111-1111-1111-111111111111",
+            poll_secret="poll-secret",
+            expires_in_seconds=900,
+        ),
+    )
+    monkeypatch.setattr(hosted_app, "public_url", lambda: "https://api.diffuse.website")
+    payload = asyncio.run(
+        hosted_app.connect_sessions_create(hosted_app.ConnectSessionRequest(display_name="prod"))
+    )
+    assert payload["browser_url"].endswith(
+        "/auth/github/connect/11111111-1111-1111-1111-111111111111"
+    )
+    assert payload["poll_secret"] == "poll-secret"
 
 
 def test_instances_me_reports_not_ready_when_installation_inactive(monkeypatch):

@@ -34,6 +34,7 @@ def test_connect_write_env_keeps_secrets_out_of_stdout(monkeypatch, tmp_path, ca
             name="prod",
             url="https://api.diffuse.website",
             write_env=str(path),
+            no_browser=False,
         )
     )
     printed = capsys.readouterr()
@@ -53,6 +54,7 @@ def test_connect_stdout_warns_about_one_time_secrets(monkeypatch, capsys):
             name="prod",
             url="https://api.diffuse.website",
             write_env=None,
+            no_browser=False,
         )
     )
     printed = capsys.readouterr()
@@ -78,6 +80,7 @@ def test_connect_write_env_validates_path_before_register(monkeypatch, tmp_path)
                 name="prod",
                 url="https://api.diffuse.website",
                 write_env=str(blocker / "github.env"),
+                no_browser=False,
             )
         )
     assert calls == []
@@ -103,6 +106,7 @@ def test_connect_write_env_rejects_a_symlink_before_register(monkeypatch, tmp_pa
                 name="prod",
                 url="https://api.diffuse.website",
                 write_env=str(path),
+                no_browser=False,
             )
         )
 
@@ -154,6 +158,7 @@ def test_connect_write_env_locks_existing_permissive_file_before_secrets(
             name="prod",
             url="https://api.diffuse.website",
             write_env=str(path),
+            no_browser=False,
         )
     )
     assert modes_during_write
@@ -161,6 +166,69 @@ def test_connect_write_env_locks_existing_permissive_file_before_secrets(
     assert path.stat().st_mode & 0o777 == 0o600
     assert "token-secret" in path.read_text()
     assert "token-secret" not in capsys.readouterr().out
+
+
+class _SessionCreateResponse:
+    status_code = 200
+
+    def json(self):
+        return {
+            "session_id": "11111111-1111-1111-1111-111111111111",
+            "poll_secret": "poll-secret",
+            "browser_url": "https://api.diffuse.website/auth/github/connect/"
+            "11111111-1111-1111-1111-111111111111",
+            "expires_in_seconds": 900,
+        }
+
+
+class _SessionReadyResponse:
+    status_code = 200
+
+    def json(self):
+        return {
+            "status": "ready",
+            "instance_id": "inst-1",
+            "installation_id": 42,
+            "instance_token": "token-secret",
+            "event_signing_key": "signing-secret",
+            "secrets_shown_once": True,
+        }
+
+
+def test_connect_browser_flow_polls_until_ready(monkeypatch, tmp_path, capsys):
+    posts: list[object] = []
+    gets: list[object] = []
+
+    def fake_post(url, **kwargs):
+        posts.append(url)
+        return _SessionCreateResponse()
+
+    def fake_get(url, **kwargs):
+        gets.append(url)
+        return _SessionReadyResponse()
+
+    monkeypatch.setattr(github_cli.httpx, "post", fake_post)
+    monkeypatch.setattr(github_cli.httpx, "get", fake_get)
+    monkeypatch.setattr(github_cli.webbrowser, "open", lambda url: False)
+    path = tmp_path / "github.env"
+    github_cli._connect(
+        argparse.Namespace(
+            code=None,
+            name="prod",
+            url="https://api.diffuse.website",
+            write_env=str(path),
+            no_browser=True,
+        )
+    )
+    assert posts == ["https://api.diffuse.website/v1/connect/sessions"]
+    assert gets == [
+        "https://api.diffuse.website/v1/connect/sessions/"
+        "11111111-1111-1111-1111-111111111111"
+    ]
+    printed = capsys.readouterr()
+    assert "token-secret" not in printed.out
+    assert "Open this URL" in printed.err
+    assert path.read_text().count("token-secret") == 1
 
 
 class _StatusResponse:

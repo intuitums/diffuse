@@ -5,9 +5,11 @@ DO $schema$
 BEGIN
     CREATE TABLE IF NOT EXISTS setup_oauth_states (
         state_hash TEXT PRIMARY KEY,
-        installation_id BIGINT NOT NULL CHECK (installation_id > 0),
+        installation_id BIGINT CHECK (installation_id IS NULL OR installation_id > 0),
+        connect_session_id UUID,
         expires_at TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CHECK (installation_id IS NOT NULL OR connect_session_id IS NOT NULL)
     );
 
     CREATE TABLE IF NOT EXISTS app_installations (
@@ -27,6 +29,29 @@ BEGIN
         redeemed_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    CREATE TABLE IF NOT EXISTS connect_sessions (
+        id UUID PRIMARY KEY,
+        poll_secret_hash TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'consumed', 'failed')),
+        github_installation_id BIGINT REFERENCES app_installations (github_installation_id)
+            ON DELETE SET NULL,
+        instance_id UUID,
+        instance_token_sealed TEXT,
+        event_signing_key_sealed TEXT,
+        candidate_installations JSONB,
+        authorized_github_user_id BIGINT,
+        authorized_github_login TEXT,
+        error_message TEXT,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS connect_sessions_pending_expires_idx
+        ON connect_sessions (expires_at)
+        WHERE status = 'pending';
 
     -- event_signing_key is AES-GCM sealed under
     -- DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK (see sealed_secret.py).
@@ -72,5 +97,21 @@ BEGIN
     CREATE INDEX IF NOT EXISTS webhook_event_deliveries_pending_idx
         ON webhook_event_deliveries (instance_id, leased_until, created_at)
         WHERE acknowledged_at IS NULL;
+
+    ALTER TABLE setup_oauth_states
+        ADD COLUMN IF NOT EXISTS connect_session_id UUID;
+
+    ALTER TABLE connect_sessions
+        ADD COLUMN IF NOT EXISTS authorized_github_user_id BIGINT;
+
+    ALTER TABLE connect_sessions
+        ADD COLUMN IF NOT EXISTS authorized_github_login TEXT;
+
+    BEGIN
+        ALTER TABLE setup_oauth_states
+            ALTER COLUMN installation_id DROP NOT NULL;
+    EXCEPTION
+        WHEN others THEN NULL;
+    END;
 END;
 $schema$;

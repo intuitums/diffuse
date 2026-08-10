@@ -80,6 +80,18 @@ def token_key() -> bytes:
 CREDENTIAL_KEK_VARIABLE = "DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK"
 CREDENTIAL_KEK_PREVIOUS_VARIABLE = "DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK_PREVIOUS"
 EVENT_SIGNING_KEY_AAD = "github_integration.event_signing_key"
+CONNECT_INSTANCE_TOKEN_AAD = "github_integration.connect_instance_token"
+CONNECT_EVENT_SIGNING_KEY_AAD = "github_integration.connect_event_signing_key"
+DEFAULT_GITHUB_APP_SLUG = "diffuse-agent"
+
+
+def github_app_slug() -> str:
+    """Public slug used for the install URL (github.com/apps/<slug>)."""
+    return optional("GITHUB_APP_SLUG") or DEFAULT_GITHUB_APP_SLUG
+
+
+def github_app_install_url() -> str:
+    return f"https://github.com/apps/{github_app_slug()}/installations/new"
 
 
 def credential_keks() -> tuple[bytes, ...]:
