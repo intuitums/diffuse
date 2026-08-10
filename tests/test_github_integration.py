@@ -481,9 +481,10 @@ def test_callback_returns_html_for_browsers(monkeypatch):
     )
     assert isinstance(response, hosted_app.HTMLResponse)
     body = response.body.decode()
-    assert "diffuse github connect --name" in body
+    assert "diffuse github connect" in body
     assert "Advanced: one-time connection code" in body
     assert "c" * 40 in body
+    assert "--name" not in body.split("Advanced")[0]
 
 
 def test_callback_returns_json_when_requested(monkeypatch):

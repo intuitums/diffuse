@@ -24,19 +24,18 @@ repositories you want reviewed (most operators do this first). Then, on the
 machine that runs self-hosted Diffuse, connect that installation:
 
 ```bash
-diffuse github connect --name 'production-reviewer' \
-  --write-env /etc/diffuse/github-integration.env
+diffuse github connect
 diffuse github status
 ```
 
 The CLI opens a browser, asks you to authorize GitHub, and — when you already
-have the App installed — binds that installation and writes credentials. If the
-App is not installed yet, the browser page links to the install flow and returns
-to the same CLI session afterward.
+have the App installed — binds that installation and writes credentials to
+`./github-integration.env` (mode 0600). The instance label defaults to this
+machine's hostname. If the App is not installed yet, the browser page links to
+the install flow and returns to the same CLI session afterward.
 
-Prefer `--write-env` (mode 0600) over printing secrets to stdout. Credentials are
-returned exactly once; set them in the self-hosted deployment's secret-managed
-environment. The required values are:
+Credentials are returned exactly once; load that env file (or copy the values
+into your deployment's secret store). The required values are:
 
 ```dotenv
 DIFFUSE_GITHUB_INTEGRATION_URL=https://api.diffuse.website

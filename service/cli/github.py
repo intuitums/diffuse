@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import socket
 import stat
 import sys
 import time
@@ -22,6 +24,20 @@ _ENV_KEYS = (
 )
 _POLL_INTERVAL_SECONDS = 2.0
 _DEFAULT_POLL_TIMEOUT_SECONDS = 15 * 60
+_DEFAULT_ENV_FILENAME = "github-integration.env"
+_NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def default_instance_name() -> str:
+    """Label this host in the Integration Service (status/diagnostics only)."""
+    host = socket.gethostname().strip() or "diffuse"
+    cleaned = _NAME_SANITIZE.sub("-", host).strip("-._")
+    return (cleaned or "diffuse")[:200]
+
+
+def default_write_env_path() -> Path:
+    """Write one-time connection secrets next to where the operator ran the CLI."""
+    return Path.cwd() / _DEFAULT_ENV_FILENAME
 
 
 def _emit_credentials(
@@ -68,7 +84,7 @@ def _emit_credentials(
         return
     print(
         "Warning: printing one-time connection secrets to stdout. "
-        "Prefer --write-env PATH (mode 0600).",
+        f"Re-run without --print-secrets to write {_DEFAULT_ENV_FILENAME} (mode 0600).",
         file=sys.stderr,
     )
     print(json.dumps(credentials, indent=2, sort_keys=True))
@@ -218,17 +234,24 @@ def _connect_with_browser(
         return
     raise TimeoutError(
         "Timed out waiting for GitHub authorization. Re-run "
-        "`diffuse github connect --name …` and complete the browser step."
+        "`diffuse github connect` and complete the browser step."
     )
 
 
 def _connect(args: argparse.Namespace) -> None:
+    if not getattr(args, "name", None):
+        args.name = default_instance_name()
     write_path: Path | None = None
     write_fd: int | None = None
-    if args.write_env is not None:
-        # Validate and lock down the destination before redeeming one-time
+    print_secrets = bool(getattr(args, "print_secrets", False))
+    write_env = getattr(args, "write_env", None)
+    if print_secrets and write_env is not None:
+        raise ValueError("Use either --write-env PATH or --print-secrets, not both")
+    if not print_secrets:
+        # Default: lock down github-integration.env before redeeming one-time
         # credentials so a local write failure cannot burn the session/code.
-        write_path, write_fd = _prepare_write_env_path(Path(args.write_env))
+        destination = Path(write_env) if write_env is not None else default_write_env_path()
+        write_path, write_fd = _prepare_write_env_path(destination)
     try:
         if args.code:
             _connect_with_code(args, write_path=write_path, write_fd=write_fd)
@@ -377,8 +400,11 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     )
     connect.add_argument(
         "--name",
-        required=True,
-        help="Human-readable name for this self-hosted Diffuse instance",
+        default=None,
+        help=(
+            "Optional label for this instance in status/diagnostics "
+            f"(default: this machine's hostname, e.g. {default_instance_name()})"
+        ),
     )
     connect.add_argument(
         "--url",
@@ -388,10 +414,16 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     connect.add_argument(
         "--write-env",
         metavar="PATH",
+        default=None,
         help=(
-            "Write connection secrets to PATH with mode 0600 instead of printing "
-            "them to stdout"
+            f"Override where connection secrets are written (default: ./{_DEFAULT_ENV_FILENAME}, "
+            "mode 0600)"
         ),
+    )
+    connect.add_argument(
+        "--print-secrets",
+        action="store_true",
+        help="Print one-time secrets to stdout instead of writing an env file",
     )
     connect.add_argument(
         "--no-browser",

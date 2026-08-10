@@ -93,8 +93,8 @@ FastAPI ASGI application and `vercel.json` rewrites all API paths to it.
 `GET /health` is intentionally configuration-free. It proves the deployment is
 reachable but does not claim that GitHub, OAuth, or PostgreSQL has been
 configured. Validate those by installing the Diffuse GitHub App once, then
-running `diffuse github connect --name …` from a self-hosted instance (browser
-flow against `/v1/connect/sessions`).
+running `diffuse github connect` from a self-hosted instance (browser flow
+against `/v1/connect/sessions`).
 
 Apply `vercel_schema.sql` (or `python -m github_integration.migrate`) after
 pulling connect-session schema changes so `connect_sessions` and the nullable

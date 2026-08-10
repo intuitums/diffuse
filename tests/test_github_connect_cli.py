@@ -25,18 +25,23 @@ class _Response:
         }
 
 
+def _connect_args(**overrides):
+    values = {
+        "code": "c" * 40,
+        "name": "prod",
+        "url": "https://api.diffuse.website",
+        "write_env": None,
+        "print_secrets": False,
+        "no_browser": False,
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
 def test_connect_write_env_keeps_secrets_out_of_stdout(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(github_cli.httpx, "post", lambda *args, **kwargs: _Response())
     path = tmp_path / "github.env"
-    github_cli._connect(
-        argparse.Namespace(
-            code="c" * 40,
-            name="prod",
-            url="https://api.diffuse.website",
-            write_env=str(path),
-            no_browser=False,
-        )
-    )
+    github_cli._connect(_connect_args(write_env=str(path)))
     printed = capsys.readouterr()
     assert "token-secret" not in printed.out
     assert "signing-secret" not in printed.out
@@ -46,19 +51,31 @@ def test_connect_write_env_keeps_secrets_out_of_stdout(monkeypatch, tmp_path, ca
     assert "DIFFUSE_GITHUB_DELIVERY_SIGNING_KEY=signing-secret" in text
 
 
-def test_connect_stdout_warns_about_one_time_secrets(monkeypatch, capsys):
+def test_connect_defaults_to_github_integration_env_and_hostname(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(github_cli.socket, "gethostname", lambda: "reviewer-1.local")
+    captured: list[dict[str, object]] = []
+
+    def fake_post(url, **kwargs):
+        captured.append(kwargs.get("json") or {})
+        return _Response()
+
+    monkeypatch.setattr(github_cli.httpx, "post", fake_post)
+    github_cli._connect(_connect_args(code="c" * 40, name=None, write_env=None))
+    assert captured[0]["display_name"] == "reviewer-1.local"
+    path = tmp_path / "github-integration.env"
+    assert path.is_file()
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert "token-secret" not in capsys.readouterr().out
+
+
+def test_connect_print_secrets_warns_about_one_time_secrets(monkeypatch, capsys):
     monkeypatch.setattr(github_cli.httpx, "post", lambda *args, **kwargs: _Response())
-    github_cli._connect(
-        argparse.Namespace(
-            code="c" * 40,
-            name="prod",
-            url="https://api.diffuse.website",
-            write_env=None,
-            no_browser=False,
-        )
-    )
+    github_cli._connect(_connect_args(print_secrets=True))
     printed = capsys.readouterr()
-    assert "Prefer --write-env" in printed.err
+    assert "github-integration.env" in printed.err
     payload = json.loads(printed.out)
     assert payload["DIFFUSE_GITHUB_INTEGRATION_TOKEN"] == "token-secret"
 
@@ -74,15 +91,7 @@ def test_connect_write_env_validates_path_before_register(monkeypatch, tmp_path)
     blocker = tmp_path / "not-a-directory"
     blocker.write_text("file")
     with pytest.raises(ValueError, match="not writable"):
-        github_cli._connect(
-            argparse.Namespace(
-                code="c" * 40,
-                name="prod",
-                url="https://api.diffuse.website",
-                write_env=str(blocker / "github.env"),
-                no_browser=False,
-            )
-        )
+        github_cli._connect(_connect_args(write_env=str(blocker / "github.env")))
     assert calls == []
 
 
@@ -100,15 +109,7 @@ def test_connect_write_env_rejects_a_symlink_before_register(monkeypatch, tmp_pa
     path.symlink_to(target)
 
     with pytest.raises(ValueError, match="not writable"):
-        github_cli._connect(
-            argparse.Namespace(
-                code="c" * 40,
-                name="prod",
-                url="https://api.diffuse.website",
-                write_env=str(path),
-                no_browser=False,
-            )
-        )
+        github_cli._connect(_connect_args(write_env=str(path)))
 
     assert calls == []
     assert target.read_text() == "ATTACKER=1\n"
@@ -152,15 +153,7 @@ def test_connect_write_env_locks_existing_permissive_file_before_secrets(
     monkeypatch.setattr(github_cli.httpx, "post", lambda *args, **kwargs: _Response())
     monkeypatch.setattr(github_cli.os, "fdopen", tracking_fdopen)
 
-    github_cli._connect(
-        argparse.Namespace(
-            code="c" * 40,
-            name="prod",
-            url="https://api.diffuse.website",
-            write_env=str(path),
-            no_browser=False,
-        )
-    )
+    github_cli._connect(_connect_args(write_env=str(path)))
     assert modes_during_write
     assert all(mode == 0o600 for mode in modes_during_write)
     assert path.stat().st_mode & 0o777 == 0o600
@@ -211,15 +204,7 @@ def test_connect_browser_flow_polls_until_ready(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(github_cli.httpx, "get", fake_get)
     monkeypatch.setattr(github_cli.webbrowser, "open", lambda url: False)
     path = tmp_path / "github.env"
-    github_cli._connect(
-        argparse.Namespace(
-            code=None,
-            name="prod",
-            url="https://api.diffuse.website",
-            write_env=str(path),
-            no_browser=True,
-        )
-    )
+    github_cli._connect(_connect_args(code=None, write_env=str(path), no_browser=True))
     assert posts == ["https://api.diffuse.website/v1/connect/sessions"]
     assert gets == [
         "https://api.diffuse.website/v1/connect/sessions/"

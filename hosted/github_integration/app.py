@@ -239,17 +239,15 @@ def _setup_without_cli_page(*, installation_id: int, connection_code: str) -> st
     <p>Installation <strong>{installation_id}</strong> is verified.</p>
     <p>On the machine that runs Diffuse, finish connecting from the CLI
     (preferred — opens this browser flow automatically):</p>
-    <pre class="code">diffuse github connect --name '&lt;instance-name&gt;' \\
-  --write-env /path/to/github-integration.env</pre>
+    <pre class="code">diffuse github connect</pre>
     <p class="hint">If you already started that command in another window, return
-    there — it will pick up this installation.</p>
+    there — it will pick up this installation. Secrets land in
+    <code>./github-integration.env</code>.</p>
     <details>
       <summary>Advanced: one-time connection code</summary>
       <p class="hint">Only needed if the CLI cannot open a browser.</p>
       <code class="code">{safe_code}</code>
-      <pre class="code">diffuse github connect --code '{safe_code}' \\
-  --name '&lt;instance-name&gt;' \\
-  --write-env /path/to/github-integration.env</pre>
+      <pre class="code">diffuse github connect --code '{safe_code}'</pre>
     </details>
 """,
     )
