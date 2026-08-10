@@ -19,16 +19,17 @@ deliveries over its existing outbound HTTPS connection.
 
 ## Connect the Diffuse GitHub App
 
-Install the Diffuse GitHub App. Its callback opens the GitHub connection flow,
-where an organization owner confirms that they control the installation. The
-flow shows a single-use connection code.
-
-On the machine that runs self-hosted Diffuse, claim that code:
+On the machine that runs self-hosted Diffuse:
 
 ```bash
-diffuse github connect '<one-time-code>' --name 'production-reviewer' \
+diffuse github connect --name 'production-reviewer' \
   --write-env /etc/diffuse/github-integration.env
 ```
+
+The CLI opens a browser against the GitHub Integration Service. If the Diffuse
+GitHub App is already installed, authorize and pick that installation. If it is
+not installed yet, the same session sends you through App install and then
+finishes. The CLI polls until credentials are ready.
 
 Prefer `--write-env` (mode 0600) over printing secrets to stdout. The command
 returns credentials exactly once; set them in the self-hosted deployment's secret-managed

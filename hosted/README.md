@@ -31,6 +31,7 @@ DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK=...               # base64url, exactly
 # Optional dual-read key during rotation:
 # DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK_PREVIOUS=...
 GITHUB_APP_ID=...
+GITHUB_APP_SLUG=...                             # public slug used for install URLs
 GITHUB_APP_PRIVATE_KEY=...                      # Diffuse GitHub App PEM; literal \n is accepted
 GITHUB_WEBHOOK_SECRET=...
 GITHUB_OAUTH_CLIENT_ID=...
@@ -89,8 +90,8 @@ FastAPI ASGI application and `vercel.json` rewrites all API paths to it.
 
 `GET /health` is intentionally configuration-free. It proves the deployment is
 reachable but does not claim that GitHub, OAuth, or PostgreSQL has been
-configured. Validate those by completing one installation and claiming its
-one-time connection code from a self-hosted Diffuse instance.
+configured. Validate those by running `diffuse github connect --name …` from a
+self-hosted Diffuse instance and completing the browser authorization flow.
 
 ## Operational limits
 

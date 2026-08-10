@@ -317,3 +317,127 @@ def test_hosted_webhook_insert_binds_each_placeholder_once(monkeypatch):
         payload_sha256="hash",
     )
     assert len(statements) == 2
+
+
+def test_setup_callback_without_cli_tells_operator_to_run_connect(monkeypatch):
+    monkeypatch.setattr(
+        hosted_app,
+        "consume_oauth_state",
+        lambda _state: hosted_store.OAuthState(installation_id=42, connect_session_id=None),
+    )
+    monkeypatch.setattr(
+        hosted_app,
+        "exchange_oauth_code",
+        lambda _code: (
+            7,
+            "octocat",
+            (hosted_app.GitHubInstallationSummary(42, "acme", "Organization"),),
+        ),
+    )
+    recorded: list[tuple[int, int, str]] = []
+    monkeypatch.setattr(
+        hosted_app,
+        "record_verified_installation",
+        lambda installation_id, *, github_user_id, github_login: recorded.append(
+            (installation_id, github_user_id, github_login)
+        ),
+    )
+
+    class _Request:
+        headers = {"accept": "text/html"}
+
+    response = asyncio.run(hosted_app.github_callback(_Request(), code="oauth-code", state="state"))
+    assert response.status_code == 200
+    assert "diffuse github connect" in response.body.decode()
+    assert "connection code" not in response.body.decode().lower()
+    assert recorded == [(42, 7, "octocat")]
+
+
+def test_connect_session_claim_returns_credentials_once(monkeypatch):
+    created = hosted_store.ConnectSessionCreated(
+        session_id="sess-1",
+        poll_token="poll-secret",
+        browser_url="https://api.diffuse.website/connect/sess-1",
+        expires_in_seconds=900,
+    )
+    monkeypatch.setattr(hosted_app, "public_url", lambda: "https://api.diffuse.website")
+    monkeypatch.setattr(
+        hosted_app,
+        "create_connect_session",
+        lambda **kwargs: created,
+    )
+
+    create_response = asyncio.run(
+        hosted_app.connect_sessions_create(
+            hosted_app.ConnectSessionRequest(display_name="prod")
+        )
+    )
+    assert create_response["browser_url"].endswith("/connect/sess-1")
+    assert create_response["poll_token"] == "poll-secret"
+
+    credentials = hosted_store.InstanceCredentials(
+        instance_id="inst-1",
+        instance_token="token-secret",
+        event_signing_key="signing-secret",
+        installation_id=42,
+    )
+    claims = iter([("pending", None), ("ready", credentials), ("consumed", None)])
+    monkeypatch.setattr(
+        hosted_app,
+        "claim_connect_session",
+        lambda session_id, *, poll_token: next(claims),
+    )
+
+    pending = asyncio.run(
+        hosted_app.connect_sessions_poll("sess-1", authorization="Bearer poll-secret")
+    )
+    assert pending == {"status": "pending"}
+    ready = asyncio.run(
+        hosted_app.connect_sessions_poll("sess-1", authorization="Bearer poll-secret")
+    )
+    assert ready["instance_token"] == "token-secret"
+    assert ready["secrets_shown_once"] is True
+    consumed = asyncio.run(
+        hosted_app.connect_sessions_poll("sess-1", authorization="Bearer poll-secret")
+    )
+    assert consumed == {"status": "consumed"}
+
+
+def test_connect_browser_starts_oauth_for_session(monkeypatch):
+    monkeypatch.setattr(
+        hosted_app,
+        "get_connect_session",
+        lambda _session_id: hosted_store.ConnectSession(
+            id="sess-1",
+            display_name="prod",
+            status="pending",
+            github_user_id=None,
+            github_login=None,
+            allowed_installation_ids=(),
+            github_installation_id=None,
+            error_message=None,
+            expired=False,
+        ),
+    )
+    monkeypatch.setattr(
+        hosted_app,
+        "create_oauth_state",
+        lambda installation_id=None, *, connect_session_id=None: "oauth-state",
+    )
+    monkeypatch.setattr(
+        hosted_app,
+        "oauth_authorize_url",
+        lambda state: f"https://github.com/login/oauth/authorize?state={state}",
+    )
+
+    response = asyncio.run(hosted_app.connect_browser("sess-1"))
+    assert response.status_code == 302
+    assert response.headers["location"].endswith("state=oauth-state")
+
+
+def test_github_app_slug_config(monkeypatch):
+    monkeypatch.setenv("GITHUB_APP_SLUG", "diffuse-review-agent")
+    assert hosted_config.github_app_slug() == "diffuse-review-agent"
+    monkeypatch.setenv("GITHUB_APP_SLUG", "bad slug")
+    with pytest.raises(hosted_config.HostedConfigurationError, match="GITHUB_APP_SLUG"):
+        hosted_config.github_app_slug()

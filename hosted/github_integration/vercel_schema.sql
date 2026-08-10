@@ -3,12 +3,44 @@
 -- This has the same idempotent schema as schema.sql.
 DO $schema$
 BEGIN
+    CREATE TABLE IF NOT EXISTS connect_sessions (
+        id UUID PRIMARY KEY,
+        poll_token_hash TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (
+            status IN ('pending', 'authorized', 'ready', 'consumed', 'failed')
+        ),
+        github_user_id BIGINT CHECK (github_user_id IS NULL OR github_user_id > 0),
+        github_login TEXT,
+        allowed_installation_ids BIGINT[],
+        selection_token_hash TEXT,
+        github_installation_id BIGINT CHECK (
+            github_installation_id IS NULL OR github_installation_id > 0
+        ),
+        error_message TEXT,
+        expires_at TIMESTAMPTZ NOT NULL,
+        consumed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS connect_sessions_expires_idx
+        ON connect_sessions (expires_at)
+        WHERE status IN ('pending', 'authorized', 'ready');
+
     CREATE TABLE IF NOT EXISTS setup_oauth_states (
         state_hash TEXT PRIMARY KEY,
-        installation_id BIGINT NOT NULL CHECK (installation_id > 0),
+        installation_id BIGINT CHECK (installation_id IS NULL OR installation_id > 0),
+        connect_session_id UUID REFERENCES connect_sessions (id) ON DELETE CASCADE,
         expires_at TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CHECK (installation_id IS NOT NULL OR connect_session_id IS NOT NULL)
     );
+
+    ALTER TABLE setup_oauth_states ALTER COLUMN installation_id DROP NOT NULL;
+    ALTER TABLE setup_oauth_states
+        ADD COLUMN IF NOT EXISTS connect_session_id UUID REFERENCES connect_sessions (id)
+            ON DELETE CASCADE;
 
     CREATE TABLE IF NOT EXISTS app_installations (
         github_installation_id BIGINT PRIMARY KEY CHECK (github_installation_id > 0),

@@ -42,6 +42,19 @@ def github_app_id() -> str:
     return value
 
 
+_APP_SLUG = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$")
+
+
+def github_app_slug() -> str:
+    """Return the public GitHub App slug used for install URLs."""
+    value = required("GITHUB_APP_SLUG")
+    if not _APP_SLUG.fullmatch(value):
+        raise HostedConfigurationError(
+            "GITHUB_APP_SLUG must be a GitHub App slug (letters, digits, hyphens)"
+        )
+    return value
+
+
 def github_private_key() -> str:
     value = required("GITHUB_APP_PRIVATE_KEY")
     if "BEGIN" not in value or "PRIVATE KEY" not in value:
