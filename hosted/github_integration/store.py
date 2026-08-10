@@ -318,11 +318,11 @@ def mark_connect_session_ready(
         allowed = {int(item) for item in (allowed_raw or [])}
         if allowed and installation_id not in allowed:
             raise ValueError("Installation is not authorized for this connect session")
-        if selection_token is not None:
-            if selection_hash is None or not hmac.compare_digest(
-                selection_hash, _hash(selection_token)
-            ):
-                raise ValueError("Connect session selection token is invalid")
+        if selection_token is not None and (
+            selection_hash is None
+            or not hmac.compare_digest(selection_hash, _hash(selection_token))
+        ):
+            raise ValueError("Connect session selection token is invalid")
         cursor.execute(
             """
             UPDATE connect_sessions
