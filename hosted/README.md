@@ -5,7 +5,8 @@ This directory is the intentionally small service deployed at
 
 It does only four jobs:
 
-1. verifies the owner who returns from the Diffuse GitHub App connection flow;
+1. runs the CLI connect browser flow (OAuth, optional App install, installation
+   pick) and returns one-time instance credentials to `diffuse github connect`;
 2. accepts and HMAC-verifies the GitHub App's global webhook deliveries;
 3. leases each installation's delivery to its enrolled self-hosted Diffuse
    instance over an outbound pull connection; and
