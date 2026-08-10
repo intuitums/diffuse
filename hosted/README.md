@@ -81,7 +81,7 @@ using another provider supplies `DIFFUSE_GITHUB_INTEGRATION_DATABASE_URL` instea
 | Situation | File to run |
 | --- | --- |
 | **Existing production Neon** (already has tables) | `github_integration/migrations/001_connect_sessions.sql` only |
-| Brand-new empty database | `github_integration/vercel_schema.sql` (or `python -m github_integration.migrate`) |
+| Brand-new empty database | `github_integration/schema.sql` via `python -m github_integration.migrate` |
 
 Do **not** re-run a rewritten `CREATE TABLE IF NOT EXISTS` bootstrap against a
 live database and expect Postgres to reshape columns — it will not. Production
@@ -103,15 +103,16 @@ additive migration in the Neon SQL Editor:
 ```sql
 SELECT column_name, is_nullable
 FROM information_schema.columns
-WHERE table_name = 'setup_oauth_states'
+WHERE table_name = 'connect_oauth_states'
   AND column_name IN ('installation_id', 'connect_session_id')
 ORDER BY column_name;
 
 SELECT to_regclass('public.connect_sessions') AS connect_sessions;
+SELECT to_regclass('public.connect_enrollment_codes') AS connect_enrollment_codes;
 ```
 
 Expect `connect_session_id` present, `installation_id` nullable (`YES`), and
-`connect_sessions` non-null.
+both `connect_sessions` / `connect_enrollment_codes` non-null.
 
 Then deploy the `hosted/` tree. Do not deploy the new connect routes before this
 migration lands.

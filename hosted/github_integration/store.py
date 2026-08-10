@@ -16,9 +16,9 @@ import psycopg2
 import psycopg2.extras
 
 from .config import (
-    CONNECT_EVENT_SIGNING_KEY_AAD,
+    CONNECT_DELIVERY_SIGNING_KEY_AAD,
     CONNECT_INSTANCE_TOKEN_AAD,
-    EVENT_SIGNING_KEY_AAD,
+    DELIVERY_SIGNING_KEY_AAD,
     credential_kek,
     credential_keks,
     database_url,
@@ -63,23 +63,23 @@ def _random_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def _seal_event_signing_key(value: str) -> str:
-    return seal(value, kek=credential_kek(), aad=EVENT_SIGNING_KEY_AAD)
+def _seal_delivery_signing_key(value: str) -> str:
+    return seal(value, kek=credential_kek(), aad=DELIVERY_SIGNING_KEY_AAD)
 
 
-def _unseal_event_signing_key(value: str) -> str:
+def _unseal_delivery_signing_key(value: str) -> str:
     try:
         return unseal(
             value,
             keks=credential_keks(),
-            aad=EVENT_SIGNING_KEY_AAD,
+            aad=DELIVERY_SIGNING_KEY_AAD,
             allow_legacy_plaintext=True,
         )
     except SealedSecretError as error:
-        raise ValueError("stored event signing key could not be decrypted") from error
+        raise ValueError("stored delivery signing key could not be decrypted") from error
 
 
-def _event_signing_key_needs_reseal(stored: str) -> bool:
+def _delivery_signing_key_needs_reseal(stored: str) -> bool:
     """True when the row is plaintext or sealed under a previous KEK."""
     if not is_sealed(stored):
         return True
@@ -89,7 +89,7 @@ def _event_signing_key_needs_reseal(stored: str) -> bool:
     return parts[2] != key_id_for(credential_kek())
 
 
-def _maybe_reseal_event_signing_key(
+def _maybe_reseal_delivery_signing_key(
     cursor: psycopg2.extensions.cursor,
     *,
     instance_id: str,
@@ -97,19 +97,19 @@ def _maybe_reseal_event_signing_key(
     plaintext: str,
 ) -> None:
     """Best-effort upgrade of legacy / previous-KEK ciphertext onto the current KEK."""
-    if not _event_signing_key_needs_reseal(stored):
+    if not _delivery_signing_key_needs_reseal(stored):
         return
     try:
-        resealed = _seal_event_signing_key(plaintext)
+        resealed = _seal_delivery_signing_key(plaintext)
     except Exception:  # noqa: BLE001 — never fail authentication on re-seal
         return
     cursor.execute(
         """
         UPDATE self_hosted_instances
-        SET event_signing_key = %s, updated_at = now()
+        SET delivery_signing_key = %s, updated_at = now()
         WHERE id = %s::uuid
           AND revoked_at IS NULL
-          AND event_signing_key = %s
+          AND delivery_signing_key = %s
         """,
         (resealed, instance_id, stored),
     )
@@ -134,8 +134,8 @@ def create_oauth_state(
     with connection() as conn, conn.cursor() as cursor:
         cursor.execute(
             """
-            INSERT INTO setup_oauth_states (
-                state_hash, installation_id, connect_session_id, expires_at
+            INSERT INTO connect_oauth_states (
+                state_hash, github_installation_id, connect_session_id, expires_at
             ) VALUES (%s, %s, %s::uuid, now() + interval '10 minutes')
             """,
             (_hash(state), installation_id, connect_session_id),
@@ -147,9 +147,9 @@ def consume_oauth_state(state: str) -> OAuthStateTarget | None:
     with connection() as conn, conn.cursor() as cursor:
         cursor.execute(
             """
-            DELETE FROM setup_oauth_states
+            DELETE FROM connect_oauth_states
             WHERE state_hash = %s AND expires_at > now()
-            RETURNING installation_id, connect_session_id::text
+            RETURNING github_installation_id, connect_session_id::text
             """,
             (_hash(state),),
         )
@@ -186,12 +186,12 @@ def record_verified_installation(
         )
 
 
-def create_enrollment_code(installation_id: int) -> str:
+def create_connection_code(installation_id: int) -> str:
     code = _random_token()
     with connection() as conn, conn.cursor() as cursor:
         cursor.execute(
             """
-            INSERT INTO setup_enrollment_codes (
+            INSERT INTO connect_enrollment_codes (
                 code_hash, github_installation_id, expires_at
             ) VALUES (%s, %s, now() + interval '15 minutes')
             """,
@@ -204,7 +204,7 @@ def create_enrollment_code(installation_id: int) -> str:
 class InstanceCredentials:
     instance_id: str
     instance_token: str
-    event_signing_key: str
+    delivery_signing_key: str
     installation_id: int
 
 
@@ -215,18 +215,18 @@ def _insert_instance_credentials(
     display_name: str,
 ) -> InstanceCredentials:
     instance_token = _random_token()
-    event_signing_key = _random_token()
+    delivery_signing_key = _random_token()
     instance_id = str(uuid.uuid4())
     cursor.execute(
         """
         INSERT INTO self_hosted_instances (
-            id, github_installation_id, display_name, credential_hash, event_signing_key
+            id, github_installation_id, display_name, credential_hash, delivery_signing_key
         ) VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (github_installation_id) WHERE revoked_at IS NULL
         DO UPDATE SET
             display_name = EXCLUDED.display_name,
             credential_hash = EXCLUDED.credential_hash,
-            event_signing_key = EXCLUDED.event_signing_key,
+            delivery_signing_key = EXCLUDED.delivery_signing_key,
             updated_at = now()
         RETURNING id::text
         """,
@@ -235,25 +235,25 @@ def _insert_instance_credentials(
             installation_id,
             display_name.strip(),
             _hash(instance_token),
-            _seal_event_signing_key(event_signing_key),
+            _seal_delivery_signing_key(delivery_signing_key),
         ),
     )
     stored_instance_id = str(cursor.fetchone()[0])
     return InstanceCredentials(
         instance_id=stored_instance_id,
         instance_token=instance_token,
-        event_signing_key=event_signing_key,
+        delivery_signing_key=delivery_signing_key,
         installation_id=installation_id,
     )
 
 
-def redeem_enrollment_code(code: str, *, display_name: str) -> InstanceCredentials | None:
+def redeem_connection_code(code: str, *, display_name: str) -> InstanceCredentials | None:
     if not 1 <= len(display_name.strip()) <= 200:
         raise ValueError("display_name must contain 1 to 200 characters")
     with connection() as conn, conn.cursor() as cursor:
         cursor.execute(
             """
-            UPDATE setup_enrollment_codes
+            UPDATE connect_enrollment_codes
             SET redeemed_at = now()
             WHERE code_hash = %s
               AND redeemed_at IS NULL
@@ -276,14 +276,14 @@ def redeem_enrollment_code(code: str, *, display_name: str) -> InstanceCredentia
 class Instance:
     id: str
     installation_id: int
-    event_signing_key: str
+    delivery_signing_key: str
 
 
 def authenticate_instance(token: str) -> Instance | None:
     with connection() as conn, conn.cursor() as cursor:
         cursor.execute(
             """
-            SELECT id::text, github_installation_id, event_signing_key
+            SELECT id::text, github_installation_id, delivery_signing_key
             FROM self_hosted_instances
             WHERE credential_hash = %s AND revoked_at IS NULL
             """,
@@ -295,8 +295,8 @@ def authenticate_instance(token: str) -> Instance | None:
         instance_id = str(row[0])
         installation_id = int(row[1])
         stored = str(row[2])
-        plaintext = _unseal_event_signing_key(stored)
-        _maybe_reseal_event_signing_key(
+        plaintext = _unseal_delivery_signing_key(stored)
+        _maybe_reseal_delivery_signing_key(
             cursor,
             instance_id=instance_id,
             stored=stored,
@@ -305,7 +305,7 @@ def authenticate_instance(token: str) -> Instance | None:
     return Instance(
         id=instance_id,
         installation_id=installation_id,
-        event_signing_key=plaintext,
+        delivery_signing_key=plaintext,
     )
 
 
@@ -405,7 +405,7 @@ def pull_events(instance: Instance, *, limit: int = 20) -> tuple[DeliveryEvent, 
                 event_name=str(row["event_name"]),
                 payload=payload,
                 signature=hmac.new(
-                    instance.event_signing_key.encode(), canonical, hashlib.sha256
+                    instance.delivery_signing_key.encode(), canonical, hashlib.sha256
                 ).hexdigest(),
             )
         )
@@ -729,7 +729,7 @@ def complete_connect_session(
                 github_installation_id = %s,
                 instance_id = %s::uuid,
                 instance_token_sealed = %s,
-                event_signing_key_sealed = %s,
+                delivery_signing_key_sealed = %s,
                 candidate_installations = NULL,
                 updated_at = now()
             WHERE id = %s::uuid AND status = 'pending'
@@ -744,9 +744,9 @@ def complete_connect_session(
                     aad=CONNECT_INSTANCE_TOKEN_AAD,
                 ),
                 seal(
-                    credentials.event_signing_key,
+                    credentials.delivery_signing_key,
                     kek=credential_kek(),
-                    aad=CONNECT_EVENT_SIGNING_KEY_AAD,
+                    aad=CONNECT_DELIVERY_SIGNING_KEY_AAD,
                 ),
                 session_id,
             ),
@@ -765,7 +765,7 @@ def claim_connect_session(session_id: str, poll_secret: str) -> ConnectSessionCl
                 instance_id::text,
                 github_installation_id,
                 instance_token_sealed,
-                event_signing_key_sealed,
+                delivery_signing_key_sealed,
                 error_message,
                 EXTRACT(EPOCH FROM (expires_at - now()))
             FROM connect_sessions
@@ -805,10 +805,10 @@ def claim_connect_session(session_id: str, poll_secret: str) -> ConnectSessionCl
                     keks=credential_keks(),
                     aad=CONNECT_INSTANCE_TOKEN_AAD,
                 )
-                event_signing_key = unseal(
+                delivery_signing_key = unseal(
                     str(row[4]),
                     keks=credential_keks(),
-                    aad=CONNECT_EVENT_SIGNING_KEY_AAD,
+                    aad=CONNECT_DELIVERY_SIGNING_KEY_AAD,
                 )
             except SealedSecretError as error:
                 raise ValueError("stored connect credentials could not be decrypted") from error
@@ -817,7 +817,7 @@ def claim_connect_session(session_id: str, poll_secret: str) -> ConnectSessionCl
                 UPDATE connect_sessions
                 SET status = 'consumed',
                     instance_token_sealed = NULL,
-                    event_signing_key_sealed = NULL,
+                    delivery_signing_key_sealed = NULL,
                     updated_at = now()
                 WHERE id = %s::uuid AND status = 'ready'
                 RETURNING id
@@ -831,7 +831,7 @@ def claim_connect_session(session_id: str, poll_secret: str) -> ConnectSessionCl
                 credentials=InstanceCredentials(
                     instance_id=instance_id,
                     instance_token=instance_token,
-                    event_signing_key=event_signing_key,
+                    delivery_signing_key=delivery_signing_key,
                     installation_id=installation_id,
                 ),
             )

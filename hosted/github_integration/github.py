@@ -13,8 +13,12 @@ from .config import github_app_id, github_private_key, oauth_configuration, publ
 GITHUB_API = "https://api.github.com"
 
 
-class GitHubSetupError(RuntimeError):
-    """GitHub could not verify a setup user or mint an installation token."""
+class GitHubConnectError(RuntimeError):
+    """GitHub could not verify a connect user or mint an installation token."""
+
+
+# Back-compat alias for older imports.
+GitHubSetupError = GitHubConnectError
 
 
 @dataclass(frozen=True)
@@ -56,17 +60,17 @@ def exchange_oauth_code(code: str) -> tuple[int, str, tuple[GitHubInstallation, 
         timeout=15,
     )
     if response.status_code != 200:
-        raise GitHubSetupError("GitHub refused the authorization code")
+        raise GitHubConnectError("GitHub refused the authorization code")
     access_token = response.json().get("access_token")
     if not isinstance(access_token, str) or not access_token:
-        raise GitHubSetupError("GitHub did not return a user access token")
+        raise GitHubConnectError("GitHub did not return a user access token")
     headers = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {access_token}"}
     user_response = httpx.get(f"{GITHUB_API}/user", headers=headers, timeout=15)
     installations_response = httpx.get(
         f"{GITHUB_API}/user/installations", headers=headers, timeout=15
     )
     if user_response.status_code != 200 or installations_response.status_code != 200:
-        raise GitHubSetupError("GitHub could not verify the authorized user's installations")
+        raise GitHubConnectError("GitHub could not verify the authorized user's installations")
     user = user_response.json()
     installations = installations_response.json().get("installations", [])
     try:
@@ -83,7 +87,9 @@ def exchange_oauth_code(code: str) -> tuple[int, str, tuple[GitHubInstallation, 
                 )
             )
     except (KeyError, TypeError, ValueError) as error:
-        raise GitHubSetupError("GitHub returned an invalid user authorization response") from error
+        raise GitHubConnectError(
+            "GitHub returned an invalid user authorization response"
+        ) from error
     return user_id, login, tuple(parsed)
 
 
@@ -98,10 +104,10 @@ def mint_installation_token(installation_id: int) -> tuple[str, str]:
         timeout=15,
     )
     if response.status_code >= 400:
-        raise GitHubSetupError("GitHub could not mint an installation token")
+        raise GitHubConnectError("GitHub could not mint an installation token")
     payload = response.json()
     token = payload.get("token")
     expires_at = payload.get("expires_at")
     if not isinstance(token, str) or not isinstance(expires_at, str):
-        raise GitHubSetupError("GitHub returned an invalid installation token")
+        raise GitHubConnectError("GitHub returned an invalid installation token")
     return token, expires_at

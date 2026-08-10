@@ -20,8 +20,8 @@ from pydantic import BaseModel, Field
 
 from .config import github_app_install_url, public_url, webhook_secret
 from .github import (
+    GitHubConnectError,
     GitHubInstallation,
-    GitHubSetupError,
     exchange_oauth_code,
     mint_installation_token,
     oauth_authorize_url,
@@ -33,7 +33,7 @@ from .store import (
     complete_connect_session,
     consume_oauth_state,
     create_connect_session,
-    create_enrollment_code,
+    create_connection_code,
     create_oauth_state,
     fail_connect_session,
     get_pending_connect_session,
@@ -41,7 +41,7 @@ from .store import (
     pull_events,
     record_verified_installation,
     record_webhook_event,
-    redeem_enrollment_code,
+    redeem_connection_code,
     revoke_instance,
     set_connect_session_candidates,
     set_installation_active,
@@ -367,7 +367,7 @@ async def connect_sessions_poll(
             "instance_id": claim.credentials.instance_id,
             "installation_id": claim.credentials.installation_id,
             "instance_token": claim.credentials.instance_token,
-            "event_signing_key": claim.credentials.event_signing_key,
+            "delivery_signing_key": claim.credentials.delivery_signing_key,
             "secrets_shown_once": True,
         }
     if claim.status == "consumed":
@@ -433,6 +433,7 @@ async def github_connect_select(
 
 @app.get("/auth/github/setup", response_model=None)
 async def github_setup(request: Request, installation_id: int) -> RedirectResponse:
+    """GitHub App Setup URL target — keep this path; GitHub calls it "Setup URL"."""
     if installation_id <= 0:
         raise HTTPException(status_code=400, detail="Invalid installation")
     session_id = _cookie_session_id(request)
@@ -459,7 +460,7 @@ async def github_callback(
         raise HTTPException(status_code=400, detail="Setup state is invalid or expired")
     try:
         user_id, login, installations = exchange_oauth_code(code)
-    except GitHubSetupError as error:
+    except GitHubConnectError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     installation_ids = {item.id for item in installations}
 
@@ -521,15 +522,15 @@ async def github_callback(
             detail="The authorized user does not control this installation",
         )
     record_verified_installation(installation_id, github_user_id=user_id, github_login=login)
-    connection_code = create_enrollment_code(installation_id)
+    connection_code = create_connection_code(installation_id)
     payload = {
         "status": "verified",
         "installation_id": installation_id,
         "connection_code": connection_code,
         "expires_in_seconds": 900,
         "next": (
-            "Run diffuse github connect --name <instance> on the self-hosted "
-            "instance (browser flow), or pass --code with this one-time code."
+            "Run diffuse github connect on the self-hosted instance "
+            "(browser flow), or pass --code with this one-time code."
         ),
     }
     accept = (request.headers.get("accept") or "").lower()
@@ -551,7 +552,7 @@ class InstanceRegistration(BaseModel):
 
 @app.post("/v1/instances/register")
 async def register_instance(payload: InstanceRegistration) -> dict[str, object]:
-    credentials = redeem_enrollment_code(payload.code, display_name=payload.display_name)
+    credentials = redeem_connection_code(payload.code, display_name=payload.display_name)
     if credentials is None:
         raise HTTPException(status_code=400, detail="Connection code is invalid or expired")
     # These secrets are returned exactly once. The integration service stores
@@ -561,7 +562,7 @@ async def register_instance(payload: InstanceRegistration) -> dict[str, object]:
         "instance_id": credentials.instance_id,
         "installation_id": credentials.installation_id,
         "instance_token": credentials.instance_token,
-        "event_signing_key": credentials.event_signing_key,
+        "delivery_signing_key": credentials.delivery_signing_key,
         "secrets_shown_once": True,
     }
 
@@ -697,6 +698,6 @@ async def installation_token(authorization: Annotated[str, Header()] = "") -> di
         )
     try:
         minted, expires_at = mint_installation_token(status_row.installation_id)
-    except GitHubSetupError as error:
+    except GitHubConnectError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     return {"token": minted, "expires_at": expires_at}

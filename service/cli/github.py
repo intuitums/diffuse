@@ -45,7 +45,7 @@ def _emit_credentials(
     *,
     base_url: str,
     instance_token: str,
-    event_signing_key: str,
+    delivery_signing_key: str,
     installation_id: object,
     instance_id: object,
     write_path: Path | None,
@@ -54,7 +54,7 @@ def _emit_credentials(
     credentials = {
         "DIFFUSE_GITHUB_INTEGRATION_URL": base_url,
         "DIFFUSE_GITHUB_INTEGRATION_TOKEN": instance_token,
-        "DIFFUSE_GITHUB_DELIVERY_SIGNING_KEY": event_signing_key,
+        "DIFFUSE_GITHUB_DELIVERY_SIGNING_KEY": delivery_signing_key,
         "installation_id": installation_id,
         "instance_id": instance_id,
     }
@@ -111,17 +111,17 @@ def _connect_with_code(
         try:
             payload = response.json()
             instance_token = payload["instance_token"]
-            event_signing_key = payload["event_signing_key"]
+            delivery_signing_key = payload["delivery_signing_key"]
         except (ValueError, KeyError, TypeError) as error:
             raise RuntimeError(
                 "GitHub Integration Service returned an invalid connection response"
             ) from error
-        if not isinstance(instance_token, str) or not isinstance(event_signing_key, str):
+        if not isinstance(instance_token, str) or not isinstance(delivery_signing_key, str):
             raise RuntimeError("GitHub Integration Service returned invalid connection credentials")
         _emit_credentials(
             base_url=base_url,
             instance_token=instance_token,
-            event_signing_key=event_signing_key,
+            delivery_signing_key=delivery_signing_key,
             installation_id=payload.get("installation_id"),
             instance_id=payload.get("instance_id"),
             write_path=write_path,
@@ -218,13 +218,13 @@ def _connect_with_browser(
         if status != "ready":
             raise RuntimeError(f"Unexpected connect session status: {status!r}")
         instance_token = payload.get("instance_token")
-        event_signing_key = payload.get("event_signing_key")
-        if not isinstance(instance_token, str) or not isinstance(event_signing_key, str):
+        delivery_signing_key = payload.get("delivery_signing_key")
+        if not isinstance(instance_token, str) or not isinstance(delivery_signing_key, str):
             raise RuntimeError("GitHub Integration Service returned invalid connection credentials")
         _emit_credentials(
             base_url=base_url,
             instance_token=instance_token,
-            event_signing_key=event_signing_key,
+            delivery_signing_key=delivery_signing_key,
             installation_id=payload.get("installation_id"),
             instance_id=payload.get("instance_id"),
             write_path=write_path,
@@ -346,7 +346,7 @@ def _disconnect(args: argparse.Namespace) -> None:
 
 
 def _prepare_write_env_path(path: Path) -> tuple[Path, int]:
-    """Open a writable regular PATH safely before redeeming an enrollment code."""
+    """Open a writable regular PATH safely before redeeming a connection code."""
     path = path.expanduser()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

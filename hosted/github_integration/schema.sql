@@ -1,18 +1,18 @@
 -- This database belongs only to api.diffuse.website. It intentionally stores no
 -- source, diff, finding, model, mirror, or self-hosted Diffuse workflow state.
 --
--- Fresh installs: apply this file (or vercel_schema.sql) once.
--- Existing production DBs: apply only migrations/*.sql (additive). Do not
--- "recreate" live tables by editing CREATE TABLE IF NOT EXISTS definitions
--- and hoping Postgres upgrades them — it will not.
+-- Fresh installs: apply this file once (`python -m github_integration.migrate`).
+-- Existing production DBs: apply only migrations/*.sql (additive / renames).
 
-CREATE TABLE IF NOT EXISTS setup_oauth_states (
+CREATE TABLE IF NOT EXISTS connect_oauth_states (
     state_hash TEXT PRIMARY KEY,
-    installation_id BIGINT CHECK (installation_id IS NULL OR installation_id > 0),
+    github_installation_id BIGINT CHECK (
+        github_installation_id IS NULL OR github_installation_id > 0
+    ),
     connect_session_id UUID,
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (installation_id IS NOT NULL OR connect_session_id IS NOT NULL)
+    CHECK (github_installation_id IS NOT NULL OR connect_session_id IS NOT NULL)
 );
 
 CREATE TABLE IF NOT EXISTS app_installations (
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS app_installations (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS setup_enrollment_codes (
+CREATE TABLE IF NOT EXISTS connect_enrollment_codes (
     code_hash TEXT PRIMARY KEY,
     github_installation_id BIGINT NOT NULL REFERENCES app_installations (github_installation_id)
         ON DELETE CASCADE,
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS connect_sessions (
         ON DELETE SET NULL,
     instance_id UUID,
     instance_token_sealed TEXT,
-    event_signing_key_sealed TEXT,
+    delivery_signing_key_sealed TEXT,
     candidate_installations JSONB,
     authorized_github_user_id BIGINT,
     authorized_github_login TEXT,
@@ -59,17 +59,17 @@ CREATE INDEX IF NOT EXISTS connect_sessions_pending_expires_idx
     ON connect_sessions (expires_at)
     WHERE status = 'pending';
 
--- event_signing_key holds an AES-GCM sealed secret
+-- delivery_signing_key holds an AES-GCM sealed secret
 -- (diffuse-secret.v1.<key_id>.<payload>) under
 -- DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK. Legacy plaintext rows are still
--- readable once and should be rewritten on next enrollment.
+-- readable once and should be rewritten on next connect.
 CREATE TABLE IF NOT EXISTS self_hosted_instances (
     id UUID PRIMARY KEY,
     github_installation_id BIGINT NOT NULL REFERENCES app_installations (github_installation_id)
         ON DELETE CASCADE,
     display_name TEXT NOT NULL,
     credential_hash TEXT NOT NULL UNIQUE,
-    event_signing_key TEXT NOT NULL,
+    delivery_signing_key TEXT NOT NULL,
     revoked_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

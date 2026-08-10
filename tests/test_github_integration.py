@@ -132,7 +132,7 @@ def test_hosted_database_url_uses_vercel_neon_value_when_no_override(monkeypatch
     assert hosted_config.database_url() == "postgresql://neon.example/diffuse"
 
 
-def test_event_signing_key_is_sealed_at_rest_with_legacy_dual_read(monkeypatch):
+def test_delivery_signing_key_is_sealed_at_rest_with_legacy_dual_read(monkeypatch):
     import base64
 
     kek = b"k" * 32
@@ -140,10 +140,10 @@ def test_event_signing_key_is_sealed_at_rest_with_legacy_dual_read(monkeypatch):
         hosted_config.CREDENTIAL_KEK_VARIABLE,
         base64.urlsafe_b64encode(kek).decode().rstrip("="),
     )
-    sealed = hosted_store._seal_event_signing_key("live-delivery-key")
+    sealed = hosted_store._seal_delivery_signing_key("live-delivery-key")
     assert "live-delivery-key" not in sealed
-    assert hosted_store._unseal_event_signing_key(sealed) == "live-delivery-key"
-    assert hosted_store._unseal_event_signing_key("legacy-plaintext") == "legacy-plaintext"
+    assert hosted_store._unseal_delivery_signing_key(sealed) == "live-delivery-key"
+    assert hosted_store._unseal_delivery_signing_key("legacy-plaintext") == "legacy-plaintext"
 
 
 def test_authenticate_instance_reseals_legacy_plaintext(monkeypatch):
@@ -195,13 +195,13 @@ def test_authenticate_instance_reseals_legacy_plaintext(monkeypatch):
 
     instance = hosted_store.authenticate_instance("instance-token")
     assert instance is not None
-    assert instance.event_signing_key == "legacy-plaintext-key"
+    assert instance.delivery_signing_key == "legacy-plaintext-key"
     update_params = next(
         params for query, params in statements if query.lstrip().startswith("UPDATE")
     )
     resealed = str(update_params[0])
     assert hosted_store.is_sealed(resealed)
-    assert hosted_store._unseal_event_signing_key(resealed) == "legacy-plaintext-key"
+    assert hosted_store._unseal_delivery_signing_key(resealed) == "legacy-plaintext-key"
 
 
 def test_authenticate_instance_reseals_previous_kek_ciphertext(monkeypatch):
@@ -221,7 +221,7 @@ def test_authenticate_instance_reseals_previous_kek_ciphertext(monkeypatch):
     old_sealed = hosted_store.seal(
         "rotated-delivery-key",
         kek=previous,
-        aad=hosted_config.EVENT_SIGNING_KEY_AAD,
+        aad=hosted_config.DELIVERY_SIGNING_KEY_AAD,
     )
     statements: list[tuple[str, tuple[object, ...]]] = []
 
@@ -263,13 +263,13 @@ def test_authenticate_instance_reseals_previous_kek_ciphertext(monkeypatch):
 
     instance = hosted_store.authenticate_instance("instance-token")
     assert instance is not None
-    assert instance.event_signing_key == "rotated-delivery-key"
+    assert instance.delivery_signing_key == "rotated-delivery-key"
     update_params = next(
         params for query, params in statements if query.lstrip().startswith("UPDATE")
     )
     resealed = str(update_params[0])
     assert resealed.split(".")[2] == hosted_store.key_id_for(current)
-    assert hosted_store._unseal_event_signing_key(resealed) == "rotated-delivery-key"
+    assert hosted_store._unseal_delivery_signing_key(resealed) == "rotated-delivery-key"
 
 
 def test_hosted_database_url_allows_an_explicit_provider_override(monkeypatch):
@@ -471,7 +471,7 @@ def test_callback_returns_html_for_browsers(monkeypatch):
         ),
     )
     monkeypatch.setattr(hosted_app, "record_verified_installation", lambda *args, **kwargs: None)
-    monkeypatch.setattr(hosted_app, "create_enrollment_code", lambda installation_id: "c" * 40)
+    monkeypatch.setattr(hosted_app, "create_connection_code", lambda installation_id: "c" * 40)
 
     class CallbackRequest:
         headers = {"accept": "text/html,application/xhtml+xml"}
@@ -506,7 +506,7 @@ def test_callback_returns_json_when_requested(monkeypatch):
         ),
     )
     monkeypatch.setattr(hosted_app, "record_verified_installation", lambda *args, **kwargs: None)
-    monkeypatch.setattr(hosted_app, "create_enrollment_code", lambda installation_id: "c" * 40)
+    monkeypatch.setattr(hosted_app, "create_connection_code", lambda installation_id: "c" * 40)
 
     class CallbackRequest:
         headers = {"accept": "application/json"}
@@ -559,7 +559,7 @@ def test_connect_session_callback_auto_binds_single_installation(monkeypatch):
         return InstanceCredentials(
             instance_id="inst-1",
             instance_token="token",
-            event_signing_key="signing",
+            delivery_signing_key="signing",
             installation_id=42,
         )
 

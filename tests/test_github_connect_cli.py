@@ -20,7 +20,7 @@ class _Response:
             "instance_id": "inst-1",
             "installation_id": 42,
             "instance_token": "token-secret",
-            "event_signing_key": "signing-secret",
+            "delivery_signing_key": "signing-secret",
             "secrets_shown_once": True,
         }
 
@@ -183,7 +183,7 @@ class _SessionReadyResponse:
             "instance_id": "inst-1",
             "installation_id": 42,
             "instance_token": "token-secret",
-            "event_signing_key": "signing-secret",
+            "delivery_signing_key": "signing-secret",
             "secrets_shown_once": True,
         }
 
