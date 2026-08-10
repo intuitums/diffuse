@@ -11,8 +11,11 @@ subcommands onboard and manage indexed repositories (`repository`, or its
 cross-repository context clusters (`cluster`), inspect and moderate
 feedback-derived rules (`learning`), inspect and migrate the PostgreSQL schema
 (`database`), sign in to and inspect Agent Host CLIs (`agent`), and configure
-the GitHub integration (`github`). Local-branch review is intentionally not
-available until it can use the hosted Review Access Grant contract.
+the GitHub integration (`github`). Keep the CLI thin: easy GitHub connect and
+(later) local reviews against a Diffuse host. Connect/readiness diagnostics
+belong on the web dashboard — see [v1-scope.md](v1-scope.md) → Operator
+surfaces. Local-branch review is intentionally not available until it can use
+the hosted Review Access Grant contract.
 
 The production image's `diffuse` entrypoint is a superset of the packaged CLI:
 alongside the subcommands below it takes `serve`, `worker`, and `healthcheck`,
