@@ -40,10 +40,7 @@ GITHUB_OAUTH_CLIENT_SECRET=...
 `DIFFUSE_GITHUB_INTEGRATION_TOKEN_PEPPER` hashes connection and instance credentials before
 they reach the database. Generate it once with
 `openssl rand -base64 48 | tr '+/' '-_' | tr -d '='`; preserve it for the life
-of the database or every stored credential becomes invalid. The first hosted
-deploy used `DIFFUSE_SETUP_TOKEN_PEPPER` / `DIFFUSE_SETUP_PUBLIC_URL` /
-`DIFFUSE_SETUP_DATABASE_URL`; those legacy names remain accepted until Infisical
-is renamed.
+of the database or every stored credential becomes invalid.
 
 `DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK` seals reversible secrets such as
 per-instance delivery signing keys with AES-GCM before they are stored.
