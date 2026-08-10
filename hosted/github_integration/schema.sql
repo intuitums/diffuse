@@ -1,5 +1,10 @@
 -- This database belongs only to api.diffuse.website. It intentionally stores no
 -- source, diff, finding, model, mirror, or self-hosted Diffuse workflow state.
+--
+-- Fresh installs: apply this file (or vercel_schema.sql) once.
+-- Existing production DBs: apply only migrations/*.sql (additive). Do not
+-- "recreate" live tables by editing CREATE TABLE IF NOT EXISTS definitions
+-- and hoping Postgres upgrades them — it will not.
 
 CREATE TABLE IF NOT EXISTS setup_oauth_states (
     state_hash TEXT PRIMARY KEY,
@@ -100,24 +105,3 @@ CREATE TABLE IF NOT EXISTS webhook_event_deliveries (
 CREATE INDEX IF NOT EXISTS webhook_event_deliveries_pending_idx
     ON webhook_event_deliveries (instance_id, leased_until, created_at)
     WHERE acknowledged_at IS NULL;
-
--- Additive upgrades for databases created before connect sessions existed.
-ALTER TABLE setup_oauth_states
-    ADD COLUMN IF NOT EXISTS connect_session_id UUID;
-
-ALTER TABLE connect_sessions
-    ADD COLUMN IF NOT EXISTS authorized_github_user_id BIGINT;
-
-ALTER TABLE connect_sessions
-    ADD COLUMN IF NOT EXISTS authorized_github_login TEXT;
-
-DO $$
-BEGIN
-    -- Drop the legacy NOT NULL / CHECK so session-only OAuth states can omit
-    -- installation_id. PostgreSQL names inline checks automatically.
-    ALTER TABLE setup_oauth_states
-        ALTER COLUMN installation_id DROP NOT NULL;
-EXCEPTION
-    WHEN undefined_column THEN NULL;
-    WHEN others THEN NULL;
-END $$;

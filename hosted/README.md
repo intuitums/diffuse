@@ -74,18 +74,56 @@ path.
 
 Provision a dedicated PostgreSQL database for this service. The Vercel
 Marketplace Neon integration supplies `DATABASE_URL` automatically; an operator
-using another provider supplies `DIFFUSE_GITHUB_INTEGRATION_DATABASE_URL` instead. Apply the
-schema once from a controlled environment with the hosted variables set:
+using another provider supplies `DIFFUSE_GITHUB_INTEGRATION_DATABASE_URL` instead.
+
+### Schema: keep upgrades additive
+
+| Situation | File to run |
+| --- | --- |
+| **Existing production Neon** (already has tables) | `github_integration/migrations/001_connect_sessions.sql` only |
+| Brand-new empty database | `github_integration/vercel_schema.sql` (or `python -m github_integration.migrate`) |
+
+Do **not** re-run a rewritten `CREATE TABLE IF NOT EXISTS` bootstrap against a
+live database and expect Postgres to reshape columns — it will not. Production
+changes go in numbered files under `migrations/`.
+
+### Apply on Neon (production today)
+
+Vercel/Neon have no API from this agent that can execute SQL for you. Apply the
+additive migration in the Neon SQL Editor:
+
+1. Open [Vercel Dashboard](https://vercel.com) → project **diffuse** → **Storage**
+   → the attached Neon database → **Open in Neon** (or neon.tech → that project).
+2. Open **SQL Editor**.
+3. Paste the full contents of
+   `hosted/github_integration/migrations/001_connect_sessions.sql`.
+4. Run it once. It is idempotent (safe to re-run).
+5. Verify:
+
+```sql
+SELECT column_name, is_nullable
+FROM information_schema.columns
+WHERE table_name = 'setup_oauth_states'
+  AND column_name IN ('installation_id', 'connect_session_id')
+ORDER BY column_name;
+
+SELECT to_regclass('public.connect_sessions') AS connect_sessions;
+```
+
+Expect `connect_session_id` present, `installation_id` nullable (`YES`), and
+`connect_sessions` non-null.
+
+Then deploy the `hosted/` tree. Do not deploy the new connect routes before this
+migration lands.
+
+### Local / scripted apply
 
 ```bash
 cd hosted
+# Fresh DB only:
 python -m github_integration.migrate
+# Existing DB: run migrations/001_connect_sessions.sql via psql against DATABASE_URL
 ```
-
-For Vercel's Marketplace Query editor, run
-`github_integration/vercel_schema.sql` instead. It is the same idempotent schema in
-one `DO` statement, because that editor accepts only one prepared statement per
-query.
 
 Deploy this directory as the Vercel project root. `api/index.py` exports the
 FastAPI ASGI application and `vercel.json` rewrites all API paths to it.
@@ -93,13 +131,7 @@ FastAPI ASGI application and `vercel.json` rewrites all API paths to it.
 `GET /health` is intentionally configuration-free. It proves the deployment is
 reachable but does not claim that GitHub, OAuth, or PostgreSQL has been
 configured. Validate those by installing the Diffuse GitHub App once, then
-running `diffuse github connect` from a self-hosted instance (browser flow
-against `/v1/connect/sessions`).
-
-Apply `vercel_schema.sql` (or `python -m github_integration.migrate`) after
-pulling connect-session schema changes so `connect_sessions` and the nullable
-`setup_oauth_states.connect_session_id` column exist before the new routes are
-hit.
+running `diffuse github connect` from a self-hosted instance.
 
 ## Operational limits
 

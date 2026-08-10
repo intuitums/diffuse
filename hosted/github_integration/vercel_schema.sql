@@ -1,6 +1,7 @@
--- One statement for Vercel's Marketplace Query editor, which uses prepared
--- statements and therefore cannot accept the multi-statement schema.sql file.
--- This has the same idempotent schema as schema.sql.
+-- Fresh-install bootstrap for Vercel's Marketplace Query editor (one prepared
+-- statement). Existing production databases should run
+-- migrations/001_connect_sessions.sql instead — do not use this file to
+-- "upgrade" a live schema.
 DO $schema$
 BEGIN
     CREATE TABLE IF NOT EXISTS setup_oauth_states (
@@ -97,21 +98,5 @@ BEGIN
     CREATE INDEX IF NOT EXISTS webhook_event_deliveries_pending_idx
         ON webhook_event_deliveries (instance_id, leased_until, created_at)
         WHERE acknowledged_at IS NULL;
-
-    ALTER TABLE setup_oauth_states
-        ADD COLUMN IF NOT EXISTS connect_session_id UUID;
-
-    ALTER TABLE connect_sessions
-        ADD COLUMN IF NOT EXISTS authorized_github_user_id BIGINT;
-
-    ALTER TABLE connect_sessions
-        ADD COLUMN IF NOT EXISTS authorized_github_login TEXT;
-
-    BEGIN
-        ALTER TABLE setup_oauth_states
-            ALTER COLUMN installation_id DROP NOT NULL;
-    EXCEPTION
-        WHEN others THEN NULL;
-    END;
 END;
 $schema$;
