@@ -64,8 +64,11 @@ https://api.diffuse.website/webhook/github
 
 The App needs only the permissions required by Diffuse review: Contents read,
 Pull requests read/write, Issues read when comment-triggered reviews are
-enabled, and Checks write when checks are enabled. Subscribe it to `push` and
-`pull_request`, plus interaction events only when Diffuse enables them.
+enabled, and Checks write when checks are enabled. Subscribe it to `push`,
+`pull_request`, `issue_comment`, and `pull_request_review_comment`, plus
+`installation` so uninstall/suspend can revoke delivery. The self-hosted
+delivery poller admits the same event set as the standalone `/webhook/github`
+path.
 
 ## Database and deployment
 

@@ -397,3 +397,106 @@ def acknowledge_event(instance: Instance, delivery_id: str) -> bool:
             (instance.id, delivery_id),
         )
         return bool(cursor.fetchone()[0])
+
+
+def set_installation_active(
+    installation_id: int,
+    *,
+    active: bool,
+    revoke_instances: bool = False,
+) -> bool:
+    """Activate or deactivate a verified installation.
+
+    Uninstall (``revoke_instances=True``) also marks every live self-hosted
+    binding revoked so its credential stops pulling events and minting tokens.
+    Suspend only flips ``active`` so a later unsuspend can resume delivery.
+    """
+    with connection() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE app_installations
+            SET active = %s, updated_at = now()
+            WHERE github_installation_id = %s
+            RETURNING github_installation_id
+            """,
+            (active, installation_id),
+        )
+        if cursor.fetchone() is None:
+            return False
+        if revoke_instances:
+            cursor.execute(
+                """
+                UPDATE self_hosted_instances
+                SET revoked_at = now(), updated_at = now()
+                WHERE github_installation_id = %s AND revoked_at IS NULL
+                """,
+                (installation_id,),
+            )
+        return True
+
+
+def revoke_instance(token: str) -> bool:
+    """Revoke the calling instance's live binding without deleting history."""
+    with connection() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE self_hosted_instances
+            SET revoked_at = now(), updated_at = now()
+            WHERE credential_hash = %s AND revoked_at IS NULL
+            RETURNING id
+            """,
+            (_hash(token),),
+        )
+        return cursor.fetchone() is not None
+
+
+@dataclass(frozen=True)
+class InstanceStatus:
+    instance_id: str
+    installation_id: int
+    display_name: str
+    installation_active: bool
+    pending_events: int
+    created_at: str
+    updated_at: str
+
+
+def instance_status(token: str) -> InstanceStatus | None:
+    with connection() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                instance.id::text,
+                instance.github_installation_id,
+                instance.display_name,
+                installation.active,
+                instance.created_at,
+                instance.updated_at,
+                (
+                    SELECT COUNT(*)
+                    FROM github_webhook_events AS event
+                    LEFT JOIN webhook_event_deliveries AS receipt
+                      ON receipt.delivery_id = event.delivery_id
+                     AND receipt.instance_id = instance.id
+                    WHERE event.github_installation_id = instance.github_installation_id
+                      AND (receipt.acknowledged_at IS NULL OR receipt.delivery_id IS NULL)
+                ) AS pending_events
+            FROM self_hosted_instances AS instance
+            JOIN app_installations AS installation
+              ON installation.github_installation_id = instance.github_installation_id
+            WHERE instance.credential_hash = %s AND instance.revoked_at IS NULL
+            """,
+            (_hash(token),),
+        )
+        row = cursor.fetchone()
+    if row is None:
+        return None
+    return InstanceStatus(
+        instance_id=str(row[0]),
+        installation_id=int(row[1]),
+        display_name=str(row[2]),
+        installation_active=bool(row[3]),
+        pending_events=int(row[6]),
+        created_at=row[4].isoformat(),
+        updated_at=row[5].isoformat(),
+    )

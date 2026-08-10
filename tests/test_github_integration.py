@@ -317,3 +317,217 @@ def test_hosted_webhook_insert_binds_each_placeholder_once(monkeypatch):
         payload_sha256="hash",
     )
     assert len(statements) == 2
+
+
+def test_ingest_event_admits_manual_review_comments(monkeypatch):
+    request = object()
+    event = object()
+    monkeypatch.setattr(
+        delivery_poller,
+        "normalize_manual_review_request",
+        lambda payload: request,
+    )
+
+    async def fake_fetch(manual_request, *, delivery_id):
+        assert manual_request is request
+        assert delivery_id == "delivery-manual"
+        return event
+
+    monkeypatch.setattr(delivery_poller, "fetch_manual_pull_request_event", fake_fetch)
+    monkeypatch.setattr(
+        delivery_poller,
+        "enqueue_pull_request",
+        lambda received, body: type("Result", (), {"accepted": True, "state": "queued"})(),
+    )
+
+    assert (
+        delivery_poller.ingest_event(
+            delivery_id="delivery-manual",
+            event_name="issue_comment",
+            payload={"action": "created", "comment": {"body": "@diffuse review"}},
+        )
+        == "accepted"
+    )
+
+
+def test_ingest_event_records_review_feedback(monkeypatch):
+    feedback = type("Feedback", (), {"repo_full_name": "acme/api", "delivery_id": "d1"})()
+    monkeypatch.setattr(
+        delivery_poller,
+        "normalize_review_feedback_comment_event",
+        lambda payload, delivery_id: feedback,
+    )
+    monkeypatch.setattr(
+        delivery_poller,
+        "normalize_review_conversation_event",
+        lambda payload, delivery_id: None,
+    )
+    monkeypatch.setattr(delivery_poller, "record_review_feedback", lambda *_args: "recorded")
+
+    assert (
+        delivery_poller.ingest_event(
+            delivery_id="d1",
+            event_name="pull_request_review_comment",
+            payload={"action": "created"},
+        )
+        == "recorded:review_feedback:recorded"
+    )
+
+
+def test_ingest_event_ignores_installation_lifecycle():
+    assert (
+        delivery_poller.ingest_event(
+            delivery_id="d-install",
+            event_name="installation",
+            payload={"action": "deleted", "installation": {"id": 9}},
+        )
+        == "ignored:installation:deleted"
+    )
+
+
+def test_hosted_webhook_revokes_on_installation_deleted(monkeypatch):
+    body = json.dumps(
+        {"action": "deleted", "installation": {"id": 99}},
+        separators=(",", ":"),
+    ).encode()
+    monkeypatch.setattr(hosted_app, "webhook_secret", lambda: "webhook-secret")
+    calls: list[tuple[int, bool, bool]] = []
+    monkeypatch.setattr(
+        hosted_app,
+        "set_installation_active",
+        lambda installation_id, *, active, revoke_instances=False: calls.append(
+            (installation_id, active, revoke_instances)
+        )
+        or True,
+    )
+    stored: list[object] = []
+    monkeypatch.setattr(
+        hosted_app,
+        "record_webhook_event",
+        lambda **kwargs: stored.append(kwargs) or True,
+    )
+    signature = "sha256=" + hmac.new(b"webhook-secret", body, hashlib.sha256).hexdigest()
+
+    response = asyncio.run(
+        hosted_app.github_webhook(
+            Request(body),
+            x_github_event="installation",
+            x_github_delivery="delivery-uninstall",
+            x_hub_signature_256=signature,
+        )
+    )
+
+    assert response == {"status": "installation_revoked"}
+    assert calls == [(99, False, True)]
+    assert stored == []
+
+
+def test_hosted_webhook_suspends_without_revoking_instances(monkeypatch):
+    body = json.dumps(
+        {"action": "suspend", "installation": {"id": 7}},
+        separators=(",", ":"),
+    ).encode()
+    monkeypatch.setattr(hosted_app, "webhook_secret", lambda: "webhook-secret")
+    calls: list[tuple[int, bool, bool]] = []
+    monkeypatch.setattr(
+        hosted_app,
+        "set_installation_active",
+        lambda installation_id, *, active, revoke_instances=False: calls.append(
+            (installation_id, active, revoke_instances)
+        )
+        or True,
+    )
+    signature = "sha256=" + hmac.new(b"webhook-secret", body, hashlib.sha256).hexdigest()
+
+    response = asyncio.run(
+        hosted_app.github_webhook(
+            Request(body),
+            x_github_event="installation",
+            x_github_delivery="delivery-suspend",
+            x_hub_signature_256=signature,
+        )
+    )
+
+    assert response == {"status": "installation_suspended"}
+    assert calls == [(7, False, False)]
+
+
+def test_callback_returns_html_for_browsers(monkeypatch):
+    monkeypatch.setattr(hosted_app, "consume_oauth_state", lambda state: 42)
+    monkeypatch.setattr(
+        hosted_app,
+        "exchange_oauth_code",
+        lambda code: (1, "owner", {42}),
+    )
+    monkeypatch.setattr(hosted_app, "record_verified_installation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hosted_app, "create_enrollment_code", lambda installation_id: "c" * 40)
+
+    class CallbackRequest:
+        headers = {"accept": "text/html,application/xhtml+xml"}
+
+    response = asyncio.run(
+        hosted_app.github_callback(CallbackRequest(), code="oauth-code", state="state")
+    )
+    assert isinstance(response, hosted_app.HTMLResponse)
+    assert "diffuse github connect" in response.body.decode()
+    assert "c" * 40 in response.body.decode()
+
+
+def test_callback_returns_json_when_requested(monkeypatch):
+    monkeypatch.setattr(hosted_app, "consume_oauth_state", lambda state: 42)
+    monkeypatch.setattr(
+        hosted_app,
+        "exchange_oauth_code",
+        lambda code: (1, "owner", {42}),
+    )
+    monkeypatch.setattr(hosted_app, "record_verified_installation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hosted_app, "create_enrollment_code", lambda installation_id: "c" * 40)
+
+    class CallbackRequest:
+        headers = {"accept": "application/json"}
+
+    response = asyncio.run(
+        hosted_app.github_callback(CallbackRequest(), code="oauth-code", state="state")
+    )
+    assert isinstance(response, hosted_app.JSONResponse)
+    assert json.loads(response.body.decode())["connection_code"] == "c" * 40
+
+
+def test_instances_me_reports_not_ready_when_installation_inactive(monkeypatch):
+    monkeypatch.setattr(
+        hosted_app,
+        "instance_status",
+        lambda token: hosted_store.InstanceStatus(
+            instance_id="inst-1",
+            installation_id=42,
+            display_name="prod",
+            installation_active=False,
+            pending_events=3,
+            created_at="2026-08-09T00:00:00+00:00",
+            updated_at="2026-08-09T00:00:00+00:00",
+        ),
+    )
+    payload = asyncio.run(hosted_app.instances_me(authorization="Bearer token"))
+    assert payload["ready"] is False
+    assert payload["status"] == "not_ready"
+    assert payload["pending_events"] == 3
+    assert "suspended" in payload["diagnostic"]
+
+
+def test_installation_token_refuses_inactive_installation(monkeypatch):
+    monkeypatch.setattr(
+        hosted_app,
+        "instance_status",
+        lambda token: hosted_store.InstanceStatus(
+            instance_id="inst-1",
+            installation_id=42,
+            display_name="prod",
+            installation_active=False,
+            pending_events=0,
+            created_at="2026-08-09T00:00:00+00:00",
+            updated_at="2026-08-09T00:00:00+00:00",
+        ),
+    )
+    with pytest.raises(hosted_app.HTTPException, match="suspended or inactive") as error:
+        asyncio.run(hosted_app.installation_token(authorization="Bearer token"))
+    assert error.value.status_code == 403
