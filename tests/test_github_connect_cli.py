@@ -33,7 +33,11 @@ def _ready_payload():
 
 
 def test_connect_write_env_keeps_secrets_out_of_stdout(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(github_cli.httpx, "post", lambda *args, **kwargs: _Response(_ready_payload()))
+    monkeypatch.setattr(
+        github_cli.httpx,
+        "post",
+        lambda *args, **kwargs: _Response(_ready_payload()),
+    )
     path = tmp_path / "github.env"
     github_cli._connect(
         argparse.Namespace(
@@ -55,7 +59,11 @@ def test_connect_write_env_keeps_secrets_out_of_stdout(monkeypatch, tmp_path, ca
 
 
 def test_connect_stdout_warns_about_one_time_secrets(monkeypatch, capsys):
-    monkeypatch.setattr(github_cli.httpx, "post", lambda *args, **kwargs: _Response(_ready_payload()))
+    monkeypatch.setattr(
+        github_cli.httpx,
+        "post",
+        lambda *args, **kwargs: _Response(_ready_payload()),
+    )
     github_cli._connect(
         argparse.Namespace(
             code="c" * 40,
@@ -211,7 +219,11 @@ def test_connect_write_env_locks_existing_permissive_file_before_secrets(
         modes_during_write.append(stat.S_IMODE(os.fstat(fd).st_mode))
         return real_fdopen(fd, *args, **kwargs)
 
-    monkeypatch.setattr(github_cli.httpx, "post", lambda *args, **kwargs: _Response(_ready_payload()))
+    monkeypatch.setattr(
+        github_cli.httpx,
+        "post",
+        lambda *args, **kwargs: _Response(_ready_payload()),
+    )
     monkeypatch.setattr(github_cli.os, "fdopen", tracking_fdopen)
 
     github_cli._connect(
