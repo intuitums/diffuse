@@ -161,3 +161,62 @@ def test_connect_write_env_locks_existing_permissive_file_before_secrets(
     assert path.stat().st_mode & 0o777 == 0o600
     assert "token-secret" in path.read_text()
     assert "token-secret" not in capsys.readouterr().out
+
+
+class _StatusResponse:
+    status_code = 200
+
+    def json(self):
+        return {
+            "ready": True,
+            "status": "ready",
+            "installation_id": 42,
+            "instance_id": "inst-1",
+            "display_name": "prod",
+            "installation_active": True,
+            "pending_events": 0,
+        }
+
+
+class _DisconnectResponse:
+    status_code = 200
+
+    def json(self):
+        return {"status": "disconnected"}
+
+
+def test_status_prints_ready_payload(monkeypatch, capsys):
+    monkeypatch.setenv("DIFFUSE_GITHUB_INTEGRATION_URL", "https://api.diffuse.website")
+    monkeypatch.setenv("DIFFUSE_GITHUB_INTEGRATION_TOKEN", "token-secret")
+    monkeypatch.setattr(github_cli.httpx, "get", lambda *args, **kwargs: _StatusResponse())
+    github_cli._status(argparse.Namespace(url=None))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is True
+    assert payload["installation_id"] == 42
+
+
+def test_status_exits_nonzero_when_not_ready(monkeypatch):
+    class NotReady:
+        status_code = 200
+
+        def json(self):
+            return {"ready": False, "status": "not_ready", "diagnostic": "suspended"}
+
+    monkeypatch.setenv("DIFFUSE_GITHUB_INTEGRATION_URL", "https://api.diffuse.website")
+    monkeypatch.setenv("DIFFUSE_GITHUB_INTEGRATION_TOKEN", "token-secret")
+    monkeypatch.setattr(github_cli.httpx, "get", lambda *args, **kwargs: NotReady())
+    with pytest.raises(SystemExit) as error:
+        github_cli._status(argparse.Namespace(url=None))
+    assert error.value.code == 1
+
+
+def test_disconnect_revokes_instance(monkeypatch, capsys):
+    monkeypatch.setenv("DIFFUSE_GITHUB_INTEGRATION_URL", "https://api.diffuse.website")
+    monkeypatch.setenv("DIFFUSE_GITHUB_INTEGRATION_TOKEN", "token-secret")
+    monkeypatch.setattr(
+        github_cli.httpx, "post", lambda *args, **kwargs: _DisconnectResponse()
+    )
+    github_cli._disconnect(argparse.Namespace(url=None))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "disconnected"
+    assert "Remove DIFFUSE_GITHUB_INTEGRATION_TOKEN" in payload["next"]

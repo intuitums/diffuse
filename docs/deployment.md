@@ -28,6 +28,7 @@ On the machine that runs self-hosted Diffuse, claim that code:
 ```bash
 diffuse github connect '<one-time-code>' --name 'production-reviewer' \
   --write-env /etc/diffuse/github-integration.env
+diffuse github status
 ```
 
 Prefer `--write-env` (mode 0600) over printing secrets to stdout. The command
@@ -39,6 +40,10 @@ DIFFUSE_GITHUB_INTEGRATION_URL=https://api.diffuse.website
 DIFFUSE_GITHUB_INTEGRATION_TOKEN=...
 DIFFUSE_GITHUB_DELIVERY_SIGNING_KEY=...
 ```
+
+`diffuse github status` reports ready/not-ready against the Integration Service
+(installation active, pending deliveries). `diffuse github disconnect` revokes
+the instance credential when retiring a deployment.
 
 `DIFFUSE_GITHUB_INTEGRATION_TOKEN` identifies only that self-hosted instance. It
 lets it pull its installation's events and request a short-lived GitHub

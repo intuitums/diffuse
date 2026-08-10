@@ -98,6 +98,88 @@ def _connect(args: argparse.Namespace) -> None:
             os.close(write_fd)
 
 
+def _integration_config_from_env(
+    *,
+    url: str | None = None,
+    require: bool = True,
+) -> tuple[str, str]:
+    base_url = (url or os.environ.get("DIFFUSE_GITHUB_INTEGRATION_URL", "")).strip().rstrip("/")
+    token = os.environ.get("DIFFUSE_GITHUB_INTEGRATION_TOKEN", "").strip()
+    if not base_url and not token and not require:
+        return "", ""
+    if not base_url or not token:
+        raise ValueError(
+            "Set DIFFUSE_GITHUB_INTEGRATION_URL and DIFFUSE_GITHUB_INTEGRATION_TOKEN "
+            "(from diffuse github connect), or pass --url with a token in the environment."
+        )
+    base_url = normalize_base_url(base_url, field_name="DIFFUSE_GITHUB_INTEGRATION_URL")
+    if not base_url.startswith("https://"):
+        raise ValueError("DIFFUSE_GITHUB_INTEGRATION_URL must be an HTTPS origin")
+    return base_url, token
+
+
+def _status(args: argparse.Namespace) -> None:
+    base_url, token = _integration_config_from_env(url=args.url)
+    try:
+        response = httpx.get(
+            f"{base_url}/v1/instances/me",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=scm_api_timeout_seconds(),
+        )
+    except httpx.HTTPError as error:
+        raise RuntimeError(f"Could not reach the GitHub Integration Service: {error}") from error
+    if response.status_code == httpx.codes.UNAUTHORIZED:
+        raise ValueError(
+            "GitHub Integration Service rejected DIFFUSE_GITHUB_INTEGRATION_TOKEN "
+            "(revoked, rotated, or never connected)"
+        )
+    if response.status_code >= httpx.codes.BAD_REQUEST:
+        raise RuntimeError(
+            f"GitHub Integration Service status failed with HTTP {response.status_code}"
+        )
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise RuntimeError("GitHub Integration Service returned invalid status JSON") from error
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    if not payload.get("ready"):
+        raise SystemExit(1)
+
+
+def _disconnect(args: argparse.Namespace) -> None:
+    base_url, token = _integration_config_from_env(url=args.url)
+    try:
+        response = httpx.post(
+            f"{base_url}/v1/instances/disconnect",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=scm_api_timeout_seconds(),
+        )
+    except httpx.HTTPError as error:
+        raise RuntimeError(f"Could not reach the GitHub Integration Service: {error}") from error
+    if response.status_code == httpx.codes.UNAUTHORIZED:
+        raise ValueError(
+            "GitHub Integration Service rejected DIFFUSE_GITHUB_INTEGRATION_TOKEN "
+            "(already disconnected or invalid)"
+        )
+    if response.status_code >= httpx.codes.BAD_REQUEST:
+        raise RuntimeError(
+            f"GitHub Integration Service disconnect failed with HTTP {response.status_code}"
+        )
+    print(
+        json.dumps(
+            {
+                "status": "disconnected",
+                "next": (
+                    "Remove DIFFUSE_GITHUB_INTEGRATION_TOKEN and "
+                    "DIFFUSE_GITHUB_DELIVERY_SIGNING_KEY from the deployment environment."
+                ),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 def _prepare_write_env_path(path: Path) -> tuple[Path, int]:
     """Open a writable regular PATH safely before redeeming an enrollment code."""
     path = path.expanduser()
@@ -158,3 +240,25 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         ),
     )
     connect.set_defaults(handler=_connect)
+
+    status = subparsers.add_parser(
+        "status",
+        help="Show whether this instance is ready with the Diffuse GitHub App",
+    )
+    status.add_argument(
+        "--url",
+        default=None,
+        help="Override DIFFUSE_GITHUB_INTEGRATION_URL",
+    )
+    status.set_defaults(handler=_status)
+
+    disconnect = subparsers.add_parser(
+        "disconnect",
+        help="Revoke this instance's GitHub Integration Service credential",
+    )
+    disconnect.add_argument(
+        "--url",
+        default=None,
+        help="Override DIFFUSE_GITHUB_INTEGRATION_URL",
+    )
+    disconnect.set_defaults(handler=_disconnect)
