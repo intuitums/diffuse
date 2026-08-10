@@ -11,6 +11,7 @@ import stat
 import sys
 import time
 import webbrowser
+from contextlib import suppress
 from pathlib import Path
 
 import httpx
@@ -90,7 +91,9 @@ def _emit_credentials(
     print(json.dumps(credentials, indent=2, sort_keys=True))
 
 
-def _connect_with_code(args: argparse.Namespace, *, write_path: Path | None, write_fd: int | None) -> None:
+def _connect_with_code(
+    args: argparse.Namespace, *, write_path: Path | None, write_fd: int | None
+) -> None:
     base_url = normalize_base_url(args.url.rstrip("/"), field_name="--url")
     if not base_url.startswith("https://"):
         raise ValueError("--url must be an HTTPS origin")
@@ -169,7 +172,7 @@ def _connect_with_browser(
         except webbrowser.Error:
             opened = False
     if opened:
-        print(f"Opened browser to connect GitHub. Waiting for authorization…", file=sys.stderr)
+        print("Opened browser to connect GitHub. Waiting for authorization…", file=sys.stderr)
     else:
         print(
             "Open this URL to connect GitHub:\n"
@@ -194,17 +197,13 @@ def _connect_with_browser(
             raise ValueError("Connect session was not found")
         if poll_response.status_code == httpx.codes.GONE:
             detail = "Connect session expired or credentials were already claimed"
-            try:
+            with suppress(ValueError):
                 detail = str(poll_response.json().get("detail") or detail)
-            except ValueError:
-                pass
             raise ValueError(detail)
         if poll_response.status_code >= httpx.codes.BAD_REQUEST:
             detail = "connect session failed"
-            try:
+            with suppress(ValueError):
                 detail = str(poll_response.json().get("detail") or detail)
-            except ValueError:
-                pass
             raise ValueError(detail)
         try:
             payload = poll_response.json()
