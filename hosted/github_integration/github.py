@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 
 import httpx
 import jwt
 
-from .config import github_app_id, github_private_key, oauth_configuration, public_url
+from .config import (
+    github_app_id,
+    github_app_slug,
+    github_private_key,
+    oauth_configuration,
+    public_url,
+)
 
 GITHUB_API = "https://api.github.com"
 
 
 class GitHubSetupError(RuntimeError):
     """GitHub could not verify a setup user or mint an installation token."""
+
+
+@dataclass(frozen=True)
+class GitHubInstallationSummary:
+    id: int
+    account_login: str
+    account_type: str
 
 
 def oauth_authorize_url(state: str) -> str:
@@ -25,6 +39,13 @@ def oauth_authorize_url(state: str) -> str:
     )
 
 
+def github_app_install_url(*, state: str | None = None) -> str:
+    url = f"https://github.com/apps/{github_app_slug()}/installations/new"
+    if state:
+        return f"{url}?state={state}"
+    return url
+
+
 def _app_jwt() -> str:
     now = int(time.time())
     return jwt.encode(
@@ -34,7 +55,7 @@ def _app_jwt() -> str:
     )
 
 
-def exchange_oauth_code(code: str) -> tuple[int, str, set[int]]:
+def exchange_oauth_code(code: str) -> tuple[int, str, tuple[GitHubInstallationSummary, ...]]:
     config = oauth_configuration()
     response = httpx.post(
         "https://github.com/login/oauth/access_token",
@@ -64,10 +85,19 @@ def exchange_oauth_code(code: str) -> tuple[int, str, set[int]]:
     try:
         user_id = int(user["id"])
         login = str(user["login"])
-        installation_ids = {int(item["id"]) for item in installations}
+        summaries: list[GitHubInstallationSummary] = []
+        for item in installations:
+            account = item.get("account") or {}
+            summaries.append(
+                GitHubInstallationSummary(
+                    id=int(item["id"]),
+                    account_login=str(account.get("login") or f"installation-{item['id']}"),
+                    account_type=str(account.get("type") or "Account"),
+                )
+            )
     except (KeyError, TypeError, ValueError) as error:
         raise GitHubSetupError("GitHub returned an invalid user authorization response") from error
-    return user_id, login, installation_ids
+    return user_id, login, tuple(summaries)
 
 
 def mint_installation_token(installation_id: int) -> tuple[str, str]:
