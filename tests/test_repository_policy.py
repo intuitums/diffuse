@@ -414,6 +414,37 @@ def test_policy_context_files_exclude_common_secret_names_with_a_warning(
     assert any("deploy/id_rsa" in message for message in dropped)
 
 
+def test_symlinked_instruction_files_are_skipped_with_a_warning(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    # CLAUDE.md -> AGENTS.md symlinks are a common convention in reviewed
+    # repositories; discovery must skip them, not fail the whole repository.
+    _write(tmp_path, "AGENTS.md", "Keep changes simple.\n")
+    (tmp_path / "CLAUDE.md").symlink_to("AGENTS.md")
+    _write(tmp_path, "src/api.py", "VALUE = 1\n")
+    _commit(tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="repository_policy.discovery"):
+        snapshot = discover_repository_policy(tmp_path)
+
+    assert [document.source_path for document in snapshot.guidance_documents] == ["AGENTS.md"]
+    assert snapshot.skipped_sources == ("CLAUDE.md",)
+    assert any("CLAUDE.md" in record.getMessage() for record in caplog.records)
+
+
+def test_symlinked_diffuse_rules_still_fail_closed(tmp_path: Path):
+    # .diffuse/ is the owner's explicit opt-in; unlike convention-named files,
+    # a non-regular source there is an error, not a silent skip.
+    _write(tmp_path, "guide.md", "Keep changes simple.\n")
+    (tmp_path / ".diffuse").mkdir()
+    (tmp_path / ".diffuse" / "rules.md").symlink_to("../guide.md")
+    _commit(tmp_path)
+
+    with pytest.raises(ValueError, match="tracked regular file"):
+        discover_repository_policy(tmp_path)
+
+
 @pytest.mark.parametrize(
     ("path", "sensitive"),
     [

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import psycopg2.extras
 
 from .models import (
@@ -26,6 +28,10 @@ def write_repository_policy(
         if not row or row[0] != "building":
             raise ValueError("Repository policy can only be written to a building snapshot")
 
+        cursor.execute(
+            "UPDATE index_snapshots SET skipped_policy_sources = %s::jsonb WHERE id = %s",
+            (json.dumps(list(policy.skipped_sources)), snapshot_id),
+        )
         cursor.execute(
             "DELETE FROM repository_policy_layers WHERE snapshot_id = %s",
             (snapshot_id,),
@@ -107,7 +113,7 @@ def write_repository_policy(
 def load_repository_policy(conn, snapshot_id: int) -> RepositoryPolicySnapshot:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
         cursor.execute(
-            "SELECT policy_fingerprint FROM index_snapshots WHERE id = %s",
+            "SELECT policy_fingerprint, skipped_policy_sources FROM index_snapshots WHERE id = %s",
             (snapshot_id,),
         )
         snapshot = cursor.fetchone()
@@ -171,5 +177,6 @@ def load_repository_policy(conn, snapshot_id: int) -> RepositoryPolicySnapshot:
     return RepositoryPolicySnapshot(
         layers=layers,
         guidance_documents=guidance,
+        skipped_sources=tuple(snapshot["skipped_policy_sources"]),
         fingerprint=snapshot["policy_fingerprint"],
     )
