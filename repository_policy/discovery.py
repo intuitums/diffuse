@@ -189,6 +189,7 @@ def discover_repository_policy(root: Path) -> RepositoryPolicySnapshot:
     tracked = set(tracked_paths)
     layers: list[PolicyLayer] = []
     guidance: list[GuidanceDocument] = []
+    skipped: list[str] = []
     total_bytes = 0
 
     for source_path in tracked_paths:
@@ -228,6 +229,7 @@ def discover_repository_policy(root: Path) -> RepositoryPolicySnapshot:
             )
         elif _is_common_instruction(path):
             if _skip_irregular_convention_file(root, source_path):
+                skipped.append(source_path)
                 continue
             content, size = _read_text(
                 root,
@@ -321,4 +323,5 @@ def discover_repository_policy(root: Path) -> RepositoryPolicySnapshot:
     return RepositoryPolicySnapshot(
         layers=tuple(layers),
         guidance_documents=tuple(guidance),
+        skipped_sources=tuple(skipped),
     )

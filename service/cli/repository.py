@@ -17,6 +17,7 @@ from service.repositories import (
     RegisteredRepository,
     get_repository_by_full_name,
     list_repositories,
+    list_skipped_policy_sources,
     register_repository,
     resolve_github_repository,
     set_repository_auto_review,
@@ -210,6 +211,7 @@ def _reindex_every_repository() -> None:
 def _list_registered_repositories(_args: argparse.Namespace) -> None:
     with closing(get_conn()) as conn:
         repositories = list_repositories(conn)
+        skipped_sources = list_skipped_policy_sources(conn)
     output = [
         {
             "provider": repository.scm_provider,
@@ -221,6 +223,7 @@ def _list_registered_repositories(_args: argparse.Namespace) -> None:
             "mirror_state": repository.mirror_state,
             "last_fetched_sha": repository.last_fetched_sha,
             "last_error_code": repository.last_error_code,
+            "skipped_policy_sources": skipped_sources.get(repository.id, []),
         }
         for repository in repositories
     ]

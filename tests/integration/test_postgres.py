@@ -372,6 +372,7 @@ def test_repository_policy_is_immutable_snapshot_data():
                 priority=10,
             ),
         ),
+        skipped_sources=("CLAUDE.md",),
     )
 
     with closing(psycopg2.connect(database_url)) as connection:

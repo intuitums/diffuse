@@ -410,6 +410,23 @@ def list_repositories(conn) -> list[RegisteredRepository]:
         return [_repository_from_row(row) for row in cursor.fetchall()]
 
 
+def list_skipped_policy_sources(conn) -> dict[int, list[str]]:
+    """Guidance sources discovery skipped, per repository, from each active snapshot."""
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT repository_id, skipped_policy_sources
+            FROM index_snapshots
+            WHERE status = 'active'
+              AND skipped_policy_sources <> '[]'::jsonb
+            """
+        )
+        return {
+            int(repository_id): list(sources)
+            for repository_id, sources in cursor.fetchall()
+        }
+
+
 def list_unbound_github_repositories(
     conn,
     *,

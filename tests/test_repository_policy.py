@@ -429,6 +429,7 @@ def test_symlinked_instruction_files_are_skipped_with_a_warning(
         snapshot = discover_repository_policy(tmp_path)
 
     assert [document.source_path for document in snapshot.guidance_documents] == ["AGENTS.md"]
+    assert snapshot.skipped_sources == ("CLAUDE.md",)
     assert any("CLAUDE.md" in record.getMessage() for record in caplog.records)
 
 
