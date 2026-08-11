@@ -116,8 +116,8 @@ TOP_LEVEL_EPILOG = (
     """\
 examples:
   diffuse repository list
-  diffuse review -b origin/main --diff
-  diffuse review --json
+  diffuse github connect
+  diffuse database status
 
 """
     + EXIT_CODE_HELP
@@ -125,16 +125,8 @@ examples:
 
 REVIEW_EPILOG = (
     """\
-examples:
-  diffuse review                          review this branch against its base
-  diffuse review -b origin/main --diff    pick the base and show diff excerpts
-  diffuse review --json                   emit diffuse-cli-review-v1 on stdout
-  diffuse review --agent                  emit terminal-safe text for agents
-  diffuse review --resume                 retry the last interrupted review
-  diffuse review --fail-on-findings       CI gate: exit 1 when findings exist
-
-Progress is written to stderr only when stderr is a terminal, so --json and
---agent stdout stays byte-for-byte stable in pipelines and CI logs.
+Local branch review is unavailable in Agent-only Diffuse. The flags above are
+retained for the future local-review contract (see docs/v1-scope.md).
 
 """
     + EXIT_CODE_HELP
@@ -814,13 +806,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
     subparsers = parser.add_subparsers(dest="command", required=True)
     review = subparsers.add_parser(
         "review",
-        help="Review the current local branch against its base",
+        help="Local branch review (unavailable in Agent-only Diffuse)",
         description=(
-            "Review committed, staged, and unstaged changes in this checkout against the\n"
-            "merge base with its base branch, using the same index, policy, and learned\n"
-            "rules as the self-hosted server. This local command intentionally runs the\n"
-            "API one-shot runtime; hosted workers may select CLI-native review sessions.\n"
-            "The checkout must correspond to an enabled, indexed Diffuse repository."
+            "Local branch review is not available: local checkouts cannot yet receive\n"
+            "an Agent Host access grant, and Diffuse does not fall back to an\n"
+            "in-process model API. The command never runs a review. Push the branch\n"
+            "and let the configured Agent Host review the pull request."
         ),
         epilog=REVIEW_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,

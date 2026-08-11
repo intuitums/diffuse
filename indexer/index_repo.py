@@ -113,6 +113,11 @@ def index_repo(
                 f"  {len(policy.layers)} config layers and "
                 f"{len(policy.guidance_documents)} guidance documents found"
             )
+            if policy.skipped_sources:
+                print(
+                    "  skipped non-regular guidance sources: "
+                    + ", ".join(policy.skipped_sources)
+                )
 
             print(f"Chunking {repo_name}@{commit_sha[:12]} ...")
             chunks = chunk_repo(root, symbols=graph.symbols)

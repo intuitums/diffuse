@@ -68,7 +68,7 @@ if [[ ! -d .venv ]]; then
   python3.12 -m venv .venv
 fi
 
-# Order matches DEVELOPMENT.md: lock first, then dev tooling, then editable package.
+# Order matches AGENTS.md: lock first, then dev tooling, then editable package.
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install --require-hashes -r requirements.lock
 .venv/bin/pip install -r requirements-dev.txt
