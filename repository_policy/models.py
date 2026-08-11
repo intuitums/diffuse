@@ -447,6 +447,9 @@ def policy_fingerprint(
 class RepositoryPolicySnapshot:
     layers: tuple[PolicyLayer, ...] = ()
     guidance_documents: tuple[GuidanceDocument, ...] = ()
+    # Guidance sources discovery refused to read (e.g. a symlinked CLAUDE.md).
+    # Surfaced to operators; deliberately not part of the fingerprint.
+    skipped_sources: tuple[str, ...] = ()
     fingerprint: str = ""
 
     def __post_init__(self) -> None:

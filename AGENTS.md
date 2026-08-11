@@ -1,106 +1,103 @@
 # AGENTS.md
 
-> **Scope: this file describes ONE environment — the Cursor Cloud VM.** Almost nothing
-> in it generalises: there is no Docker, PostgreSQL runs natively, and the paths and
-> credentials are that VM's. If you are not on that VM, read `DEVELOPMENT.md` instead.
->
-> Note also that `repository_policy/discovery.py` indexes `AGENTS.md` as scoped review
-> guidance, so this file is fed into Diffuse's reviews of Diffuse. Keep it free of
-> anything that reads as a project-wide instruction.
+Diffuse is a self-hosted GitHub pull-request review platform: it receives a PR
+webhook, pins the exact head, runs isolated read-only Codex / Claude Code CLI
+investigations, verifies their findings, and publishes a review and GitHub
+Check. Python 3.12, FastAPI, PostgreSQL 17. Proprietary under
+[BSL 1.1](LICENSE); no contribution process yet.
 
-## Cursor Cloud specific instructions
+> `repository_policy/discovery.py` indexes this file as repo-wide guidance when
+> Diffuse reviews its own repository. Keep it to durable, project-wide
+> instructions; machine-specific setup lives in [docs/cursor-cloud.md](docs/cursor-cloud.md).
 
-Diffuse is a self-hostable code-review platform. Standard setup/run/test commands live in
-`README.md`, `DEVELOPMENT.md`, `docker-compose.yml`, `.github/workflows/ci.yml`, and
-`pyproject.toml`. This section only records the non-obvious, environment-specific things a
-cloud agent needs.
+## Setup
 
-### Repo-managed environment (`.cursor/`)
-
-Cloud Agents resolve configuration from `.cursor/environment.json` first (then personal /
-team saved environments). That file wires:
-
-- `install` → `.cursor/install.sh` — ensure PostgreSQL 17 + pgvector packages when
-  missing, then create/refresh `.venv` from the locked requirements (Build-time /
-  dependency refresh only; must terminate; does not start the database)
-- `start` → `.cursor/start.sh` — start PostgreSQL 17, ensure the `diffuse` role + DBs,
-  isolated git `HOME`, and `/var/lib/diffuse/repositories`
-
-Do not put the API or worker in `install` or `terminals` by default: they need
-`REVIEW_AGENT` / dispatch secrets and the rewrite-free git `HOME` below. Start them
-on demand when the task needs a live stack.
-
-### Services (run natively, not via Docker)
-
-This VM has no Docker. The dev stack runs natively:
-
-- **PostgreSQL 17** — native cluster `17/main` on `127.0.0.1:5432`. Role `diffuse`
-  (password `diffuse-dev`, granted `SUPERUSER`), databases `diffuse` (dev) and `diffuse_test`
-  (integration tests). Nothing uses pgvector any more, but the frozen version-1 baseline still
-  runs `CREATE EXTENSION IF NOT EXISTS vector` before migration 0010 drops it, so the extension
-  must stay installed on the server. The cluster is NOT auto-started on a
-  fresh pod boot (no systemd); start it with `sudo pg_ctlcluster 17 main start` (check with
-  `pg_lsclusters`).
-- **API/app** — `uvicorn service.hosted.webhook_server:app` on `127.0.0.1:8000` (serves
-  GitHub webhooks, private runner transport, `/health`, and `/ready`). Single FastAPI process.
-- **worker** — `python -m service.hosted.worker` (leases jobs from the Postgres queue; there is no
-  separate broker/cache).
-
-Python dependencies live in `.venv` (created by the startup update script). Use `.venv/bin/...`
-or activate it. `.env` (gitignored) already exists with dev values and points `DATABASE_URL` at
-the native localhost Postgres.
-
-### `.env` no longer leaks into the test process
-
-Tests do not load `.env` automatically. Running tests with `.env` in place is fine, but do
-**not** run `pytest` from a shell where you have already done
-`set -a; source .env` (which is how you launch the app/worker below). Run the app in one shell
-and tests in a separate, un-sourced shell.
+Install order matters: the lock file first (pins exact versions), dev tooling
+second (its ranges are then already satisfied), the package last with
+`--no-deps` so pinned requirements are not re-resolved (DEV-318).
 
 ```bash
-.venv/bin/python -m pytest -m "not integration"
-POSTGRES_TEST_DATABASE_URL=postgresql://diffuse:diffuse-dev@127.0.0.1:5432/diffuse_test \
-  .venv/bin/python -m pytest -m integration            # migrate the test DB first
+uv venv --seed .venv --python 3.12    # or: python3.12 -m venv .venv
+source .venv/bin/activate
+pip install --require-hashes -r requirements.lock
+pip install -r requirements-dev.txt
+pip install --no-deps -e .
+pip check                             # -> No broken requirements found.
 ```
 
-Integration tests migrate databases from scratch, and the frozen version-1 baseline still
-creates the `vector` extension (migration 0010 drops it again), which requires the `diffuse`
-role to be a Postgres `SUPERUSER` (already granted here; the CI/Docker `diffuse` user is a
-superuser too).
-
-### GOTCHA 2 — run the app + worker with an isolated git `HOME`
-
-The VM's global `~/.gitconfig` contains a GitHub auth rewrite
-(`url.https://x-access-token:<token>@github.com/.insteadOf = https://github.com/`) so the agent
-can push. Diffuse's `RepositoryMirror` verifies a mirror by comparing `git remote get-url origin`
-against a credential-free clone URL; the global `insteadOf` rewrite makes `get-url` return a
-credentialed URL, so the equality check fails and repository indexing dies with
-"Existing repository mirror has an unexpected remote" (`mirrorState: failed`). Production service
-users have no such rewrite. Start the app and worker with an isolated, rewrite-free git home so
-they behave like production:
+## Tests
 
 ```bash
-export HOME=/home/ubuntu/.diffuse-git-home   # empty .gitconfig, already created
+pytest -m "not integration"           # fast, no database, no network
+pytest tests/test_database_migrations.py   # single file works the same way
 ```
 
-With that set, `mirrorState` reaches `ready` and the worker clones/fetches/checks out commits
-normally. (This only affects Diffuse's git subprocesses; keep your normal shell `HOME` for your
-own `git commit`/`git push`.)
+Run the unit suite constantly; anything not marked `integration` must pass
+without external services. Tests never load `.env`.
 
-### Both the app and worker validate Agent configuration at startup
+**A green unit run is not a full pass.** Applying migrations and every store
+are covered only by `tests/integration/`, which needs PostgreSQL. Integration tests skip
+silently when `POSTGRES_TEST_DATABASE_URL` is unset — check the summary for
+`skipped` before trusting a green run.
 
-`service.webhook_server:app` runs `validate_worker_configuration` in its lifespan. Set
-`REVIEW_AGENT` and configure Agent Dispatch plus Review Access Grants before starting either
-process. The worker also checks that the isolated Agent Hosts are ready.
+```bash
+cp .env.example .env    # set POSTGRES_PASSWORD plus the empty dispatch/transport
+                        # secrets (generation commands are in their comments).
+                        # Compose interpolates the whole file even when starting
+                        # one service, so its required variables must all be set.
+docker compose up -d db                              # wait until "(healthy)"
+docker compose exec db createdb -U diffuse diffuse_test
+export POSTGRES_TEST_DATABASE_URL="postgresql://diffuse:<POSTGRES_PASSWORD>@localhost:5432/diffuse_test"
+DATABASE_URL="$POSTGRES_TEST_DATABASE_URL" diffuse database migrate
+pytest -m integration
+```
 
-### External secrets for full end-to-end review
+Before opening a PR — and whenever touching `subprocess`, filesystem paths, the
+sandbox, or the mirror — run the suite inside the shipped image's platform and
+dependency set (CI builds the same image stage; disposable tmpfs database):
 
-Onboarding *and indexing* a repo works with no external secrets: retrieval is graph and
-lexical search inside PostgreSQL. Review additionally needs:
+```bash
+docker compose -f docker-compose.tests.yml run --build --rm tests
+docker compose -f docker-compose.tests.yml down -v
+```
 
-- `REVIEW_AGENT`, Agent Dispatch signing, a Review Access Grant signing key, and an authenticated
-  isolated Agent Host.
-- `GITHUB_TOKEN` + webhook secret — to clone private repos and publish reviews. Public repos
-  clone with no token (verified by onboarding `octocat/Hello-World` to `mirrorState: ready`).
+Without `--build`, `compose run` reuses whatever image is cached — a green run
+may be validating stale code.
 
-The bare-repo mirrors live under `/var/lib/diffuse/repositories` (created, owned by `ubuntu`).
+## Lint
+
+```bash
+ruff check .          # CI runs the same check; any finding fails
+```
+
+`ruff check --fix .` and `ruff format` are fine locally, but keep
+formatting-only churn out of functional PRs.
+
+## Database changes: never edit `sql/schema.sql`
+
+`sql/schema.sql` is the frozen version-1 migration. Its SHA-256 is pinned in
+`service/storage/migrations.py` and verified at catalog load — any edit, even
+whitespace, is a hard failure. Add a numbered migration under `sql/migrations/`
+instead; see [sql/migrations/README.md](sql/migrations/README.md) for the
+naming and content rules. Never edit a migration after it ships: applied
+migrations are checksum-verified and drift fails closed at startup.
+
+## Dependencies
+
+After intentionally changing a range in `requirements.txt`, regenerate and
+review the lock:
+
+```bash
+pip-compile requirements.txt --output-file=requirements.lock \
+  --generate-hashes --allow-unsafe --strip-extras
+```
+
+## Where to read more
+
+- [docs/v1-scope.md](docs/v1-scope.md) — the active product boundary. Read it
+  first whenever an older document or code comment conflicts with it.
+- [docs/README.md](docs/README.md) — index of the remaining reference docs.
+- [.env.example](.env.example) — environment variables, documented inline.
+- [SECURITY.md](SECURITY.md) — vulnerability reporting and the security model.
+- [docs/cursor-cloud.md](docs/cursor-cloud.md) — Cursor Cloud VM only: native
+  PostgreSQL, no Docker, and that machine's gotchas.

@@ -59,10 +59,11 @@ regexes = [
 
 [[allowlists]]
 description = """
-The REST examples in `docs/rest-api.md` carry a random `Idempotency-Key` UUID,
-which the generic API-key rule reads as a secret. UUIDs are not credentials, and
-the surrounding Authorization headers are `${SHELL_VARIABLE}` references rather
-than values.
+The REST examples in the removed `docs/rest-api.md` carried a random
+`Idempotency-Key` UUID, which the generic API-key rule reads as a secret. The
+document is gone but remains in git history, which CI scans in full. UUIDs are
+not credentials, and the surrounding Authorization headers were
+`${SHELL_VARIABLE}` references rather than values.
 """
 regexTarget = "line"
 regexes = [

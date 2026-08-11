@@ -7,20 +7,23 @@
 
 `diffuse` is the command-line interface to a self-hosted installation. Its
 subcommands onboard and manage indexed repositories (`repository`, or its
-`repo` alias) and
-cross-repository context clusters (`cluster`), inspect and moderate
-feedback-derived rules (`learning`), inspect and migrate the PostgreSQL schema
+`repo` alias), inspect and migrate the PostgreSQL schema
 (`database`), sign in to and inspect Agent Host CLIs (`agent`), and configure
-the GitHub integration (`github`). Keep the CLI thin: easy GitHub connect and
+the GitHub integration (`github`). The `cluster` (cross-repository context)
+and `learning` (feedback-derived rules) subcommands are transitional: v1 scope
+removes cross-repository context and defers rule learning, so do not build on
+them. Keep the CLI thin: easy GitHub connect and
 (later) local reviews against a Diffuse host. Connect/readiness diagnostics
 belong on the web dashboard — see [v1-scope.md](v1-scope.md) → Operator
 surfaces. Local-branch review is intentionally not available until it can use
 the hosted Review Access Grant contract.
 
 The production image's `diffuse` entrypoint is a superset of the packaged CLI:
-alongside the subcommands below it takes `serve`, `worker`, and `healthcheck`,
-which is how Compose starts the API and worker. A `pip install` of this package
-maps `diffuse` to the CLI only, so `diffuse serve` outside the image exits with
+alongside the subcommands below it takes the service entrypoints Compose uses
+(`serve`, `worker`, `github-delivery-poller`, `agent-host`, `egress-proxy`,
+`context-service`) plus their healthcheck/preflight variants;
+`service/runtime.py` is authoritative. A `pip install` of this package maps
+`diffuse` to the CLI only, so `diffuse serve` outside the image exits with
 `invalid choice: 'serve'`.
 
 ## Installing
