@@ -18,7 +18,7 @@ first pull request. These pages are the reference behind it.
 
 Elsewhere in the repository:
 
-- [`DEVELOPMENT.md`](../DEVELOPMENT.md) — environment setup, tests, migration
+- [`AGENTS.md`](../AGENTS.md) — environment setup, tests, migration
   rules, and the dependency workflow.
 - [`SECURITY.md`](../SECURITY.md) — how to report a vulnerability.
 - [`.env.example`](../.env.example) — every environment variable, documented

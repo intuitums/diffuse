@@ -67,8 +67,8 @@ unbounded swarm.
 Read [the v1 scope](docs/v1-scope.md) first. The current reference map is in
 [docs/README.md](docs/README.md).
 
-For local development and the transitional stack that is present today, use
-[DEVELOPMENT.md](DEVELOPMENT.md). It documents the actual commands; it is not a
+For local development — setup, tests, lint, and the database migration rules —
+use [AGENTS.md](AGENTS.md). It documents verified commands; it is not a
 promise that every currently exposed endpoint or configuration field survives
 the v1 reset.
 
