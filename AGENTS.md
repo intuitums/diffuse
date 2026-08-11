@@ -65,9 +65,12 @@ sandbox, or the mirror — run the suite inside the shipped image's platform and
 dependency set (same image CI uses; disposable tmpfs database):
 
 ```bash
-docker compose -f docker-compose.tests.yml run --rm tests
+docker compose -f docker-compose.tests.yml run --build --rm tests
 docker compose -f docker-compose.tests.yml down -v
 ```
+
+Without `--build`, `compose run` reuses whatever image is cached — a green run
+may be validating stale code.
 
 ## Lint
 
