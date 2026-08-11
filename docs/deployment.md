@@ -24,18 +24,20 @@ repositories you want reviewed (most operators do this first). Then, on the
 machine that runs self-hosted Diffuse, connect that installation:
 
 ```bash
+cp .env.example .env
 diffuse github connect
 diffuse github status
 ```
 
 The CLI opens a browser, asks you to authorize GitHub, and — when you already
 have the App installed — binds that installation and writes credentials to
-`./github-integration.env` (mode 0600). The instance label defaults to this
-machine's hostname. If the App is not installed yet, the browser page links to
-the install flow and returns to the same CLI session afterward.
+`./.env` (mode 0600), preserving the rest of the deployment configuration.
+The instance label defaults to this machine's hostname. If the App is not
+installed yet, the browser page links to the install flow and returns to the
+same CLI session afterward.
 
-Credentials are returned exactly once; load that env file (or copy the values
-into your deployment's secret store). The required values are:
+Credentials are returned exactly once and saved in that env file. The required
+values are:
 
 ```dotenv
 DIFFUSE_GITHUB_INTEGRATION_URL=https://api.diffuse.website
@@ -56,8 +58,7 @@ self-hosted deployment.
 ## Start and verify
 
 ```bash
-cp .env.example .env
-# Set POSTGRES_PASSWORD, GitHub integration credentials, REVIEW_AGENT, the
+# Set POSTGRES_PASSWORD, REVIEW_AGENT, the
 # Agent Dispatch keys, the Review Access Grant signing key, and the transport
 # secret.
 docker compose --profile agent-claude --profile agent-codex up -d --build
