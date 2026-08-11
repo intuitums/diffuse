@@ -10,14 +10,6 @@ Check. Python 3.12, FastAPI, PostgreSQL 17. Proprietary under
 > Diffuse reviews its own repository. Keep it to durable, project-wide
 > instructions; machine-specific setup lives in [docs/cursor-cloud.md](docs/cursor-cloud.md).
 
-## Engineering principle
-
-Build complex things as simply as possible. When two designs solve the
-problem, choose the one with fewer moving parts — no new abstraction layers,
-indirection, configuration, or generality beyond what the change in front of
-you needs. Finding a way to reduce complexity while solving the problem is a
-valued contribution in its own right.
-
 ## Setup
 
 Install order matters: the lock file first (pins exact versions), dev tooling
