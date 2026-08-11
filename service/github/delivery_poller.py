@@ -9,6 +9,7 @@ the repository clone, index, findings, model credentials, or review output.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import hmac
 import json
@@ -20,13 +21,22 @@ from typing import Any
 
 import httpx
 
-from service.github.api import normalize_pull_request_event, normalize_push_event
+from service.github.api import (
+    fetch_manual_pull_request_event,
+    normalize_manual_review_request,
+    normalize_pull_request_event,
+    normalize_push_event,
+    normalize_review_conversation_event,
+    normalize_review_feedback_comment_event,
+)
 from service.hosted.webhook_server import (
     ACCEPTED_ACTIONS,
     _is_github_managed_description_update,
     _record_not_onboarded,
     enqueue_pull_request,
     enqueue_repository_push,
+    enqueue_review_conversation,
+    record_review_feedback,
 )
 from service.hosted.workflow import (
     DeliveryConflictError,
@@ -110,31 +120,27 @@ def _payload_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
 
 
-def ingest_event(*, delivery_id: str, event_name: str, payload: dict[str, Any]) -> str:
-    """Idempotently admit a trusted GitHub delivery into local workflow state."""
-    body = _payload_bytes(payload)
-    if event_name == "ping":
-        return "ignored:ping"
-    if event_name == "push":
-        event = normalize_push_event(payload, delivery_id=delivery_id)
-        if event is None:
-            return "ignored:push_not_default_branch"
-        try:
-            result = enqueue_repository_push(event, body)
-        except RepositoryNotOnboardedError:
-            _record_not_onboarded(event, event_name="push")
-            return "ignored:repository_not_onboarded"
-        except (
-            DeliveryConflictError,
-            EventOrderConflictError,
-            RepositoryIdentityConflictError,
-        ) as error:
-            raise GitHubDeliveryPollerError(
-                "GitHub delivery push conflicts with local workflow state"
-            ) from error
-        return "accepted" if result.accepted else "deduplicated"
-    if event_name != "pull_request":
-        return "ignored:unsupported_event"
+def _ingest_push(*, delivery_id: str, payload: dict[str, Any], body: bytes) -> str:
+    event = normalize_push_event(payload, delivery_id=delivery_id)
+    if event is None:
+        return "ignored:push_not_default_branch"
+    try:
+        result = enqueue_repository_push(event, body)
+    except RepositoryNotOnboardedError:
+        _record_not_onboarded(event, event_name="push")
+        return "ignored:repository_not_onboarded"
+    except (
+        DeliveryConflictError,
+        EventOrderConflictError,
+        RepositoryIdentityConflictError,
+    ) as error:
+        raise GitHubDeliveryPollerError(
+            "GitHub delivery push conflicts with local workflow state"
+        ) from error
+    return "accepted" if result.accepted else "deduplicated"
+
+
+def _ingest_pull_request(*, delivery_id: str, payload: dict[str, Any], body: bytes) -> str:
     action = payload.get("action")
     if action not in ACCEPTED_ACTIONS:
         return f"ignored:action={action}"
@@ -157,6 +163,95 @@ def ingest_event(*, delivery_id: str, event_name: str, payload: dict[str, Any]) 
     if result.state == "auto_review_disabled":
         return "ignored:auto_review_disabled"
     return "accepted" if result.accepted else "deduplicated"
+
+
+def _ingest_issue_comment(*, delivery_id: str, payload: dict[str, Any], body: bytes) -> str:
+    if payload.get("action") != "created":
+        return f"ignored:action={payload.get('action')}"
+    manual_request = normalize_manual_review_request(payload)
+    if manual_request is None:
+        return "ignored:not_manual_review_trigger"
+    try:
+        event = asyncio.run(
+            fetch_manual_pull_request_event(manual_request, delivery_id=delivery_id)
+        )
+    except Exception as error:  # noqa: BLE001 — surface GitHub fetch failures as poller errors
+        raise GitHubDeliveryPollerError(
+            f"Could not load the pull request for a manual @diffuse review: {error}"
+        ) from error
+    try:
+        result = enqueue_pull_request(event, body)
+    except RepositoryNotOnboardedError:
+        _record_not_onboarded(event, event_name="pull_request")
+        return "ignored:repository_not_onboarded"
+    except (
+        DeliveryConflictError,
+        EventOrderConflictError,
+        RepositoryIdentityConflictError,
+    ) as error:
+        raise GitHubDeliveryPollerError(
+            "GitHub delivery manual review conflicts with local workflow state"
+        ) from error
+    return "accepted" if result.accepted else "deduplicated"
+
+
+def _ingest_review_comment(*, delivery_id: str, payload: dict[str, Any], body: bytes) -> str:
+    if payload.get("action") != "created":
+        return f"ignored:action={payload.get('action')}"
+    feedback = normalize_review_feedback_comment_event(payload, delivery_id=delivery_id)
+    feedback_state: str | None = None
+    if feedback is not None:
+        try:
+            feedback_state = record_review_feedback(feedback, body)
+        except RepositoryNotOnboardedError:
+            _record_not_onboarded(feedback, event_name="review_feedback")
+            return "ignored:repository_not_onboarded"
+        except RepositoryIdentityConflictError as error:
+            raise GitHubDeliveryPollerError(
+                "GitHub delivery review feedback conflicts with local workflow state"
+            ) from error
+    conversation = normalize_review_conversation_event(payload, delivery_id=delivery_id)
+    if conversation is None:
+        if feedback_state in {"recorded", "duplicate"}:
+            return f"recorded:review_feedback:{feedback_state}"
+        return "ignored:not_review_thread_question"
+    try:
+        result = enqueue_review_conversation(conversation, body)
+    except RepositoryNotOnboardedError:
+        _record_not_onboarded(conversation, event_name="review_conversation")
+        return "ignored:repository_not_onboarded"
+    except (DeliveryConflictError, RepositoryIdentityConflictError) as error:
+        raise GitHubDeliveryPollerError(
+            "GitHub delivery review conversation conflicts with local workflow state"
+        ) from error
+    if result.state.startswith("ignored:"):
+        return result.state
+    return "accepted" if result.accepted else "deduplicated"
+
+
+def ingest_event(*, delivery_id: str, event_name: str, payload: dict[str, Any]) -> str:
+    """Idempotently admit a trusted GitHub delivery into local workflow state.
+
+    Keep this in parity with the direct ``/webhook/github`` path so the GitHub
+    Integration Service poller admits the same review, feedback, and manual
+    trigger events an operator would get from a standalone App webhook.
+    """
+    body = _payload_bytes(payload)
+    if event_name == "ping":
+        return "ignored:ping"
+    if event_name == "installation":
+        # Hosted ingress deactivates/revokes on uninstall. Locally there is
+        # nothing to enqueue; acknowledge so the delivery does not retry forever.
+        return f"ignored:installation:{payload.get('action')}"
+    if event_name == "push":
+        return _ingest_push(delivery_id=delivery_id, payload=payload, body=body)
+    if event_name == "pull_request":
+        return _ingest_pull_request(delivery_id=delivery_id, payload=payload, body=body)
+    if event_name == "issue_comment":
+        return _ingest_issue_comment(delivery_id=delivery_id, payload=payload, body=body)
+    if event_name == "pull_request_review_comment":
+        return _ingest_review_comment(delivery_id=delivery_id, payload=payload, body=body)
+    return "ignored:unsupported_event"
 
 
 def pull_once(config: DeliveryPollerConfiguration) -> int:

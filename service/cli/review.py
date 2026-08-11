@@ -938,7 +938,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
 
     github = subparsers.add_parser(
         "github",
-        help="Connect this self-hosted instance to the Diffuse GitHub App",
+        help="Connect, inspect, and disconnect the Diffuse GitHub App integration",
     )
     github_cli.configure_parser(github)
 
