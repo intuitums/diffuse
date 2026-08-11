@@ -57,11 +57,12 @@ self-hosted deployment.
 
 ```bash
 cp .env.example .env
-# Set POSTGRES_PASSWORD, GitHub integration credentials, REVIEW_AGENT, and the
-# Agent Dispatch / Review Access Grant keys.
+# Set POSTGRES_PASSWORD, GitHub integration credentials, REVIEW_AGENT, the
+# Agent Dispatch keys, the Review Access Grant signing key, and the transport
+# secret.
 docker compose --profile agent-claude --profile agent-codex up -d --build
-curl --fail https://your-diffuse-host/health
-curl --fail https://your-diffuse-host/ready
+curl --fail http://127.0.0.1:8000/health
+curl --fail http://127.0.0.1:8000/ready
 ```
 
 The Agent Host services are profile-gated: without at least the profile

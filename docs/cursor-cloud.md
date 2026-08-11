@@ -55,7 +55,7 @@ The VM's global `~/.gitconfig` contains a GitHub auth rewrite
 `RepositoryMirror` verifies a mirror by comparing `git remote get-url origin`
 against a credential-free clone URL; the rewrite makes that check fail and
 repository indexing dies with "Existing repository mirror has an unexpected
-remote" (`mirrorState: failed`). Start the app and worker with the isolated,
+remote" (`mirror_state: failed`). Start the app and worker with the isolated,
 rewrite-free git home so they behave like production:
 
 ```bash
@@ -71,7 +71,9 @@ Both `service.hosted.webhook_server:app` (in its lifespan) and the worker run
 Dispatch plus Review Access Grants before starting either process; the worker
 additionally checks that the isolated Agent Hosts are ready.
 
-Onboarding and indexing a repo needs no external secrets. Review additionally
-needs `REVIEW_AGENT`, dispatch/grant signing keys, an authenticated Agent
-Host, and — for private repos and publishing — `GITHUB_TOKEN` plus a webhook
-secret. Bare-repo mirrors live under `/var/lib/diffuse/repositories`.
+Onboarding and indexing a repo needs no *external* secrets, but `REVIEW_AGENT`
+and the Review Access Grant signing key are startup requirements for the app
+itself. Running reviews additionally needs the dispatch keys and an
+authenticated Agent Host; private repos and publishing need `GITHUB_TOKEN`
+plus a webhook secret. Bare-repo mirrors live under
+`/var/lib/diffuse/repositories`.

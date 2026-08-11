@@ -43,16 +43,16 @@ pytest tests/test_database_migrations.py   # single file works the same way
 Run the unit suite constantly; anything not marked `integration` must pass
 without external services. Tests never load `.env`.
 
-**A green unit run is not a full pass.** Migrations and every store are covered
-only by `tests/integration/`, which needs PostgreSQL. Integration tests skip
+**A green unit run is not a full pass.** Applying migrations and every store
+are covered only by `tests/integration/`, which needs PostgreSQL. Integration tests skip
 silently when `POSTGRES_TEST_DATABASE_URL` is unset — check the summary for
 `skipped` before trusting a green run.
 
 ```bash
-cp .env.example .env    # fill every empty value in the top REQUIRED block;
-                        # generation commands are in the inline comments.
-                        # Compose interpolates the whole file even for one
-                        # service, so partial .env files fail fast.
+cp .env.example .env    # set POSTGRES_PASSWORD plus the empty dispatch/transport
+                        # secrets (generation commands are in their comments).
+                        # Compose interpolates the whole file even when starting
+                        # one service, so its required variables must all be set.
 docker compose up -d db                              # wait until "(healthy)"
 docker compose exec db createdb -U diffuse diffuse_test
 export POSTGRES_TEST_DATABASE_URL="postgresql://diffuse:<POSTGRES_PASSWORD>@localhost:5432/diffuse_test"
@@ -62,7 +62,7 @@ pytest -m integration
 
 Before opening a PR — and whenever touching `subprocess`, filesystem paths, the
 sandbox, or the mirror — run the suite inside the shipped image's platform and
-dependency set (same image CI uses; disposable tmpfs database):
+dependency set (CI builds the same image stage; disposable tmpfs database):
 
 ```bash
 docker compose -f docker-compose.tests.yml run --build --rm tests
@@ -75,7 +75,7 @@ may be validating stale code.
 ## Lint
 
 ```bash
-ruff check .          # CI runs exactly this; any finding fails
+ruff check .          # CI runs the same check; any finding fails
 ```
 
 `ruff check --fix .` and `ruff format` are fine locally, but keep

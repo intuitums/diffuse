@@ -432,6 +432,18 @@ def test_symlinked_instruction_files_are_skipped_with_a_warning(
     assert any("CLAUDE.md" in record.getMessage() for record in caplog.records)
 
 
+def test_symlinked_diffuse_rules_still_fail_closed(tmp_path: Path):
+    # .diffuse/ is the owner's explicit opt-in; unlike convention-named files,
+    # a non-regular source there is an error, not a silent skip.
+    _write(tmp_path, "guide.md", "Keep changes simple.\n")
+    (tmp_path / ".diffuse").mkdir()
+    (tmp_path / ".diffuse" / "rules.md").symlink_to("../guide.md")
+    _commit(tmp_path)
+
+    with pytest.raises(ValueError, match="tracked regular file"):
+        discover_repository_policy(tmp_path)
+
+
 @pytest.mark.parametrize(
     ("path", "sensitive"),
     [

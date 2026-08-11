@@ -59,8 +59,8 @@ unbounded swarm.
 - Automatic pull-request approval.
 - General repository Q&A, analytics, cross-repository context, or PR
   conversations.
-- Automatic policy inference or activation, nested policy files, autonomous
-  fixes, or arbitrary repository-code execution.
+- Automatic policy inference or activation, autonomous fixes, or arbitrary
+  repository-code execution.
 
 ## Documentation
 
