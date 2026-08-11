@@ -25,7 +25,7 @@ _ENV_KEYS = (
 )
 _POLL_INTERVAL_SECONDS = 2.0
 _DEFAULT_POLL_TIMEOUT_SECONDS = 15 * 60
-_DEFAULT_ENV_FILENAME = "github-integration.env"
+_DEFAULT_ENV_FILENAME = ".env"
 _NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -37,7 +37,7 @@ def default_instance_name() -> str:
 
 
 def default_write_env_path() -> Path:
-    """Write one-time connection secrets next to where the operator ran the CLI."""
+    """Merge one-time connection secrets into the deployment env file."""
     return Path.cwd() / _DEFAULT_ENV_FILENAME
 
 
@@ -247,7 +247,7 @@ def _connect(args: argparse.Namespace) -> None:
     if print_secrets and write_env is not None:
         raise ValueError("Use either --write-env PATH or --print-secrets, not both")
     if not print_secrets:
-        # Default: lock down github-integration.env before redeeming one-time
+        # Default: lock down .env before redeeming one-time
         # credentials so a local write failure cannot burn the session/code.
         destination = Path(write_env) if write_env is not None else default_write_env_path()
         write_path, write_fd = _prepare_write_env_path(destination)
@@ -346,11 +346,11 @@ def _disconnect(args: argparse.Namespace) -> None:
 
 
 def _prepare_write_env_path(path: Path) -> tuple[Path, int]:
-    """Open a writable regular PATH safely before redeeming a connection code."""
+    """Open a regular env file safely before redeeming one-time credentials."""
     path = path.expanduser()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise ValueError(f"--write-env must be a regular file path: {path}")
@@ -364,7 +364,28 @@ def _prepare_write_env_path(path: Path) -> tuple[Path, int]:
 
 
 def _write_env_file(fd: int, credentials: dict[str, object]) -> None:
-    lines = [f"{key}={credentials[key]}\n" for key in _ENV_KEYS]
+    """Merge integration credentials into an already-open dotenv file."""
+    size = os.fstat(fd).st_size
+    if size:
+        os.lseek(fd, 0, os.SEEK_SET)
+        existing = os.read(fd, size).decode("utf-8")
+    else:
+        existing = ""
+    written: set[str] = set()
+    lines: list[str] = []
+    for line in existing.splitlines(keepends=True):
+        key, separator, _value = line.partition("=")
+        normalized_key = key.strip()
+        if separator and normalized_key in _ENV_KEYS:
+            lines.append(f"{normalized_key}={credentials[normalized_key]}\n")
+            written.add(normalized_key)
+        else:
+            lines.append(line)
+    for key in _ENV_KEYS:
+        if key not in written:
+            if lines and not lines[-1].endswith("\n"):
+                lines.append("\n")
+            lines.append(f"{key}={credentials[key]}\n")
     try:
         # The descriptor was opened before code redemption, so reopening a
         # swapped path cannot redirect one-time secrets to another file.

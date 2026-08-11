@@ -41,10 +41,9 @@ unbounded swarm.
 
 ## What v1 includes
 
-- One guided, verified GitHub App connection: create or connect an
-  operator-owned App, install it through GitHub, verify the installation, then
-  choose the repositories to review. Signed webhooks publish idempotent reviews
-  and Checks.
+- One guided, verified connection to the Diffuse GitHub App: install it through
+  GitHub, bind the self-hosted instance, then choose the repositories to review.
+  Signed webhooks publish idempotent reviews and Checks.
 - Commit-pinned repository mirrors, indexing, and targeted retrieval.
 - Isolated Codex and Claude Code CLI review runners. The worker never executes
   either CLI or receives vendor credentials.

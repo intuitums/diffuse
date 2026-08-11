@@ -51,7 +51,7 @@ def test_connect_write_env_keeps_secrets_out_of_stdout(monkeypatch, tmp_path, ca
     assert "DIFFUSE_GITHUB_DELIVERY_SIGNING_KEY=signing-secret" in text
 
 
-def test_connect_defaults_to_github_integration_env_and_hostname(
+def test_connect_defaults_to_deployment_env_and_hostname(
     monkeypatch, tmp_path, capsys
 ):
     monkeypatch.chdir(tmp_path)
@@ -65,7 +65,7 @@ def test_connect_defaults_to_github_integration_env_and_hostname(
     monkeypatch.setattr(github_cli.httpx, "post", fake_post)
     github_cli._connect(_connect_args(code="c" * 40, name=None, write_env=None))
     assert captured[0]["display_name"] == "reviewer-1.local"
-    path = tmp_path / "github-integration.env"
+    path = tmp_path / ".env"
     assert path.is_file()
     assert path.stat().st_mode & 0o777 == 0o600
     assert "token-secret" not in capsys.readouterr().out
@@ -75,7 +75,7 @@ def test_connect_print_secrets_warns_about_one_time_secrets(monkeypatch, capsys)
     monkeypatch.setattr(github_cli.httpx, "post", lambda *args, **kwargs: _Response())
     github_cli._connect(_connect_args(print_secrets=True))
     printed = capsys.readouterr()
-    assert "github-integration.env" in printed.err
+    assert ".env" in printed.err
     payload = json.loads(printed.out)
     assert payload["DIFFUSE_GITHUB_INTEGRATION_TOKEN"] == "token-secret"
 
@@ -159,6 +159,21 @@ def test_connect_write_env_locks_existing_permissive_file_before_secrets(
     assert path.stat().st_mode & 0o777 == 0o600
     assert "token-secret" in path.read_text()
     assert "token-secret" not in capsys.readouterr().out
+
+
+def test_connect_merges_credentials_without_erasing_deployment_configuration(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / ".env"
+    path.write_text("POSTGRES_PASSWORD=database-secret\nREVIEW_AGENT=codex\n")
+    monkeypatch.setattr(github_cli.httpx, "post", lambda *args, **kwargs: _Response())
+
+    github_cli._connect(_connect_args(write_env=str(path)))
+
+    text = path.read_text()
+    assert "POSTGRES_PASSWORD=database-secret" in text
+    assert "REVIEW_AGENT=codex" in text
+    assert "DIFFUSE_GITHUB_INTEGRATION_TOKEN=token-secret" in text
 
 
 class _SessionCreateResponse:
