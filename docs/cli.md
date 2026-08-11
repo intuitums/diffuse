@@ -11,8 +11,11 @@ subcommands onboard and manage indexed repositories (`repository`, or its
 cross-repository context clusters (`cluster`), inspect and moderate
 feedback-derived rules (`learning`), inspect and migrate the PostgreSQL schema
 (`database`), sign in to and inspect Agent Host CLIs (`agent`), and configure
-the GitHub integration (`github`). Local-branch review is intentionally not
-available until it can use the hosted Review Access Grant contract.
+the GitHub integration (`github`). Keep the CLI thin: easy GitHub connect and
+(later) local reviews against a Diffuse host. Connect/readiness diagnostics
+belong on the web dashboard — see [v1-scope.md](v1-scope.md) → Operator
+surfaces. Local-branch review is intentionally not available until it can use
+the hosted Review Access Grant contract.
 
 The production image's `diffuse` entrypoint is a superset of the packaged CLI:
 alongside the subcommands below it takes `serve`, `worker`, and `healthcheck`,
@@ -34,13 +37,20 @@ diffuse maintenance reindex acme/api
 diffuse cluster list
 diffuse learning list 1
 diffuse agent status
-diffuse github connect <one-time-code> --name <instance-name> \
-  --write-env /path/to/github-integration.env
+diffuse github connect
+diffuse github status
+diffuse github disconnect
 ```
 
-Prefer `--write-env` so one-time connection secrets are written mode `0600`
-instead of printed to stdout. `diffuse token` has been removed. Service-token
-minting is not part of v1.
+`diffuse github connect` opens a browser against the GitHub Integration Service,
+authorizes your GitHub account, and binds an App installation (install the App
+first when you can). By default it labels the instance with this machine's
+hostname and writes one-time secrets to `./github-integration.env` (mode
+`0600`). Optional overrides: `--name`, `--write-env PATH`, `--print-secrets`,
+`--no-browser`, or `--code` for the advanced setup-page fallback. `diffuse
+github status` checks the Integration Service binding (ready/not-ready).
+`diffuse github disconnect` revokes the instance credential. `diffuse token`
+has been removed. Service-token minting is not part of v1.
 
 ## Repository controls
 

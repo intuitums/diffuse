@@ -10,14 +10,18 @@ from dataclasses import dataclass
 _INSTALLATION_ID = re.compile(r"^[0-9]{1,20}$")
 
 
-class HostedConfigurationError(ValueError):
+class IntegrationConfigurationError(ValueError):
     """The integration service cannot safely start with its current configuration."""
+
+
+# Back-compat alias for any external imports.
+HostedConfigurationError = IntegrationConfigurationError
 
 
 def required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
-        raise HostedConfigurationError(f"{name} must be configured")
+        raise IntegrationConfigurationError(f"{name} must be configured")
     return value
 
 
@@ -29,7 +33,7 @@ def optional(name: str) -> str | None:
 def public_url() -> str:
     value = required("DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL").rstrip("/")
     if not value.startswith("https://") or "/" in value[len("https://") :]:
-        raise HostedConfigurationError(
+        raise IntegrationConfigurationError(
             "DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL must be an HTTPS origin"
         )
     return value
@@ -38,14 +42,14 @@ def public_url() -> str:
 def github_app_id() -> str:
     value = required("GITHUB_APP_ID")
     if not _INSTALLATION_ID.fullmatch(value):
-        raise HostedConfigurationError("GITHUB_APP_ID must be numeric")
+        raise IntegrationConfigurationError("GITHUB_APP_ID must be numeric")
     return value
 
 
 def github_private_key() -> str:
     value = required("GITHUB_APP_PRIVATE_KEY")
     if "BEGIN" not in value or "PRIVATE KEY" not in value:
-        raise HostedConfigurationError("GITHUB_APP_PRIVATE_KEY must be a PEM private key")
+        raise IntegrationConfigurationError("GITHUB_APP_PRIVATE_KEY must be a PEM private key")
     return value.replace("\\n", "\n")
 
 
@@ -67,11 +71,11 @@ def token_key() -> bytes:
     try:
         decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
     except (ValueError, TypeError) as error:
-        raise HostedConfigurationError(
+        raise IntegrationConfigurationError(
             "DIFFUSE_GITHUB_INTEGRATION_TOKEN_PEPPER must be base64url text"
         ) from error
     if len(decoded) < 32:
-        raise HostedConfigurationError(
+        raise IntegrationConfigurationError(
             "DIFFUSE_GITHUB_INTEGRATION_TOKEN_PEPPER must decode to 32 bytes"
         )
     return decoded
@@ -79,7 +83,23 @@ def token_key() -> bytes:
 
 CREDENTIAL_KEK_VARIABLE = "DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK"
 CREDENTIAL_KEK_PREVIOUS_VARIABLE = "DIFFUSE_GITHUB_INTEGRATION_CREDENTIAL_KEK_PREVIOUS"
-EVENT_SIGNING_KEY_AAD = "github_integration.event_signing_key"
+# Wire AAD strings are stable; do not rename the string values or existing ciphertext
+# fails authentication. Python names follow delivery_signing_key vocabulary.
+DELIVERY_SIGNING_KEY_AAD = "github_integration.event_signing_key"
+CONNECT_INSTANCE_TOKEN_AAD = "github_integration.connect_instance_token"
+CONNECT_DELIVERY_SIGNING_KEY_AAD = "github_integration.connect_event_signing_key"
+EVENT_SIGNING_KEY_AAD = DELIVERY_SIGNING_KEY_AAD  # back-compat alias
+CONNECT_EVENT_SIGNING_KEY_AAD = CONNECT_DELIVERY_SIGNING_KEY_AAD  # back-compat alias
+DEFAULT_GITHUB_APP_SLUG = "diffuse-agent"
+
+
+def github_app_slug() -> str:
+    """Public slug used for the install URL (github.com/apps/<slug>)."""
+    return optional("GITHUB_APP_SLUG") or DEFAULT_GITHUB_APP_SLUG
+
+
+def github_app_install_url() -> str:
+    return f"https://github.com/apps/{github_app_slug()}/installations/new"
 
 
 def credential_keks() -> tuple[bytes, ...]:
@@ -92,7 +112,7 @@ def credential_keks() -> tuple[bytes, ...]:
             previous_variable=CREDENTIAL_KEK_PREVIOUS_VARIABLE,
         )
     except SealedSecretError as error:
-        raise HostedConfigurationError(str(error)) from error
+        raise IntegrationConfigurationError(str(error)) from error
 
 
 def credential_kek() -> bytes:

@@ -39,7 +39,9 @@ swarm.
 - A guided, verified connection to the **Diffuse GitHub App**.
   The GitHub connection flow confirms the installation, then connects the existing
   self-hosted Diffuse instance. It is one setup journey, not a Diffuse-user
-  account or a generic GitHub OAuth login.
+  account or a generic GitHub OAuth login. CLI connect stays minimal
+  (`diffuse github connect`); ready/not-ready and deeper setup diagnostics belong
+  on the web dashboard, not a growing CLI ops surface.
 - GitHub App authentication, signed webhook ingestion, and idempotent
   publication of reviews and Checks.
 - Repository mirroring, commit-pinned indexing, and targeted retrieval.
@@ -77,7 +79,23 @@ swarm.
 - Advanced provenance-based model routing. It may return only after the
   baseline review team is measured.
 - Local-branch reviews until they can receive the same Agent Host access grant
-  as a pull-request review.
+  as a pull-request review. Intended product direction (not v1 until that grant
+  exists): install the Diffuse CLI on any device and review local code changes
+  against a Diffuse host—either the same machine or a remote server the CLI
+  talks to. The CLI must not become a second ops console for connect/readiness.
+
+## Operator surfaces (CLI vs dashboard)
+
+Product boundary for how operators interact with Diffuse:
+
+- **CLI** — thin client. Primary jobs are (1) easy GitHub App connect for a
+  self-hosted instance and (2) running reviews for local code changes against
+  whichever device hosts Diffuse (localhost or a remote host). Do not load the
+  CLI with connect wizards, readiness checklists, or other deployment
+  diagnostics beyond the minimal connect/status needed to finish auth.
+- **Web dashboard** — operator-facing setup and health. Connect/readiness,
+  installation state, repository onboarding diagnostics, and similar “is this
+  deployment healthy?” surfaces live here.
 
 ## Terminology
 
@@ -100,7 +118,8 @@ general-purpose agent platform.
    align Linear with this scope.
 2. **GitHub App connection.** Build the guided Diffuse GitHub App connection:
    direct installation, verify the operator controls it, enroll the existing
-   self-hosted instance, and surface a clear ready/not-ready diagnostic.
+   self-hosted instance (CLI: minimal `diffuse github connect`), and surface a
+   clear ready/not-ready diagnostic on the web dashboard.
    GitHub webhooks terminate at the GitHub Integration Service; each customer instance polls
    signed events over outbound HTTPS and needs no public inbound endpoint.
 3. **Excision.** Delete MCP and auto-approval code paths, configuration,
