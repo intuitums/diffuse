@@ -1030,6 +1030,9 @@ def run_handler(args: argparse.Namespace) -> None:
         args.handler(args)
     except SystemExit:
         raise
+    except KeyboardInterrupt:
+        sys.stderr.write("Diffuse cancelled.\n")
+        raise SystemExit(130) from None
     except CliUsageError as error:
         if debug:
             raise

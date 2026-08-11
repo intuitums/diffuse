@@ -48,12 +48,13 @@ diffuse github disconnect
 `diffuse github connect` opens a browser against the GitHub Integration Service,
 authorizes your GitHub account, and binds an App installation (install the App
 first when you can). By default it labels the instance with this machine's
-hostname and writes one-time secrets to `./github-integration.env` (mode
-`0600`). Optional overrides: `--name`, `--write-env PATH`, `--print-secrets`,
-`--no-browser`, or `--code` for the advanced setup-page fallback. `diffuse
-github status` checks the Integration Service binding (ready/not-ready).
-`diffuse github disconnect` revokes the instance credential. `diffuse token`
-has been removed. Service-token minting is not part of v1.
+hostname and merges one-time secrets into `./.env` (mode `0600`), preserving
+the rest of that deployment configuration. Copy `.env.example` first when
+creating a new deployment. Optional overrides: `--name`, `--write-env PATH`,
+`--print-secrets`, `--no-browser`, or `--code` for the advanced setup-page
+fallback. `diffuse github status` checks the Integration Service binding
+(ready/not-ready). `diffuse github disconnect` revokes the instance credential.
+`diffuse token` has been removed. Service-token minting is not part of v1.
 
 ## Repository controls
 

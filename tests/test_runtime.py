@@ -1,3 +1,4 @@
+import argparse
 from unittest.mock import MagicMock
 
 import pytest
@@ -159,6 +160,20 @@ def test_keyboard_interrupt_is_not_swallowed(monkeypatch):
     # A shutdown signal must propagate, not become an exit-4 "internal error".
     with pytest.raises(KeyboardInterrupt):
         runtime.main(["worker"])
+
+
+def test_cli_cancellation_has_no_traceback(capsys):
+    """Interactive setup cancellation must leave the terminal in a clean state."""
+    from service.cli.review import run_handler
+
+    def cancel(_args):
+        raise KeyboardInterrupt
+
+    with pytest.raises(SystemExit) as raised:
+        run_handler(argparse.Namespace(handler=cancel))
+
+    assert raised.value.code == 130
+    assert capsys.readouterr().err == "Diffuse cancelled.\n"
 
 
 def test_api_configures_logging_from_log_level(monkeypatch):
