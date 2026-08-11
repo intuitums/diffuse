@@ -32,11 +32,12 @@ GitHub Check only. It never authorizes a pull request.
   is rejected with a clear error.
 - `review.fix_with_agent` has been removed; Diffuse v1 does not publish agent
   handoffs. Suggested-fix text may still appear on findings when present.
-- Nested `.diffuse/config.json` files, custom context, cross-repository
-  context, automatic learned rules, and autonomous fixes are not supported v1
-  configuration. Transitional code may still parse some of those fields while
-  the removal migration lands; they are not a supported contract and must not
-  be used for a new setup.
+- Nested `.diffuse/config.json` layers and `.diffuse/files.json` custom
+  context are implemented and active in policy discovery today, but they are
+  not part of the supported v1 configuration contract — do not build a new
+  setup on them until v1 scope admits them. Cross-repository context,
+  automatic learned rules, and autonomous fixes are not supported v1
+  configuration.
 - Human-authored guidance and feedback remain part of the roadmap, but feedback
   cannot silently change or suppress correctness/security findings.
 

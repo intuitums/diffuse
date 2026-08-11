@@ -18,9 +18,11 @@ surfaces. Local-branch review is intentionally not available until it can use
 the hosted Review Access Grant contract.
 
 The production image's `diffuse` entrypoint is a superset of the packaged CLI:
-alongside the subcommands below it takes `serve`, `worker`, and `healthcheck`,
-which is how Compose starts the API and worker. A `pip install` of this package
-maps `diffuse` to the CLI only, so `diffuse serve` outside the image exits with
+alongside the subcommands below it takes the service entrypoints Compose uses
+(`serve`, `worker`, `github-delivery-poller`, `agent-host`, `egress-proxy`,
+`context-service`) plus their healthcheck/preflight variants;
+`service/runtime.py` is authoritative. A `pip install` of this package maps
+`diffuse` to the CLI only, so `diffuse serve` outside the image exits with
 `invalid choice: 'serve'`.
 
 ## Installing

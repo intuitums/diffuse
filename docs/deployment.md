@@ -59,10 +59,14 @@ self-hosted deployment.
 cp .env.example .env
 # Set POSTGRES_PASSWORD, GitHub integration credentials, REVIEW_AGENT, and the
 # Agent Dispatch / Review Access Grant keys.
-docker compose up -d --build
+docker compose --profile agent-claude --profile agent-codex up -d --build
 curl --fail https://your-diffuse-host/health
 curl --fail https://your-diffuse-host/ready
 ```
+
+The Agent Host services are profile-gated: without at least the profile
+matching `REVIEW_AGENT`, `up` starts no Agent Host and the worker fails its
+startup validation.
 
 Use a separate secret-managed value for `POSTGRES_PASSWORD`; changing it after
 the database initializes also requires changing the PostgreSQL role password.

@@ -75,7 +75,10 @@ swarm.
 ## Explicitly deferred
 
 - Automatic rule inference, automatic rule activation, and preference ranking.
-- Nested/cascading repository policy, custom context, and organization policy.
+- Organization policy, and a *supported contract* for nested/cascading
+  repository policy and custom context. Policy discovery already implements and
+  indexes nested `.diffuse/config.json` layers and `.diffuse/files.json`
+  context today; they remain uncommitted product surface.
 - Advanced provenance-based model routing. It may return only after the
   baseline review team is measured.
 - Local-branch reviews until they can receive the same Agent Host access grant
