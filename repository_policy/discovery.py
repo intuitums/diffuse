@@ -71,6 +71,17 @@ def _read_text(
         raise ValueError(f"Policy source must be UTF-8 text: {path}") from error
 
 
+def _skip_irregular_convention_file(root: Path, source_path: str) -> bool:
+    # Repositories commonly track e.g. a CLAUDE.md -> AGENTS.md symlink. Guidance
+    # picked up by filename convention is skipped rather than failing discovery;
+    # symlinks are never read. Explicit references (.diffuse/ files) still fail.
+    file_path = root / source_path
+    if file_path.is_symlink() or not file_path.is_file():
+        LOGGER.warning("Skipped non-regular guidance file %s", source_path)
+        return True
+    return False
+
+
 def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     value: dict[str, object] = {}
     for key, item in pairs:
@@ -197,6 +208,8 @@ def discover_repository_policy(root: Path) -> RepositoryPolicySnapshot:
                 )
             )
         elif path.name == "rules.md" and path.parent.name == ".diffuse":
+            if _skip_irregular_convention_file(root, source_path):
+                continue
             content, size = _read_text(
                 root,
                 source_path,
@@ -215,6 +228,8 @@ def discover_repository_policy(root: Path) -> RepositoryPolicySnapshot:
                 )
             )
         elif _is_common_instruction(path):
+            if _skip_irregular_convention_file(root, source_path):
+                continue
             content, size = _read_text(
                 root,
                 source_path,

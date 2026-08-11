@@ -814,13 +814,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
     subparsers = parser.add_subparsers(dest="command", required=True)
     review = subparsers.add_parser(
         "review",
-        help="Review the current local branch against its base",
+        help="Local branch review (unavailable in Agent-only Diffuse)",
         description=(
-            "Review committed, staged, and unstaged changes in this checkout against the\n"
-            "merge base with its base branch, using the same index, policy, and learned\n"
-            "rules as the self-hosted server. This local command intentionally runs the\n"
-            "API one-shot runtime; hosted workers may select CLI-native review sessions.\n"
-            "The checkout must correspond to an enabled, indexed Diffuse repository."
+            "Local branch review is not available: local checkouts cannot yet receive\n"
+            "an Agent Host access grant, and Diffuse does not fall back to an\n"
+            "in-process model API. The command validates its arguments and exits with\n"
+            "that explanation. Push the branch and let the configured Agent Host\n"
+            "review the pull request."
         ),
         epilog=REVIEW_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
