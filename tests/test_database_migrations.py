@@ -40,6 +40,7 @@ def test_frozen_baseline_catalog_is_packaged_and_contract_is_parseable():
         (20, "rename_agent_sessions_to_agent_investigations"),
         (21, "agent_investigation_lifecycle"),
         (22, "index_snapshot_skipped_policy_sources"),
+        (23, "agent_investigation_execution_spec"),
     ]
     assert catalog[0].checksum == BASELINE_SCHEMA_SHA256
     contract = _baseline_contract(catalog[0].sql)
@@ -54,6 +55,13 @@ def test_frozen_baseline_catalog_is_packaged_and_contract_is_parseable():
         "summary_comment_enabled",
         "fix_with_agent_enabled",
     }.issubset(contract["review_runs"])
+
+
+def test_new_investigations_default_to_the_complete_execution_spec():
+    migration = load_migration_catalog()[-1]
+
+    assert migration.version == 23
+    assert "ALTER COLUMN execution_spec_version SET DEFAULT 1" in migration.sql
 
 
 def test_every_retired_baseline_column_is_declared_and_actually_dropped():

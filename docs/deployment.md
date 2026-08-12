@@ -11,7 +11,7 @@ infrastructure you control.
 - the **Diffuse GitHub App** installed on the repositories to review
 - PostgreSQL storage and persistent disk for repository mirrors
 - `REVIEW_AGENT=codex` or `REVIEW_AGENT=claude`, Agent Dispatch keys, a Review
-  Access Grant signing key, and signed-in matching Agent Hosts
+  Access Grant signing key, and signed-in Codex and Claude Agent Hosts
 
 The self-hosted instance does not need a public domain or an inbound webhook
 port. GitHub delivers to the Diffuse GitHub App; the instance polls its signed
@@ -66,9 +66,10 @@ curl --fail http://127.0.0.1:8000/health
 curl --fail http://127.0.0.1:8000/ready
 ```
 
-The Agent Host services are profile-gated: without at least the profile
-matching `REVIEW_AGENT`, `up` starts no Agent Host and the worker fails its
-startup validation.
+The Agent Host services are profile-gated. `REVIEW_AGENT` selects the candidate
+engine and the other engine verifies its findings, so both profiles shown above
+are required; the worker fails startup if either host is unavailable, signed
+out, or has stale isolation policy.
 
 Use a separate secret-managed value for `POSTGRES_PASSWORD`; changing it after
 the database initializes also requires changing the PostgreSQL role password.

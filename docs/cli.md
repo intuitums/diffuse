@@ -87,10 +87,11 @@ It is the required operator step after an upgrade that changes the index format.
 `REVIEW_AGENT` selects what produces a review. See
 [agents.md](agents.md) for the full split.
 
-- **`claude` / `codex`** — `REVIEW_AGENT=claude` or
-  `codex` sends a self-hosted worker review to the isolated matching runner
-  under a short-lived session capability. The worker never executes those
-  CLIs. Local `diffuse review` is unavailable until it can use the same session
+- **`claude` / `codex`** — `REVIEW_AGENT=claude` or `codex` selects the
+  isolated candidate runner; the other engine runs a separate verifier
+  investigation. Both Agent Hosts must be authenticated and available. Each
+  receives its own short-lived capability, and the worker never executes either
+  CLI. Local `diffuse review` is unavailable until it can use the same session
   contract.
 
 `diffuse agent` manages host plumbing for those CLIs:

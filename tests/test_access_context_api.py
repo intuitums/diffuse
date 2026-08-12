@@ -10,7 +10,12 @@ import pytest
 from fastapi import FastAPI, HTTPException
 
 from service.agents import context_api, context_server, host
-from service.agents.contract import AgentInvestigationResult, SessionScope, mint_session_capability
+from service.agents.contract import (
+    AgentInvestigationResult,
+    AgentInvestigationRole,
+    SessionScope,
+    mint_session_capability,
+)
 from service.review.workspace import SourceArtifact, build_source_artifact
 from service.storage.agent_investigation import AgentInvestigationReviewAttempt
 
@@ -104,6 +109,10 @@ def test_runner_materializes_only_the_signed_read_only_workspace(monkeypatch, tm
     artifact = build_source_artifact(source)
     dispatch = SimpleNamespace(
         runtime="codex",
+        role=AgentInvestigationRole.CANDIDATE,
+        turn_budget=24,
+        timeout_seconds=600,
+        max_result_bytes=256_000,
         diff_text="diff --git a/app.py b/app.py\n",
         source_artifact=artifact,
         capability="capability",
@@ -148,6 +157,10 @@ def test_runner_materializes_only_the_signed_read_only_workspace(monkeypatch, tm
 def test_runner_rejects_an_invalid_workspace_before_starting_the_cli(monkeypatch):
     dispatch = SimpleNamespace(
         runtime="codex",
+        role=AgentInvestigationRole.CANDIDATE,
+        turn_budget=24,
+        timeout_seconds=600,
+        max_result_bytes=256_000,
         diff_text="diff --git a/app.py b/app.py\n",
         source_artifact=SourceArtifact(b"not a tar archive"),
         capability="capability",

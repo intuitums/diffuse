@@ -61,6 +61,20 @@ def test_runtime_healthcheck_requires_success(monkeypatch):
         runtime._run_healthcheck([])
 
 
+def test_agent_runner_healthcheck_requires_authenticated_ready_state(monkeypatch):
+    response = MagicMock()
+    response.status = 200
+    response.read.return_value = b'{"state":"not_logged_in"}'
+    response.__enter__.return_value = response
+    request = MagicMock(return_value=response)
+    monkeypatch.setattr(runtime, "urlopen", request)
+
+    with pytest.raises(RuntimeError, match="not ready: not_logged_in"):
+        runtime._run_agent_runner_healthcheck([])
+
+    assert request.call_args.args[0] == "http://127.0.0.1:8010/v1/status"
+
+
 def test_runtime_turns_operational_error_into_clean_exit(monkeypatch, capsys):
     monkeypatch.setattr(
         runtime,
