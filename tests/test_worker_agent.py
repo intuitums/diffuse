@@ -98,6 +98,19 @@ def _session(**overrides):
     return SimpleNamespace(**values)
 
 
+@pytest.mark.parametrize(
+    ("error", "error_code"),
+    [
+        (ValueError("agent_auth_required:codex"), "auth_required"),
+        (ValueError("agent_configuration_error:claude"), "configuration_error"),
+        (NativeRunnerError("rate limited", code="rate_limited"), "rate_limited"),
+        (RuntimeError("unexpected"), "runner_execution_failed"),
+    ],
+)
+def test_agent_investigation_failure_preserves_its_terminal_code(error, error_code):
+    assert worker._agent_investigation_error_code(error) == error_code
+
+
 def test_native_review_skips_before_artifact_or_session_when_policy_disables_all_files(monkeypatch):
     persisted = []
     monkeypatch.setattr(worker, "hosted_review_agent_name", lambda: "codex")

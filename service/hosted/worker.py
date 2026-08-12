@@ -868,10 +868,15 @@ def _build_native_workspace_artifact(
 
 
 def _agent_investigation_error_code(error: Exception) -> str:
+    """Preserve the host's terminal classification in the durable investigation."""
+
     if isinstance(error, NativeRunnerError):
         return error.code
-    if isinstance(error, ValueError) and str(error).startswith("agent_auth_required:"):
+    message = str(error)
+    if isinstance(error, ValueError) and message.startswith("agent_auth_required:"):
         return "auth_required"
+    if isinstance(error, ValueError) and message.startswith("agent_configuration_error:"):
+        return "configuration_error"
     return "runner_execution_failed"
 
 
