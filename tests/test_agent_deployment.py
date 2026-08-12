@@ -88,6 +88,10 @@ def test_runner_images_pin_cli_dependencies_and_the_runtime_keeps_the_home_priva
     assert "AS runner-claude" in dockerfile
     assert "AS runner-codex" in dockerfile
     assert "DISABLE_AUTOUPDATER=1" in dockerfile
+    assert 'xyz.intuitum.diffuse.cli.name="claude-code"' in dockerfile
+    assert 'xyz.intuitum.diffuse.cli.version="2.1.224"' in dockerfile
+    assert 'xyz.intuitum.diffuse.cli.name="codex"' in dockerfile
+    assert 'xyz.intuitum.diffuse.cli.version="0.147.0"' in dockerfile
     assert "addgroup --system --gid 10001 diffuse" in dockerfile
     assert "--mode=700 /var/lib/diffuse/agent" in dockerfile
     assert "--mode=700 /var/lib/diffuse/agent/home" in dockerfile

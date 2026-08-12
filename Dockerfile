@@ -261,6 +261,9 @@ USER root
 COPY --from=runner-node /usr/local/ /usr/local/
 
 FROM runner-base AS runner-claude
+LABEL org.opencontainers.image.title="Diffuse Claude Code review runner" \
+      xyz.intuitum.diffuse.cli.name="claude-code" \
+      xyz.intuitum.diffuse.cli.version="2.1.224"
 COPY agents/claude/package.json agents/claude/package-lock.json /opt/diffuse/agent-cli/
 # Claude's native executable is installed by this package's lifecycle script.
 # Run that one lockfile-verified script explicitly rather than enabling scripts
@@ -274,6 +277,9 @@ ENV DISABLE_AUTOUPDATER=1 \
 USER diffuse
 
 FROM runner-base AS runner-codex
+LABEL org.opencontainers.image.title="Diffuse Codex review runner" \
+      xyz.intuitum.diffuse.cli.name="codex" \
+      xyz.intuitum.diffuse.cli.version="0.147.0"
 COPY agents/codex/package.json agents/codex/package-lock.json /opt/diffuse/agent-cli/
 RUN npm ci --prefix /opt/diffuse/agent-cli --omit=dev --ignore-scripts --no-audit --no-fund \
     && ln -s /opt/diffuse/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
