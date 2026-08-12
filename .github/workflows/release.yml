@@ -89,8 +89,9 @@ jobs:
         id: build-time
         run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
-  # One native runner per architecture, in parallel. Each pushes by digest only - no tags -
-  # and the manifest is assembled in `publish`.
+  # One native machine per architecture, in parallel. Each builds the app and both
+  # runner targets, pushes them by digest only (no tags), and hands all three sets
+  # of digests to `publish` for registry-side manifest assembly.
   build:
     needs: validate-tag
     strategy:
@@ -104,10 +105,15 @@ jobs:
           # build-container for the measurements that retired the GitHub Actions
           # cache on the box.
           - platform: linux/amd64
+            architecture: amd64
             runner: intuitum-8vcpu-ubuntu-2604
             builder: diffuse
-            cache_from: ""
-            cache_to: ""
+            app_cache_from: ""
+            app_cache_to: ""
+            claude_cache_from: ""
+            claude_cache_to: ""
+            codex_cache_from: ""
+            codex_cache_to: ""
           # arm64 STAYS on Blacksmith, and this is the only thing still holding that
           # account open. intuitumserver-1 is x86_64 with no qemu handlers registered;
           # the expensive step in this Dockerfile is PyInstaller, which cannot
@@ -122,12 +128,17 @@ jobs:
           # scope, because a GitHub Actions cache scope is not partitioned by
           # architecture and an amd64 export would poison an arm64 restore.
           - platform: linux/arm64
+            architecture: arm64
             runner: blacksmith-8vcpu-ubuntu-2404-arm
             builder: ""
-            cache_from: type=gha,scope=diffuse/Dockerfile-arm64
-            cache_to: type=gha,scope=diffuse/Dockerfile-arm64,mode=max
+            app_cache_from: type=gha,scope=diffuse/Dockerfile-arm64
+            app_cache_to: type=gha,scope=diffuse/Dockerfile-arm64,mode=max
+            claude_cache_from: type=gha,scope=diffuse/Dockerfile-runner-claude-arm64
+            claude_cache_to: type=gha,scope=diffuse/Dockerfile-runner-claude-arm64,mode=max
+            codex_cache_from: type=gha,scope=diffuse/Dockerfile-runner-codex-arm64
+            codex_cache_to: type=gha,scope=diffuse/Dockerfile-runner-codex-arm64,mode=max
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -158,18 +169,18 @@ jobs:
         if: matrix.builder == ''
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      # An empty matrix `builder` / `cache_from` / `cache_to` is simply not passed:
-      # the action treats the empty string as unset, so the arm64 leg uses the builder
-      # setup-buildx-action selected and the amd64 leg declares no cache directives.
-      - name: Build and push by digest
-        id: build
+      # Empty builder/cache inputs are treated as unset. The amd64 leg therefore
+      # adopts the persistent builder without exporting it, while arm64 gives each
+      # final target its own cache scope so one target cannot overwrite another's.
+      - name: Build and push app by digest
+        id: app
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           builder: ${{ matrix.builder }}
           context: .
           platforms: ${{ matrix.platform }}
-          cache-from: ${{ matrix.cache_from }}
-          cache-to: ${{ matrix.cache_to }}
+          cache-from: ${{ matrix.app_cache_from }}
+          cache-to: ${{ matrix.app_cache_to }}
           build-args: |
             DIFFUSE_VERSION=${{ github.ref_name }}
             DIFFUSE_REVISION=${{ github.sha }}
@@ -178,15 +189,60 @@ jobs:
           provenance: mode=max
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
 
-      - name: Export digest
+      # Build runners on the same native architecture as the app. Their Dockerfile
+      # stages execute the architecture-specific CLI binaries, so moving arm64 back
+      # into the x86 publish job would require emulation and invalidate this check.
+      - name: Build and push Claude runner by digest
+        id: claude
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          builder: ${{ matrix.builder }}
+          context: .
+          target: runner-claude
+          platforms: ${{ matrix.platform }}
+          cache-from: ${{ matrix.claude_cache_from }}
+          cache-to: ${{ matrix.claude_cache_to }}
+          build-args: |
+            DIFFUSE_VERSION=${{ github.ref_name }}
+            DIFFUSE_REVISION=${{ github.sha }}
+            DIFFUSE_CREATED=${{ needs.validate-tag.outputs.created }}
+          sbom: true
+          provenance: mode=max
+          outputs: type=image,name=${{ env.CLAUDE_RUNNER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Build and push Codex runner by digest
+        id: codex
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          builder: ${{ matrix.builder }}
+          context: .
+          target: runner-codex
+          platforms: ${{ matrix.platform }}
+          cache-from: ${{ matrix.codex_cache_from }}
+          cache-to: ${{ matrix.codex_cache_to }}
+          build-args: |
+            DIFFUSE_VERSION=${{ github.ref_name }}
+            DIFFUSE_REVISION=${{ github.sha }}
+            DIFFUSE_CREATED=${{ needs.validate-tag.outputs.created }}
+          sbom: true
+          provenance: mode=max
+          outputs: type=image,name=${{ env.CODEX_RUNNER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digests
+        env:
+          APP_DIGEST: ${{ steps.app.outputs.digest }}
+          CLAUDE_DIGEST: ${{ steps.claude.outputs.digest }}
+          CODEX_DIGEST: ${{ steps.codex.outputs.digest }}
         run: |
           mkdir -p /tmp/digests
-          touch "/tmp/digests/${GITHUB_SHA}-$(echo '${{ steps.build.outputs.digest }}' | sed 's|sha256:||')"
+          touch "/tmp/digests/app-${{ matrix.architecture }}-${APP_DIGEST#sha256:}"
+          touch "/tmp/digests/claude-${{ matrix.architecture }}-${CLAUDE_DIGEST#sha256:}"
+          touch "/tmp/digests/codex-${{ matrix.architecture }}-${CODEX_DIGEST#sha256:}"
 
-      - name: Upload digest
+      - name: Upload digests
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: digest-${{ strategy.job-index }}
+          name: digests-${{ strategy.job-index }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -197,8 +253,8 @@ jobs:
     timeout-minutes: 30
     outputs:
       digest: ${{ steps.manifest.outputs.digest }}
-      claude_runner_digest: ${{ steps.runners.outputs.claude_digest }}
-      codex_runner_digest: ${{ steps.runners.outputs.codex_digest }}
+      claude_runner_digest: ${{ steps.runner-manifests.outputs.claude_digest }}
+      codex_runner_digest: ${{ steps.runner-manifests.outputs.codex_digest }}
     permissions:
       contents: read
       id-token: write   # keyless cosign signing
@@ -215,7 +271,7 @@ jobs:
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           path: /tmp/digests
-          pattern: digest-*
+          pattern: digests-*
           merge-multiple: true
 
       - name: Generate image metadata
@@ -235,58 +291,75 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # This job builds nothing -- the two steps below are registry-side imagetools
-      # calls -- so it declares no cache at all. Under Blacksmith it needed a dedicated
-      # `cache-key` to avoid mounting the image's build disk into a job with no layers to
-      # contribute and committing that unchanged snapshot back over a real build's. With
-      # the cache named per build step instead of attached to the builder, a job that
-      # asks for no cache simply touches none, and the hazard is gone rather than avoided.
+      # This job builds nothing: all image work below is registry-side manifest
+      # assembly, so it declares no cache and needs no target architecture support.
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      # Assemble the per-arch digests into one tagged multi-arch manifest.
-      - name: Create multi-arch manifest
+      # Assemble exactly one digest from each native architecture into the app manifest.
+      - name: Create multi-arch app manifest
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< '${{ steps.metadata.outputs.json }}') \
-            $(for f in *; do echo "${IMAGE}@sha256:${f##*-}"; done)
+          for architecture in amd64 arm64; do
+            files=(app-"${architecture}"-*)
+            if [ "${#files[@]}" -ne 1 ] || [ ! -f "${files[0]}" ]; then
+              echo "expected one app digest for ${architecture}" >&2
+              exit 1
+            fi
+          done
+          mapfile -t tags < <(jq -r '.tags[]' <<< '${{ steps.metadata.outputs.json }}')
+          tag_arguments=()
+          for tag in "${tags[@]}"; do
+            tag_arguments+=(--tag "$tag")
+          done
+          sources=()
+          for file in app-*-*; do
+            sources+=("${IMAGE}@sha256:${file##*-}")
+          done
+          docker buildx imagetools create "${tag_arguments[@]}" "${sources[@]}"
 
       # Re-read the manifest digest: this is what gets signed and pinned into the bundle.
-      - name: Resolve manifest digest
+      - name: Resolve app manifest digest
         id: manifest
         run: |
           version=$(jq -r '.tags[0]' <<< '${{ steps.metadata.outputs.json }}')
           digest=$(docker buildx imagetools inspect "$version" --format '{{json .Manifest.Digest}}' | tr -d '"')
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "Manifest digest: $digest"
+          echo "App manifest digest: $digest"
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       # Signs the DIGEST, not a tag. Tags are mutable; the digest is what deploy.sh verifies.
-      - name: Sign the published digest
+      - name: Sign the app manifest
         env:
           DIGEST: ${{ steps.manifest.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
-      # The runner binaries are release artifacts, not a separate vendor update
-      # channel. Build their explicit Dockerfile targets, attach SBOM/provenance,
-      # and re-read the immutable manifest digests that the bundle will pin.
-      - name: Publish signed native runner images
-        id: runners
+      # Runner SBOM and provenance attestations were produced in the native build
+      # jobs. Assemble and sign their release manifests without executing target code.
+      - name: Create and sign runner manifests
+        id: runner-manifests
         env:
           RELEASE_TAG: ${{ github.ref_name }}
+        working-directory: /tmp/digests
         run: |
           for runtime in claude codex; do
             image_var="${runtime^^}_RUNNER_IMAGE"
             image="${!image_var}"
-            docker buildx build --platform linux/amd64,linux/arm64 \
-              --target "runner-${runtime}" \
-              --build-arg "DIFFUSE_VERSION=${RELEASE_TAG}" \
-              --build-arg "DIFFUSE_REVISION=${GITHUB_SHA}" \
-              --build-arg "DIFFUSE_CREATED=${{ needs.validate-tag.outputs.created }}" \
-              --sbom=true --provenance=mode=max --push \
-              --tag "${image}:${RELEASE_TAG}" .
+            for architecture in amd64 arm64; do
+              files=("${runtime}-${architecture}-"*)
+              if [ "${#files[@]}" -ne 1 ] || [ ! -f "${files[0]}" ]; then
+                echo "expected one ${runtime} digest for ${architecture}" >&2
+                exit 1
+              fi
+            done
+            sources=()
+            for file in "${runtime}"-*-*; do
+              sources+=("${image}@sha256:${file##*-}")
+            done
+            docker buildx imagetools create \
+              --tag "${image}:${RELEASE_TAG}" \
+              "${sources[@]}"
             digest=$(docker buildx imagetools inspect "${image}:${RELEASE_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')
             cosign sign --yes "${image}@${digest}"
             echo "${runtime}_digest=${digest}" >> "$GITHUB_OUTPUT"
@@ -295,8 +368,8 @@ jobs:
       - name: Build self-host deployment bundle
         env:
           DIGEST: ${{ steps.manifest.outputs.digest }}
-          CLAUDE_DIGEST: ${{ steps.runners.outputs.claude_digest }}
-          CODEX_DIGEST: ${{ steps.runners.outputs.codex_digest }}
+          CLAUDE_DIGEST: ${{ steps.runner-manifests.outputs.claude_digest }}
+          CODEX_DIGEST: ${{ steps.runner-manifests.outputs.codex_digest }}
         run: |
           mkdir -p release/diffuse
           cp LICENSE deploy/README.md deploy/compose.yaml deploy/env.example release/diffuse/
@@ -358,15 +431,17 @@ jobs:
         with:
           name: diffuse-self-host-${{ github.run_id }}
 
-      # Refuse to publish a bundle that is not bound to a resolved manifest digest.
-      # Without this an upstream failure would ship a bundle whose env.example still
-      # said `replace-with-release-digest`.
-      - name: Require a resolved digest
+      # Refuse to publish a bundle that is not bound to all three resolved manifests.
+      # Without this an upstream failure could leave a placeholder or empty runner pin.
+      - name: Require resolved digests
         run: |
-          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "publish did not produce a manifest digest (got '${DIGEST}')" >&2
-            exit 1
-          fi
+          for name in DIGEST CLAUDE_DIGEST CODEX_DIGEST; do
+            value="${!name}"
+            if [[ ! "$value" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "publish did not produce ${name} (got '${value}')" >&2
+              exit 1
+            fi
+          done
           sha256sum --check diffuse-self-host.tar.gz.sha256
 
       # Installed from the vendor tarball rather than an action, pinned by version AND
@@ -401,6 +476,8 @@ jobs:
             --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --annotation "xyz.intuitum.diffuse.image=${IMAGE}@${DIGEST}" \
+            --annotation "xyz.intuitum.diffuse.runner.claude=${CLAUDE_RUNNER_IMAGE}@${CLAUDE_DIGEST}" \
+            --annotation "xyz.intuitum.diffuse.runner.codex=${CODEX_RUNNER_IMAGE}@${CODEX_DIGEST}" \
             "${BUNDLE_ARTIFACT}:${RELEASE_TAG}" \
             diffuse-self-host.tar.gz:application/gzip \
             diffuse-self-host.tar.gz.sha256:text/plain
