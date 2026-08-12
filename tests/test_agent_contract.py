@@ -11,6 +11,7 @@ from service.agents.contract import (
     AGENT_RUNTIME_CLAUDE,
     AGENT_RUNTIME_CODEX,
     CAPABILITY_OPERATIONS,
+    DEFAULT_MAX_RESULT_BYTES,
     RESULT_SCHEMA_VERSION,
     AgentRuntimeConfig,
     CapabilityExpired,
@@ -19,6 +20,7 @@ from service.agents.contract import (
     ResultValidationError,
     ResultValidationFailureCode,
     SessionScope,
+    accept_bound_agent_investigation_result,
     mint_session_capability,
     parse_agent_runtime_name,
     validate_agent_investigation_result,
@@ -252,3 +254,70 @@ def test_result_validation_rejects_mismatched_security_classification():
 def test_result_validation_accepts_json_text():
     result = validate_agent_investigation_result(json.dumps(_valid_result()))
     assert len(result.findings) == 1
+
+
+def test_accept_bound_result_strips_envelope_metadata_and_binds_session():
+    payload = {
+        **_valid_result(audit_reference="session-record-1"),
+        "session_id": "session-record-1",
+        "capability_id": "capability-1",
+        "prompt_tokens": 12,
+        "completion_tokens": 8,
+    }
+
+    result = accept_bound_agent_investigation_result(
+        payload,
+        session_id="session-record-1",
+        runtime=AGENT_RUNTIME_CLAUDE,
+    )
+
+    assert result.audit_reference == "session-record-1"
+    assert result.runtime == AGENT_RUNTIME_CLAUDE
+
+
+def test_accept_bound_result_rejects_wrong_audit_reference():
+    with pytest.raises(ResultValidationError) as raised:
+        accept_bound_agent_investigation_result(
+            _valid_result(audit_reference="other-session"),
+            session_id="session-record-1",
+            runtime=AGENT_RUNTIME_CLAUDE,
+        )
+    assert raised.value.code is ResultValidationFailureCode.AUDIT_REFERENCE_MISMATCH
+    assert raised.value.field == "audit_reference"
+
+
+def test_accept_bound_result_rejects_runtime_mismatch():
+    with pytest.raises(ResultValidationError) as raised:
+        accept_bound_agent_investigation_result(
+            _valid_result(),
+            session_id="session-record-1",
+            runtime=AGENT_RUNTIME_CODEX,
+        )
+    assert raised.value.code is ResultValidationFailureCode.CONSTRAINT_VIOLATION
+    assert raised.value.field == "runtime"
+
+
+def test_accept_bound_result_rejects_oversized_payload():
+    payload = _valid_result(summary="x" * 200)
+    with pytest.raises(ResultValidationError) as raised:
+        accept_bound_agent_investigation_result(
+            payload,
+            session_id="session-record-1",
+            runtime=AGENT_RUNTIME_CLAUDE,
+            max_result_bytes=64,
+        )
+    assert raised.value.code is ResultValidationFailureCode.RESULT_TOO_LARGE
+
+
+def test_accept_bound_result_rejects_malformed_payload():
+    with pytest.raises(ResultValidationError) as raised:
+        accept_bound_agent_investigation_result(
+            {**_valid_result(), "unexpected": True},
+            session_id="session-record-1",
+            runtime=AGENT_RUNTIME_CLAUDE,
+        )
+    assert raised.value.code is ResultValidationFailureCode.EXTRA_FIELD
+
+
+def test_default_max_result_bytes_is_the_shared_budget():
+    assert DEFAULT_MAX_RESULT_BYTES == 256_000

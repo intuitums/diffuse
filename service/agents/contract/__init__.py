@@ -25,6 +25,7 @@ from service.agents.contract.agent import (
     AGENT_RUNTIME_CLAUDE,
     AGENT_RUNTIME_CODEX,
     AGENT_RUNTIME_NAMES,
+    DEFAULT_MAX_RESULT_BYTES,
     AgentRuntimeConfig,
     parse_agent_runtime_name,
 )
@@ -34,6 +35,7 @@ from service.agents.contract.result import (
     AgentInvestigationResult,
     ResultValidationError,
     ResultValidationFailureCode,
+    accept_bound_agent_investigation_result,
     validate_agent_investigation_result,
 )
 
@@ -42,6 +44,7 @@ __all__ = [
     "AGENT_RUNTIME_CODEX",
     "AGENT_RUNTIME_NAMES",
     "CAPABILITY_OPERATIONS",
+    "DEFAULT_MAX_RESULT_BYTES",
     "MAX_CAPABILITY_TTL",
     "RESULT_SCHEMA_VERSION",
     "AgentFinding",
@@ -56,6 +59,7 @@ __all__ = [
     "SessionCapability",
     "SessionCapabilityGrant",
     "SessionScope",
+    "accept_bound_agent_investigation_result",
     "mint_session_capability",
     "parse_agent_runtime_name",
     "validate_agent_investigation_result",

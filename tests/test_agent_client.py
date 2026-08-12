@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from repository_policy.models import PolicyLayer, RepositoryConfig, RepositoryPolicySnapshot
 from repository_policy.resolve import resolve_review_policy
 from service.models.review import CandidateFinding
 from service.review.agent_client import (
     NATIVE_RUNNER_STATUS_TIMEOUT_SECONDS,
     AgentRuntime,
+    NativeRunnerError,
     NativeSessionDispatch,
+    _accept_completion,
     _report_from_runner,
     validate_agent_clients,
 )
@@ -37,26 +41,28 @@ class _Response:
 
 def _result():
     return {
-            "runtime": "codex",
-            "session_id": "session-1",
-            "capability_id": "capability-1",
-            "summary": "One issue found.",
-            "risk_score": 4,
-            "findings": [
-                {
-                    "title": "Missing check",
-                    "body": "The new branch dereferences an optional result.",
-                    "severity": "high",
-                    "category": "correctness",
-                    "confidence": 0.9,
-                    "file_path": "app.py",
-                    "line": 1,
-                    "side": "RIGHT",
-                    "evidence": "value.method()",
-                }
-            ],
-            "prompt_tokens": 12,
-            "completion_tokens": 8,
+        "schema_version": 1,
+        "runtime": "codex",
+        "session_id": "session-1",
+        "capability_id": "capability-1",
+        "summary": "One issue found.",
+        "risk_score": 4,
+        "audit_reference": "session-1",
+        "findings": [
+            {
+                "title": "Missing check",
+                "body": "The new branch dereferences an optional result.",
+                "severity": "high",
+                "category": "correctness",
+                "confidence": 0.9,
+                "file_path": "app.py",
+                "line": 1,
+                "side": "RIGHT",
+                "evidence": "value.method()",
+            }
+        ],
+        "prompt_tokens": 12,
+        "completion_tokens": 8,
     }
 
 
@@ -197,3 +203,26 @@ def test_startup_validates_only_the_selected_review_runtime(monkeypatch):
     validate_agent_clients()
 
     assert checked == [("http://agent-host-codex:8010/v1/status", 5)]
+
+
+def _session():
+    return NativeSessionDispatch(
+        session_id="session-1",
+        runtime="codex",
+        capability="capability-token",
+        capability_id="capability-1",
+        source_artifact=SourceArtifact(b"test source archive", manifest_digest="0" * 64),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+
+def test_worker_rejects_a_result_bound_to_a_different_investigation():
+    payload = {**_result(), "audit_reference": "other-session"}
+    with pytest.raises(NativeRunnerError, match="audit_reference_mismatch"):
+        _accept_completion(payload, _session())
+
+
+def test_worker_rejects_malformed_runner_json_before_persisting():
+    payload = {**_result(), "unexpected": True}
+    with pytest.raises(NativeRunnerError, match="extra_field"):
+        _accept_completion(payload, _session())

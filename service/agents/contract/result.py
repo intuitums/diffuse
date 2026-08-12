@@ -14,6 +14,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, ValidationError, model_validator
 
+from service.agents.contract.agent import DEFAULT_MAX_RESULT_BYTES
 from service.models.review import (
     BodyText,
     Category,
@@ -25,6 +26,12 @@ from service.models.review import (
 )
 
 RESULT_SCHEMA_VERSION = 1
+
+#: Host-added transport fields. They travel with the result envelope but are
+#: not part of the CLI investigation contract.
+RESULT_ENVELOPE_KEYS = frozenset(
+    {"session_id", "capability_id", "prompt_tokens", "completion_tokens"}
+)
 
 
 class ResultValidationFailureCode(StrEnum):
@@ -39,6 +46,8 @@ class ResultValidationFailureCode(StrEnum):
     CONSTRAINT_VIOLATION = "constraint_violation"
     EMPTY_FINDINGS_WITHOUT_SUMMARY = "empty_findings_without_summary"
     SCHEMA_MISMATCH = "schema_mismatch"
+    RESULT_TOO_LARGE = "result_too_large"
+    AUDIT_REFERENCE_MISMATCH = "audit_reference_mismatch"
 
 
 class ResultValidationError(ValueError):
@@ -93,7 +102,14 @@ class AgentInvestigationResult(StrictModel):
     summary: Annotated[str, Field(min_length=1, max_length=4000)]
     risk_score: float = Field(ge=0, le=10)
     findings: list[AgentFinding] = Field(default_factory=list, max_length=80)
-    audit_reference: Annotated[str, Field(min_length=1, max_length=200)]
+    audit_reference: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=200,
+            description="Must equal the investigation session_id that produced this result.",
+        ),
+    ]
     coverage_caveat: Annotated[str | None, Field(max_length=2000)] = None
 
 
@@ -180,5 +196,52 @@ def validate_agent_investigation_result(
         raise ResultValidationError(
             "agent session result has no findings and no summary",
             code=ResultValidationFailureCode.EMPTY_FINDINGS_WITHOUT_SUMMARY,
+        )
+    return result
+
+
+def accept_bound_agent_investigation_result(
+    payload: dict[str, Any],
+    *,
+    session_id: str,
+    runtime: str,
+    max_result_bytes: int = DEFAULT_MAX_RESULT_BYTES,
+) -> AgentInvestigationResult:
+    """Validate a runner result and bind it to one investigation.
+
+    The host and worker both call this before treating a payload as complete.
+    Envelope metadata may ride along; the CLI contract is validated after those
+    keys are stripped. Size is measured on the full envelope because that is
+    what the worker persists.
+    """
+
+    if not isinstance(payload, dict):
+        raise ResultValidationError(
+            "agent session result must be a JSON object",
+            code=ResultValidationFailureCode.NOT_AN_OBJECT,
+        )
+
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    if len(encoded) > max_result_bytes:
+        raise ResultValidationError(
+            f"agent session result exceeds {max_result_bytes} bytes",
+            code=ResultValidationFailureCode.RESULT_TOO_LARGE,
+        )
+
+    contract_payload = {
+        key: value for key, value in payload.items() if key not in RESULT_ENVELOPE_KEYS
+    }
+    result = validate_agent_investigation_result(contract_payload)
+    if result.runtime != runtime:
+        raise ResultValidationError(
+            "agent session result runtime did not match the selected runtime",
+            code=ResultValidationFailureCode.CONSTRAINT_VIOLATION,
+            field="runtime",
+        )
+    if result.audit_reference != session_id:
+        raise ResultValidationError(
+            "agent session result audit_reference must equal the investigation session_id",
+            code=ResultValidationFailureCode.AUDIT_REFERENCE_MISMATCH,
+            field="audit_reference",
         )
     return result

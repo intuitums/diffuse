@@ -11,6 +11,10 @@ from datetime import datetime
 
 import httpx
 
+from service.agents.contract.result import (
+    ResultValidationError,
+    accept_bound_agent_investigation_result,
+)
 from service.agents.dispatch import DispatchEnvelope, sign_dispatch
 from service.agents.profiles import REVIEW
 from service.diff_parser import parse_unified_diff
@@ -226,6 +230,16 @@ def _accept_completion(payload: dict[str, object], session: NativeSessionDispatc
         or payload.get("runtime") != session.runtime
     ):
         raise NativeRunnerError("runner completion does not match dispatched session")
+    try:
+        accept_bound_agent_investigation_result(
+            payload,
+            session_id=session.session_id,
+            runtime=session.runtime,
+        )
+    except ResultValidationError as error:
+        raise NativeRunnerError(
+            f"{session.runtime} runner result failed validation ({error.code})"
+        ) from error
     result = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     from indexer.store import get_conn
 
