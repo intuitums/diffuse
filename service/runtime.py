@@ -169,9 +169,17 @@ def _run_agent_runner_healthcheck(arguments: Sequence[str]) -> None:
         raise ValueError(
             "The agent-host-healthcheck command does not accept positional arguments"
         )
-    with urlopen("http://127.0.0.1:8010/ready", timeout=_healthcheck_timeout()) as response:
+    import json
+
+    with urlopen("http://127.0.0.1:8010/v1/status", timeout=_healthcheck_timeout()) as response:
         if response.status != 200:
             raise RuntimeError(f"Agent runner readiness returned HTTP {response.status}")
+        try:
+            state = json.loads(response.read()).get("state")
+        except (AttributeError, TypeError, ValueError) as error:
+            raise RuntimeError("Agent runner readiness response is invalid") from error
+    if state != "ready":
+        raise RuntimeError(f"Agent runner is not ready: {state or 'unknown'}")
 
 
 def _run_context_service(arguments: Sequence[str]) -> None:

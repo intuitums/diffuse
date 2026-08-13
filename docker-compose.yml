@@ -205,8 +205,8 @@ services:
   # Gate B: long-lived credential-isolated agent-host. The worker never mounts
   # agent credentials and never executes a CLI. This service is the only Compose
   # writer of `agent_data`. It deliberately has no `env_file` (no database /
-  # GitHub / API secrets). Opt in with the matching
-  # `docker compose --profile agent-claude` or `--profile agent-codex`.
+  # GitHub / API secrets). Reviews use one engine as candidate and the other as
+  # verifier, so normal operation enables both agent profiles.
   agent-host-claude:
     image: ${DIFFUSE_CLAUDE_RUNNER_IMAGE:-diffuse-runner-claude:local}
     restart: unless-stopped

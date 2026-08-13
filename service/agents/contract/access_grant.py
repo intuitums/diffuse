@@ -93,13 +93,14 @@ class SessionScope:
 
 @dataclass(frozen=True)
 class SessionCapability:
-    """A verified session capability (never carries the raw token secret)."""
+    """A verified capability with only the bearer digest retained for binding."""
 
     capability_id: str
     runtime: str
     scope: SessionScope
     issued_at: datetime
     expires_at: datetime
+    token_hash: str | None = None
 
     def allows(self, operation: str) -> bool:
         return operation in self.scope.operations
@@ -175,6 +176,7 @@ def mint_session_capability(
         scope=scope,
         issued_at=issued_at,
         expires_at=expires_at,
+        token_hash=hashlib.sha256(token.encode()).hexdigest(),
     )
     return SessionCapabilityGrant(token=token, capability=capability)
 
@@ -256,6 +258,7 @@ def verify_session_capability(
         scope=scope,
         issued_at=issued_at,
         expires_at=expires_at,
+        token_hash=hashlib.sha256(token.encode()).hexdigest(),
     )
     if require_runtime is not None and capability.runtime != parse_agent_runtime_name(
         require_runtime

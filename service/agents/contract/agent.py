@@ -8,6 +8,7 @@ and budget contract used by Agent Dispatch.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 AGENT_RUNTIME_CLAUDE = "claude"
 AGENT_RUNTIME_CODEX = "codex"
@@ -15,6 +16,14 @@ AGENT_RUNTIME_CODEX = "codex"
 #: Runtimes the isolated agent-host may execute. Not the same as
 #: `service.review.agents.RUNTIME_NAMES`, which selects review Agents.
 AGENT_RUNTIME_NAMES: tuple[str, ...] = (AGENT_RUNTIME_CLAUDE, AGENT_RUNTIME_CODEX)
+
+
+class AgentInvestigationRole(StrEnum):
+    """The one execution stage a CLI-native investigation may serve."""
+
+    CANDIDATE = "candidate"
+    VERIFIER = "verifier"
+
 
 DEFAULT_TURN_BUDGET = 24
 DEFAULT_TIMEOUT_SECONDS = 600
@@ -59,3 +68,23 @@ def parse_agent_runtime_name(value: str) -> str:
             f"{', '.join(AGENT_RUNTIME_NAMES)}"
         )
     return normalized
+
+
+def opposite_agent_runtime(value: str) -> str:
+    """Return the other isolated runtime used for independent verification."""
+
+    runtime = parse_agent_runtime_name(value)
+    return AGENT_RUNTIME_CODEX if runtime == AGENT_RUNTIME_CLAUDE else AGENT_RUNTIME_CLAUDE
+
+
+def parse_agent_investigation_role(value: str | AgentInvestigationRole) -> AgentInvestigationRole:
+    """Return a canonical CLI-native investigation role or raise ``ValueError``."""
+
+    normalized = str(value).strip().lower()
+    try:
+        return AgentInvestigationRole(normalized)
+    except ValueError as error:
+        raise ValueError(
+            f"{value!r} is not an agent investigation role; use one of: "
+            f"{', '.join(role.value for role in AgentInvestigationRole)}"
+        ) from error
