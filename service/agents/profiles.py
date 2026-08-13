@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from service.agents.contract.agent import AgentInvestigationRole, parse_agent_investigation_role
+
 
 @dataclass(frozen=True)
 class SessionProfile:
@@ -42,3 +44,27 @@ ANSWER = SessionProfile("answer", turn_budget=8, timeout_seconds=180)
 REVIEW = SessionProfile("review", turn_budget=24, timeout_seconds=600)
 VERIFY = SessionProfile("verify", turn_budget=12, timeout_seconds=300)
 LEARN = SessionProfile("learn", turn_budget=12, timeout_seconds=300)
+
+_ROLE_TEMPLATES = {
+    AgentInvestigationRole.CANDIDATE: REVIEW,
+    AgentInvestigationRole.VERIFIER: VERIFY,
+}
+
+
+def session_profile_for_investigation_role(
+    role: str | AgentInvestigationRole,
+    *,
+    turn_budget: int,
+    timeout_seconds: int,
+) -> SessionProfile:
+    """Return the session profile bound into one immutable investigation spec."""
+
+    normalized = parse_agent_investigation_role(role)
+    template = _ROLE_TEMPLATES[normalized]
+    return SessionProfile(
+        name=normalized.value,
+        turn_budget=turn_budget,
+        timeout_seconds=timeout_seconds,
+        tool_allowlist=template.tool_allowlist,
+        needs_workspace=template.needs_workspace,
+    )

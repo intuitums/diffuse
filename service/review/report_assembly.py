@@ -159,19 +159,16 @@ def _normalize_security_candidate(
     return candidate
 
 
-def deduplicate_candidates(
+def deduplicate_candidates_with_ids(
     candidates: list[CandidateFinding],
     parsed_diff: ParsedDiff,
     policy: ResolvedReviewPolicy | None = None,
-) -> list[CandidateFinding]:
-    """Keep only policy-allowed candidates anchored to changed lines.
+) -> tuple[list[CandidateFinding], dict[str, str]]:
+    """Keep only publishable candidates and map raw ids to filtered ids."""
 
-    This is a report invariant: an Agent must
-    not publish a finding whose claimed location is outside the supplied diff.
-    """
-
-    selected: dict[tuple[str, str, int, str, str], CandidateFinding] = {}
-    for raw_candidate in candidates:
+    selected: dict[tuple[str, str, int, str, str], tuple[str, CandidateFinding]] = {}
+    for index, raw_candidate in enumerate(candidates):
+        raw_id = f"candidate-{index}"
         candidate = _normalize_security_candidate(raw_candidate, policy)
         if candidate is None:
             continue
@@ -195,17 +192,38 @@ def deduplicate_candidates(
             ),
         )
         existing = selected.get(key)
-        if existing is None or candidate.confidence > existing.confidence:
-            selected[key] = candidate
-    return sorted(
+        if existing is None or candidate.confidence > existing[1].confidence:
+            selected[key] = (raw_id, candidate)
+    ordered = sorted(
         selected.values(),
-        key=lambda finding: (
-            SEVERITY_ORDER[finding.severity],
-            -finding.confidence,
-            finding.file_path,
-            finding.line,
+        key=lambda item: (
+            SEVERITY_ORDER[item[1].severity],
+            -item[1].confidence,
+            item[1].file_path,
+            item[1].line,
         ),
     )[:80]
+    filtered = [candidate for _raw_id, candidate in ordered]
+    id_map = {
+        raw_id: f"candidate-{index}"
+        for index, (raw_id, _candidate) in enumerate(ordered)
+    }
+    return filtered, id_map
+
+
+def deduplicate_candidates(
+    candidates: list[CandidateFinding],
+    parsed_diff: ParsedDiff,
+    policy: ResolvedReviewPolicy | None = None,
+) -> list[CandidateFinding]:
+    """Keep only policy-allowed candidates anchored to changed lines.
+
+    This is a report invariant: an Agent must
+    not publish a finding whose claimed location is outside the supplied diff.
+    """
+
+    filtered, _id_map = deduplicate_candidates_with_ids(candidates, parsed_diff, policy)
+    return filtered
 
 
 def verified_findings(

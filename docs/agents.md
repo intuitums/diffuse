@@ -14,10 +14,10 @@ Diffuse control-plane credentials.
 
 ```text
 Diffuse worker
-  -> private review transport
-  -> isolated Codex or Claude Code Agent
+  -> isolated candidate Agent Host (Codex or Claude Code)
   -> structured candidate findings
-  -> Diffuse verifier + deterministic publication
+  -> isolated verifier Agent Host (the other engine)
+  -> deterministic validation, lineage, and publication
 ```
 
 The worker never executes a vendor CLI and never mounts a vendor credential.
@@ -43,8 +43,10 @@ Its output is a **candidate**, not a final review. Every candidate must name:
 - why the change fails or is risky; and
 - the relevant head SHA and investigation identity.
 
-An independent verifier can reject candidates. Diffuse performs final
-exact-head validation, deduplication, lineage changes, and GitHub publication.
+A separate investigation on the other engine verifies the canonical candidate
+result and can reject any candidate. The verifier is bound to the candidate
+result digest; omitted decisions reject. Diffuse performs final exact-head
+validation, deduplication, lineage changes, and GitHub publication.
 
 ## Delivery sequence
 
@@ -73,10 +75,11 @@ one active review per 1 GiB runner while larger delivery moves to object-backed
 transport.
 
 Scoped private context access is bound to the repository, pull request,
-snapshot, head, review attempt, and capability lifetime. These implementation
-seams preserve the isolation boundary but are not evidence that the planned
-v1 investigation outcome is shipped.
+snapshot, head, review attempt, exact bearer digest, and capability lifetime.
+The candidate and verifier have separate durable Investigations, capabilities,
+budgets, result digests, lifecycle states, and token accounting.
 
-`REVIEW_AGENT` is the supported selection variable. Its values are `codex` and
-`claude`; both execute only through an isolated Agent Host. Session capabilities
+`REVIEW_AGENT` selects the candidate engine. Its values are `codex` and
+`claude`; the other engine verifies, so both authenticated Agent Hosts must be
+running. Both execute only through an isolated Agent Host. Session capabilities
 are the internal representation of a Review Access Grant, not a public API.
