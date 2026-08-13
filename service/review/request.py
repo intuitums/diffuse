@@ -28,7 +28,8 @@ class ReviewRequest:
 
     The one-shot API runtime reads `diff_text`, `contexts`, `policy`, and the
     model pair. An agent-CLI runtime reads `diff_text`, `policy`, `worktree`,
-    `context_plan`, and `tools`, and ignores preloaded `contexts` except as a
+    `context_plan`, `tools`, and any worker callback it needs to mint a second
+    durable verifier session, and ignores preloaded `contexts` except as a
     hint. Provenance routing still supplies `candidate_model` /
     `verifier_model`; a runtime that does not use API models leaves them unset.
     """
@@ -45,6 +46,9 @@ class ReviewRequest:
     #: Optional opaque identity for logging (review_run id as text, fixture id).
     review_identity: str | None = None
     agent_investigation: NativeSessionDispatch | None = None
+    native_verifier_factory: (
+        Callable[[str, dict[str, object], str], NativeSessionDispatch] | None
+    ) = None
 
     def with_tools(self, tools: ReviewToolProvider) -> ReviewRequest:
         """Return a copy that carries `tools` without mutating this request."""
@@ -61,4 +65,5 @@ class ReviewRequest:
             tools=tools,
             review_identity=self.review_identity,
             agent_investigation=self.agent_investigation,
+            native_verifier_factory=self.native_verifier_factory,
         )

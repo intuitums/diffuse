@@ -14,6 +14,7 @@ from contextlib import closing
 from functools import partial
 
 import anyio
+import httpx
 
 from indexer.index_repo import index_repo
 from indexer.store import get_conn
@@ -37,7 +38,14 @@ from retriever.retrieve import (
     retrieve_context_from_plan,
 )
 from service.agents.access_grant import session_capability_signing_key
-from service.agents.contract import SessionScope, mint_session_capability
+from service.agents.contract import (
+    DEFAULT_MAX_RESULT_BYTES,
+    AgentInvestigationRole,
+    SessionScope,
+    mint_session_capability,
+    opposite_agent_runtime,
+)
+from service.agents.profiles import REVIEW, VERIFY
 from service.cross_repository import (
     record_dropped_context_repositories,
     resolve_cross_repository_context,
@@ -94,7 +102,7 @@ from service.repositories import (
     resolve_github_repository,
     update_mirror_state,
 )
-from service.review.agent_client import NativeSessionDispatch
+from service.review.agent_client import NativeRunnerError, NativeSessionDispatch, runner_url
 from service.review.agents import (
     hosted_review_agent_name,
     resolve_review_agent,
@@ -763,16 +771,28 @@ def _create_native_agent_investigation(
     *,
     runtime: str,
     snapshot_id: int,
+    base_sha: str,
     head_sha: str,
+    context_plan: CrossRepositoryContextPlan,
+    role: AgentInvestigationRole = AgentInvestigationRole.CANDIDATE,
     progress_callback: Callable[[], None],
+    source_artifact: SourceArtifact | None = None,
+    input_result: dict[str, object] | None = None,
+    input_result_digest: str | None = None,
 ) -> NativeSessionDispatch:
     if job.pull_request_id is None:
         raise NonRetryableError("Native review job does not reference a pull request")
+    role = AgentInvestigationRole(role)
+    profile = REVIEW if role is AgentInvestigationRole.CANDIDATE else VERIFY
     # The checkout/archive can be the most expensive local step before runner
     # dispatch. Prove this worker still owns the job both before doing that
-    # work and before writing a session another worker could dispatch.
+    # work and before writing an investigation another worker could dispatch.
     progress_callback()
-    source_artifact = _build_native_workspace_artifact(job, head_sha=head_sha)
+    selected_artifact = (
+        source_artifact
+        if source_artifact is not None
+        else _build_native_workspace_artifact(job, head_sha=head_sha)
+    )
     progress_callback()
     grant = mint_session_capability(
         signing_key=session_capability_signing_key(),
@@ -785,19 +805,43 @@ def _create_native_agent_investigation(
             operations=frozenset({"search_code"}),
         ),
     )
+    manifest_digest = selected_artifact.manifest_digest
+    if manifest_digest is None:
+        raise NonRetryableError("Native workspace manifest digest is missing")
     with closing(get_conn()) as conn, conn:
         handle = create_agent_investigation(
             conn,
             review_job_id=job.id,
             capability=grant.capability,
             capability_token=grant.token,
+            base_sha=base_sha,
+            context_plan_fingerprint=context_plan.fingerprint,
+            role=role,
+            turn_budget=profile.turn_budget,
+            timeout_seconds=profile.timeout_seconds,
+            max_result_bytes=DEFAULT_MAX_RESULT_BYTES,
+            source_archive_digest=selected_artifact.digest,
+            source_manifest_digest=manifest_digest,
+            input_result_digest=input_result_digest,
         )
     return NativeSessionDispatch(
         session_id=handle.session_id,
         runtime=handle.runtime,
+        repository_id=job.repository_id,
+        pull_request_id=job.pull_request_id,
+        snapshot_id=snapshot_id,
+        base_sha=base_sha,
+        head_sha=head_sha,
         capability=grant.token,
         capability_id=handle.capability_id,
-        source_artifact=source_artifact,
+        context_plan_fingerprint=context_plan.fingerprint,
+        role=role,
+        turn_budget=profile.turn_budget,
+        timeout_seconds=profile.timeout_seconds,
+        max_result_bytes=DEFAULT_MAX_RESULT_BYTES,
+        source_artifact=selected_artifact,
+        input_result=input_result,
+        input_result_digest=input_result_digest,
         expires_at=handle.expires_at,
     )
 
@@ -823,6 +867,58 @@ def _build_native_workspace_artifact(
         return build_source_artifact(checkout)
 
 
+def _agent_investigation_error_code(error: Exception) -> str:
+    """Preserve the host's terminal classification in the durable investigation."""
+
+    if isinstance(error, NativeRunnerError):
+        return error.code
+    message = str(error)
+    if isinstance(error, ValueError) and message.startswith("agent_auth_required:"):
+        return "auth_required"
+    if isinstance(error, ValueError) and message.startswith("agent_configuration_error:"):
+        return "configuration_error"
+    return "runner_execution_failed"
+
+
+def _best_effort_cancel_host_investigation(session: NativeSessionDispatch) -> None:
+    """Ask the assigned host to stop before the durable row is abandoned."""
+
+    try:
+        httpx.post(
+            f"{runner_url(session.runtime)}/v1/investigations/{session.session_id}/cancel",
+            headers={"X-Diffuse-Investigation-Capability": session.capability},
+            timeout=5,
+        )
+    except Exception:
+        return
+
+
+def _create_native_verifier_investigation(
+    job: WorkflowJob,
+    *,
+    candidate_session: NativeSessionDispatch,
+    candidate_result: dict[str, object],
+    candidate_result_digest: str,
+    context_plan: CrossRepositoryContextPlan,
+    progress_callback: Callable[[], None],
+) -> NativeSessionDispatch:
+    """Mint the opposite-runtime verifier after the candidate result is accepted."""
+
+    return _create_native_agent_investigation(
+        job,
+        runtime=opposite_agent_runtime(candidate_session.runtime),
+        snapshot_id=candidate_session.snapshot_id,
+        base_sha=candidate_session.base_sha,
+        head_sha=candidate_session.head_sha,
+        context_plan=context_plan,
+        role=AgentInvestigationRole.VERIFIER,
+        progress_callback=progress_callback,
+        source_artifact=candidate_session.source_artifact,
+        input_result=candidate_result,
+        input_result_digest=candidate_result_digest,
+    )
+
+
 def _generate_and_persist_review(
     job: WorkflowJob,
     review_run_id: int,
@@ -835,15 +931,49 @@ def _generate_and_persist_review(
     model_plan: ReviewModelPlan | None = None,
     runtime_name: str | None = None,
     snapshot_id: int | None = None,
+    base_sha: str | None = None,
     head_sha: str | None = None,
+    context_plan: CrossRepositoryContextPlan | None = None,
 ) -> None:
-    agent_investigation: NativeSessionDispatch | None = None
+    candidate_investigation: NativeSessionDispatch | None = None
+    verifier_investigation: NativeSessionDispatch | None = None
 
     def report_progress() -> None:
         if not _heartbeat_and_check_current(job.id, worker_id):
             raise ReviewSupersededError(
                 "A newer pull-request revision or worker lease replaced this review"
             )
+
+    def _record_verifier_investigation(
+        runtime: str,
+        candidate_result: dict[str, object],
+        candidate_result_digest: str,
+    ) -> NativeSessionDispatch:
+        nonlocal verifier_investigation
+        if candidate_investigation is None:
+            raise NonRetryableError("Candidate investigation is missing")
+        verifier_investigation = _create_native_verifier_investigation(
+            job,
+            candidate_session=candidate_investigation,
+            candidate_result=candidate_result,
+            candidate_result_digest=candidate_result_digest,
+            context_plan=context_plan,
+            progress_callback=report_progress,
+        )
+        if verifier_investigation.runtime != runtime:
+            raise NonRetryableError("Verifier investigation runtime does not match routing")
+        return verifier_investigation
+
+    def create_verifier_session(
+        runtime: str,
+        candidate_result: dict[str, object],
+        candidate_result_digest: str,
+    ) -> NativeSessionDispatch:
+        return _record_verifier_investigation(
+            runtime,
+            candidate_result,
+            candidate_result_digest,
+        )
 
     try:
         selected_runtime = runtime_name or hosted_review_agent_name()
@@ -866,13 +996,15 @@ def _generate_and_persist_review(
                     path_aliases=path_aliases,
                 )
             return
-        if snapshot_id is None or head_sha is None:
+        if snapshot_id is None or base_sha is None or head_sha is None or context_plan is None:
             raise NonRetryableError("Agent investigation is missing immutable scope")
-        agent_investigation = _create_native_agent_investigation(
+        candidate_investigation = _create_native_agent_investigation(
             job,
             runtime=selected_runtime,
             snapshot_id=snapshot_id,
+            base_sha=base_sha,
             head_sha=head_sha,
+            context_plan=context_plan,
             progress_callback=report_progress,
         )
         report = generate_review(
@@ -901,7 +1033,9 @@ def _generate_and_persist_review(
                 candidate_model=(model_plan.candidate_model if model_plan is not None else None),
                 verifier_model=(model_plan.verifier_model if model_plan is not None else None),
                 review_identity=str(review_run_id),
-                agent_investigation=agent_investigation,
+                context_plan=context_plan,
+                agent_investigation=candidate_investigation,
+                native_verifier_factory=create_verifier_session,
             ),
         )
         report_progress()
@@ -914,15 +1048,20 @@ def _generate_and_persist_review(
                 path_aliases=path_aliases,
             )
     except ReviewSupersededError:
+        for investigation in (verifier_investigation, candidate_investigation):
+            if investigation is not None:
+                _best_effort_cancel_host_investigation(investigation)
         with closing(get_conn()) as conn, conn:
-            if agent_investigation is not None:
-                abandon_agent_investigation(
-                    conn,
-                    session_id=agent_investigation.session_id,
-                    runtime=agent_investigation.runtime,
-                    capability_id=agent_investigation.capability_id,
-                    status="cancelled",
-                )
+            for investigation in (verifier_investigation, candidate_investigation):
+                if investigation is not None:
+                    abandon_agent_investigation(
+                        conn,
+                        session_id=investigation.session_id,
+                        runtime=investigation.runtime,
+                        capability_id=investigation.capability_id,
+                        status="cancelled",
+                        error_code="cancelled",
+                    )
             if not mark_review_superseded(conn, review_run_id, worker_id=worker_id):
                 # The lease is already gone, so another worker owns this review run
                 # now. Superseding it here would delete the findings that worker is
@@ -933,16 +1072,21 @@ def _generate_and_persist_review(
                     worker_id,
                 )
         raise
-    except Exception:
+    except Exception as error:
+        for investigation in (verifier_investigation, candidate_investigation):
+            if investigation is not None:
+                _best_effort_cancel_host_investigation(investigation)
         with closing(get_conn()) as conn, conn:
-            if agent_investigation is not None:
-                abandon_agent_investigation(
-                    conn,
-                    session_id=agent_investigation.session_id,
-                    runtime=agent_investigation.runtime,
-                    capability_id=agent_investigation.capability_id,
-                    status="failed",
-                )
+            for investigation in (verifier_investigation, candidate_investigation):
+                if investigation is not None:
+                    abandon_agent_investigation(
+                        conn,
+                        session_id=investigation.session_id,
+                        runtime=investigation.runtime,
+                        capability_id=investigation.capability_id,
+                        status="failed",
+                        error_code=_agent_investigation_error_code(error),
+                    )
             mark_review_failed(conn, review_run_id)
         raise
 
@@ -1702,7 +1846,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
     # remain comparable without a provider/model abstraction.
     model_plan = ReviewModelPlan(
         candidate_model=f"agent_{runtime_name}",
-        verifier_model=f"agent_{runtime_name}",
+        verifier_model=f"agent_{opposite_agent_runtime(runtime_name)}",
         reason_code="review_agent",
         detected_family=None,
     )
@@ -1819,7 +1963,9 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
                     model_plan,
                     runtime_name,
                     snapshot_id,
+                    event.base_sha,
                     event.head_sha,
+                    context_plan,
                 )
             )
         except ReviewSupersededError:

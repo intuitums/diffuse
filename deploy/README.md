@@ -16,9 +16,10 @@ commercial agreement, license key, entitlement file, or registry credential.
 1. Copy `env.example` to `.env`, restrict it with `chmod 600 .env`, then run
    `diffuse github connect` from that directory. It merges the GitHub
    Integration Service credentials into `.env`; do not paste a one-hour token
-   into `GITHUB_TOKEN`. Set `REVIEW_AGENT=codex` or `REVIEW_AGENT=claude` and
-   generate the Agent Dispatch and Review Access Grant signing keys. Release
-   bundles already pin
+   into `GITHUB_TOKEN`. Set `REVIEW_AGENT=codex` or `REVIEW_AGENT=claude` to
+   select the candidate engine, authenticate both Agent Hosts for cross-engine
+   verification, and generate the Agent Dispatch and Review Access Grant
+   signing keys. Release bundles already pin
    `DIFFUSE_IMAGE`, `DIFFUSE_CLAUDE_RUNNER_IMAGE`, and
    `DIFFUSE_CODEX_RUNNER_IMAGE` to compatible immutable release digests.
 2. Verify each release image signature before starting it:
