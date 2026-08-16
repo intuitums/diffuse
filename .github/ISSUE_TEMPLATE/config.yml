@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: File a Linear issue
+    url: https://linear.app/intuitum
+    about: Intuitum tracks work in Linear, not GitHub Issues.
+  - name: Report a vulnerability
+    url: https://github.com/intuitumxyz/diffuse/blob/main/SECURITY.md
+    about: Email security@intuitum.xyz. Do not file a public issue.
