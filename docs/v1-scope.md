@@ -118,7 +118,7 @@ general-purpose agent platform.
 ## Delivery order
 
 1. **Documentation and work-plan reset.** Remove conflicting feature claims;
-   align Linear with this scope.
+   align GitHub issues with this scope.
 2. **GitHub App connection.** Build the guided Diffuse GitHub App connection:
    direct installation, verify the operator controls it, enroll the existing
    self-hosted instance (CLI: minimal `diffuse github connect`), and surface a

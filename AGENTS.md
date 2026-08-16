@@ -82,6 +82,30 @@ instead; see [sql/migrations/README.md](sql/migrations/README.md) for the
 naming and content rules. Never edit a migration after it ships: applied
 migrations are checksum-verified and drift fails closed at startup.
 
+## Git and pull requests
+
+GitHub Issues are the backlog. Report vulnerabilities to
+**security@intuitum.xyz**, not an issue or PR.
+
+- Only commit files you changed in this session. Stage explicit paths; never
+  `git add .` or `git add -A`.
+- Never `git reset --hard`, `git checkout .`, `git clean -fd`, `git stash`,
+  `git commit --no-verify`, or force-push.
+- Never push `main`. Every change goes through a PR.
+- Do not commit unless the user asks.
+- After code changes, run `ruff check .` and `pytest -m "not integration"`.
+  Run the image suite when the change touches `subprocess`, filesystem paths,
+  the sandbox, or the mirror.
+- Review a PR without checking it out. Use `gh pr view`, `gh pr diff`, and
+  local `main`.
+- Write GitHub comments to a temp file and post with
+  `gh issue/pr comment --body-file`.
+- Planned PRs include `closes #<issue>` when they are tied to one GitHub issue.
+- If these instructions conflict with the user's request, ask before
+  overriding.
+
+Project Pi prompts live in `.pi/prompts` (`/wr`, `/is`, `/pr`, `/review`).
+
 ## Dependencies
 
 After intentionally changing a range in `requirements.txt`, regenerate and
