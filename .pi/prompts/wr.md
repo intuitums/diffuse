@@ -9,7 +9,7 @@ Additional instructions: $ARGUMENTS
 Determine context from the conversation history first.
 
 Rules for context detection:
-- If the conversation already mentions a GitHub issue, pull request, or Linear issue, use that existing context.
+- If the conversation already mentions a GitHub issue or pull request, use that existing context.
 - If the work came from `/is` or `/pr`, assume that context is already known from the conversation and from the analysis work already done.
 - If there is no issue or PR in the conversation history, treat this as untracked wrap-up.
 
@@ -18,10 +18,7 @@ Unless I explicitly override something in this request, do the following in orde
 1. Changelog: add or update a `## [Unreleased]` entry only when this repository documents changelog rules. Otherwise skip. When working against a branch other than the default branch, skip the changelog unless those rules say otherwise.
 2. If this task is tied to a GitHub issue or PR and a final issue or PR comment has not already been posted in this session, draft it in my tone, preview it, and post exactly one final comment.
 3. Commit only files you changed in this session. Follow this repository's commit conventions in `AGENTS.md`.
-4. Issue trailers:
-   - If this repository uses Linear as its backlog and the task is tied to exactly one `DEV-*` issue, include `Fixes DEV-XXX` or `Contributes to DEV-XXX` in the commit and PR body. If it is tied to multiple Linear issues, stop and ask which one to use. Do not invent a Linear issue.
-   - If this repository uses GitHub issues as its backlog and the task is tied to exactly one GitHub issue, include `closes #<issue>` in the commit message. If it is tied to multiple GitHub issues, stop and ask which one to use.
-   - If the task is not tied to any issue, do not include `closes #`, `fixes #`, or `Fixes DEV-`.
+4. If this task is tied to exactly one GitHub issue, include `closes #<issue>` in the commit message. If it is tied to multiple GitHub issues, stop and ask which one to use. If it is not tied to any issue, do not include `closes #` or `fixes #`.
 5. Check the current git branch. If it is the default branch (`main`), stop and ask what to do. Do not push `main` unless I explicitly say so.
 6. Push the current feature branch.
 7. Close a GitHub issue with `gh issue close --reason completed` only when this repository has issue-close workflows under `.github/` that depend on that event. Do not reopen and reclose issues otherwise.
