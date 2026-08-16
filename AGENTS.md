@@ -84,8 +84,7 @@ migrations are checksum-verified and drift fails closed at startup.
 
 ## Git and pull requests
 
-Linear is the backlog. Do not open GitHub issues for planned work; use
-[Linear](https://linear.app/intuitum). Report vulnerabilities to
+GitHub Issues are the backlog. Report vulnerabilities to
 **security@intuitum.xyz**, not an issue or PR.
 
 - Only commit files you changed in this session. Stage explicit paths; never
@@ -101,7 +100,7 @@ Linear is the backlog. Do not open GitHub issues for planned work; use
   local `main`.
 - Write GitHub comments to a temp file and post with
   `gh issue/pr comment --body-file`.
-- Planned PRs include `Fixes DEV-XXX` or `Contributes to DEV-XXX`.
+- Planned PRs include `closes #<issue>` when they are tied to one GitHub issue.
 - If these instructions conflict with the user's request, ask before
   overriding.
 
