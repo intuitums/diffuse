@@ -283,6 +283,39 @@ def test_no_failure_notice_on_a_pull_request_diffuse_would_not_review(monkeypatc
     assert worker._failure_notice_enabled("acme/api", 1) is True
 
 
+@pytest.mark.parametrize(
+    ("trigger_settings", "event_overrides"),
+    [
+        ({"automatic": False}, {}),
+        ({"exclude_authors": ("dependabot[bot]",)}, {"author": "dependabot[bot]"}),
+    ],
+)
+def test_root_trigger_exclusions_suppress_pre_diff_failure_notices(
+    monkeypatch,
+    trigger_settings,
+    event_overrides,
+):
+    """Root trigger policy still applies when the review dies before diff fetch."""
+    from service.hosted import worker
+
+    monkeypatch.setattr(worker, "compatible_snapshot_id", lambda *_a: 11)
+    monkeypatch.setattr(worker, "get_conn", lambda: _NullConn())
+    monkeypatch.setattr(
+        worker,
+        "load_repository_policy",
+        lambda *_a: _snapshot(**trigger_settings),
+    )
+
+    assert (
+        worker._failure_notice_enabled(
+            "acme/api",
+            1,
+            _eligible_event(**event_overrides),
+        )
+        is False
+    )
+
+
 def test_failure_notice_still_posts_for_an_eligible_pull_request(monkeypatch):
     from service.hosted import worker
 

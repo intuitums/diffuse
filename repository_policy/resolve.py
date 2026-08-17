@@ -978,22 +978,24 @@ def evaluate_trigger(
     return TriggerDecision(True, "automatic_trigger", "Automatic review trigger accepted.")
 
 
-def repository_failure_comment_enabled(policy: RepositoryPolicySnapshot) -> bool:
-    """Resolve ``triggers.failure_comment`` without a diff.
+def resolve_repository_trigger_policy(
+    policy: RepositoryPolicySnapshot,
+) -> ResolvedReviewPolicy:
+    """Build a root-only policy for decisions made before fetching a diff.
 
-    A review can die before its diff is ever fetched, so the terminal-failure
-    notice cannot use the path-scoped resolution that ``triggers`` performs.
-    Only repository-root ``.diffuse`` layers govern it, which is the deepest
-    scope that is knowable when nothing about the change was read.
+    The synthetic root path receives root-layer trigger patches but no nested
+    layers. Force that probe reviewable so broad ignored-path rules cannot
+    collapse its trigger policy back to defaults.
     """
-    enabled = ResolvedTriggerPolicy().failure_comment
-    for layer in policy.layers:
-        if layer.directory_path:
-            continue
-        configured = layer.config.triggers.failure_comment
-        if configured is not None:
-            enabled = configured
-    return enabled
+    resolved = resolve_review_policy(policy, ("__diffuse_failure_notice__",))
+    root_path = replace(resolved.paths[0], enabled=True, ignored=False)
+    return replace(resolved, paths=(root_path,))
+
+
+def repository_failure_comment_enabled(policy: RepositoryPolicySnapshot) -> bool:
+    """Resolve the root failure-comment setting without fetching a diff."""
+
+    return resolve_repository_trigger_policy(policy).triggers.failure_comment
 
 
 def resolve_review_policy(

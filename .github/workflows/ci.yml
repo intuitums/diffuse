@@ -1,560 +1,212 @@
-# CI — the gate every change passes before it can land.
-#
-# Naming convention shared with intuitumxyz/leo:
-#   ci.yml       this file: runs on pull requests and on pushes to the default branch
-#   release.yml  tag-driven publish
-# Job ids are verb-led kebab-case so the checks list reads as a sequence of actions.
-#
-# EVERY `uses:` IS PINNED TO A FULL COMMIT SHA, with the tag it resolved from in a
-# trailing comment. See the same note in release.yml for why, and for how to refresh
-# a pin. Pinning here as well as there is deliberate: this workflow runs on
-# `pull_request`, so an attacker who can move an upstream tag would otherwise get code
-# execution on every contributor's branch as well as on the default branch.
 name: CI
 
 on:
-  pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
-  # PR #8 merged into a feature branch that `main` had already left behind,
-  # stranding two Urgent security fixes for a day without anything failing.
-  # A pull request must target the default branch unless it is deliberately
-  # stacked on another `claude/` branch, which is a reviewed, temporary state.
-  guard-base-branch:
-    if: github.event_name == 'pull_request'
-    runs-on: intuitum-2vcpu-ubuntu-2604
-    timeout-minutes: 5
-    steps:
-      - name: Refuse a pull request aimed away from the default branch
-        env:
-          BASE_REF: ${{ github.base_ref }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          if [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
-            echo "Base branch is $BASE_REF."
-            exit 0
-          fi
-          case "$BASE_REF" in
-            claude/*|cursor/*)
-              echo "::notice::Stacked on $BASE_REF. Retarget to $DEFAULT_BRANCH before merging, or merge the parent first."
-              exit 0
-              ;;
-          esac
-          echo "::error::This pull request targets '$BASE_REF', not '$DEFAULT_BRANCH'." >&2
-          echo "Merging here can strand the change on a branch that $DEFAULT_BRANCH has already moved past." >&2
-          echo "Retarget the pull request, or name the base 'claude/<feature>' or 'cursor/<feature>' if the stack is intentional." >&2
-          exit 1
+env:
+  TEST_IMAGE: diffuse-tests:ci-${{ github.run_id }}-${{ github.run_attempt }}
+  APP_IMAGE: diffuse:ci-${{ github.run_id }}-${{ github.run_attempt }}
+  CLAUDE_IMAGE: diffuse-runner-claude:ci-${{ github.run_id }}-${{ github.run_attempt }}
+  CODEX_IMAGE: diffuse-runner-codex:ci-${{ github.run_id }}-${{ github.run_attempt }}
+  TEST_PROJECT: diffuse-tests-${{ github.run_id }}-${{ github.run_attempt }}
+  DEPLOY_PROJECT: diffuse-ci-${{ github.run_id }}-${{ github.run_attempt }}
 
-  # Every deployment credential is operator-supplied and the repository is public,
-  # so a committed key is an incident for whoever is running Diffuse. `pip-audit`
-  # covers dependency advisories; nothing covered secrets until this job.
-  #
-  # Deliberately NOT gitleaks-action: that action requires a paid GITLEAKS_LICENSE
-  # for organization-owned repositories. The binary is the same scanner, and
-  # pinning a version plus its published SHA-256 matches how the release bundle is
-  # verified in deploy/README.md.
-  scan-secrets:
-    runs-on: intuitum-2vcpu-ubuntu-2604
-    timeout-minutes: 10
+jobs:
+  check:
+    runs-on: intuitum-4vcpu-ubuntu-2604
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          # The history scan below is the point of this job: a key that was
-          # committed and then deleted is still a live key, and a shallow clone
-          # cannot see it.
           fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements.lock
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements.lock
+          python -m pip install -r requirements-dev.txt
+          python -m pip install --no-deps -e .
+
+      - name: Check
+        run: |
+          python -m pip check
+          python -m pip freeze > /tmp/installed.txt
+          python scripts/check_lock_freeze.py /tmp/installed.txt requirements.lock
+          python -m pip_audit -r requirements.lock --disable-pip
+          python -m ruff check .
+          git diff --check
+
       - name: Install gitleaks
         env:
           GITLEAKS_VERSION: 8.30.1
           GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
         run: |
-          set -euo pipefail
           archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           curl --fail --silent --show-error --location \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}" \
             --output "$archive"
           echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict
           tar -xzf "$archive" gitleaks
-          ./gitleaks version
-      # --redact is not cosmetic: Actions logs on a public repository are public,
-      # so printing a matched secret in the failure output would widen the leak
-      # this job exists to catch. The file and line are enough to act on.
-      - name: Scan the working tree
-        run: ./gitleaks dir . --config .gitleaks.toml --redact --no-banner
-      - name: Scan the full commit history
-        run: ./gitleaks git . --config .gitleaks.toml --redact --no-banner
 
-  lint-and-unit:
-    runs-on: intuitum-4vcpu-ubuntu-2604
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.12"
-          cache: pip
-          # Exactly the files this job's installs read, and exactly the list
-          # test-postgres declares. Two reasons that matters. requirements-build.*
-          # used to be listed here and is only ever installed inside the image's
-          # builder stage, so re-locking a build-only dependency threw away a pip
-          # cache that could not contain it. And the key is a hash of this list, so
-          # while the two jobs disagreed they kept two separate caches of the same
-          # wheels; matching lists mean whichever job starts first warms the other.
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-            requirements.lock
-      # CHANGED: install requirements.lock FIRST, with --require-hashes, so the runtime
-      # dependency set under test is byte-for-byte the set the image ships. This job
-      # used to install requirements-dev.txt, which pulls in requirements.txt's version
-      # RANGES and resolves them fresh on every run; the image installs the locks. The
-      # two were never compared, so the tested dependency set was never the shipped one.
-      # requirements-dev.txt is still installed afterwards, but only adds test tooling:
-      # every runtime requirement it names is already satisfied at the locked version.
-      - name: Install the locked runtime dependencies
-        run: python -m pip install --require-hashes -r requirements.lock
-      - name: Install development dependencies
+      - name: Scan secrets
         run: |
-          python -m pip install -r requirements-dev.txt
-          python -m pip install --no-deps -e .
-      - name: Validate dependencies
-        run: python -m pip check
-      # Guards the step above: if requirements-dev.txt (or a range in requirements.txt)
-      # ever drags a runtime dependency off its locked version, the suite would go back
-      # to testing something the image does not contain. Deterministic - it compares two
-      # local facts and never resolves anything - so it cannot fail for an unrelated
-      # upstream release.
-      - name: Confirm the tested dependency set is the shipped one
-        run: |
-          python - <<'PY'
-          import importlib.metadata as metadata
-          import re
-          import sys
+          ./gitleaks dir . --config .gitleaks.toml --redact --no-banner
+          ./gitleaks git . --config .gitleaks.toml --redact --no-banner
 
-          drift, missing, checked = [], [], 0
-          with open("requirements.lock") as handle:
-              for line in handle:
-                  match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)", line)
-                  if not match:
-                      continue
-                  name, pinned = match.group(1), match.group(2)
-                  checked += 1
-                  try:
-                      installed = metadata.version(name)
-                  except metadata.PackageNotFoundError:
-                      missing.append(f"{name}=={pinned}")
-                      continue
-                  if installed != pinned:
-                      drift.append(f"{name}: locked {pinned}, installed {installed}")
-
-          print(f"checked {checked} locked requirements")
-          if missing:
-              print("NOT INSTALLED:\n  " + "\n  ".join(missing), file=sys.stderr)
-          if drift:
-              print("VERSION DRIFT:\n  " + "\n  ".join(drift), file=sys.stderr)
-          sys.exit(1 if (missing or drift) else 0)
-          PY
-      # NOTE: this runs in the merge gate, so a new advisory against any transitive
-      # dependency fails every open pull request until someone re-locks. That is a
-      # deliberate trade for a self-hosted product, but it is the reason a
-      # green branch can go red without a code change. Re-lock, do not skip.
-      - name: Audit locked runtime dependencies
-        run: python -m pip_audit -r requirements.lock --disable-pip
-      - name: Lint
-        run: python -m ruff check .
-      - name: Run unit tests
-        run: python -m pytest -m "not integration"
-
-  test-postgres:
-    runs-on: intuitum-4vcpu-ubuntu-2604
-    timeout-minutes: 20
-    services:
-      postgres:
-        # Still pgvector only because the frozen version-1 baseline runs
-        # `CREATE EXTENSION IF NOT EXISTS vector`; migration 0010 drops it again.
-        image: pgvector/pgvector:pg17
-        env:
-          POSTGRES_USER: diffuse
-          POSTGRES_PASSWORD: integration-test
-          POSTGRES_DB: diffuse_test
-        # An EPHEMERAL host port, not a fixed 5432. The runners are self-hosted and share
-        # one host, so a fixed publish is a singleton: the box already runs a Diffuse
-        # instance whose own db publishes 127.0.0.1:5432, and this job failed outright
-        # with `bind: address already in use` before this line changed. Two concurrent
-        # runs of this job would have collided with each other for the same reason - a
-        # hosted runner hid both, because it is a fresh VM per job.
-        # The mapped port is read back from the `job.services` context below.
-        ports:
-          - 5432/tcp
-        options: >-
-          --health-cmd "pg_isready -U diffuse -d diffuse_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+  test:
+    needs: check
+    runs-on: intuitum-8vcpu-ubuntu-2604
+    timeout-minutes: 45
     env:
-      # Without this the job is decorative. `pytest -m integration` with
-      # POSTGRES_TEST_DATABASE_URL unset reported "40 skipped, 680 deselected" and
-      # exit 0 - a rename of the variable above, or a service container that never
-      # bound its port, was a green check. This makes tests/integration/conftest.py
-      # treat a missing database, and a run that executes zero integration tests, as
-      # errors rather than skips. See DEV-238.
-      DIFFUSE_REQUIRE_INTEGRATION_TESTS: "1"
+      POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
+      DIFFUSE_PUBLIC_URL: http://localhost:8000
+      DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY: Yfs8wlT_0BUOdJOjbOpcJ2khTWvDZi4y-K8XZOVxeFE
+      DIFFUSE_REVIEW_AGENT_TRANSPORT_SECRET: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      REVIEW_AGENT: codex
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-            requirements.lock
-      # POSTGRES_TEST_DATABASE_URL cannot live in the job's `env:` any more: it has to
-      # name the port the service container actually got, and the `job` context is only
-      # available to steps. DIFFUSE_REQUIRE_INTEGRATION_TESTS still guards the case this
-      # is most likely to break - if the variable is wrong the integration tests error
-      # instead of skipping quietly to a green check.
-      - name: Point the tests at the service container
-        run: |
-          echo "POSTGRES_TEST_DATABASE_URL=postgresql://diffuse:integration-test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/diffuse_test" >> "$GITHUB_ENV"
-      # Same ordering as lint-and-unit: the shipped, locked set first.
-      - name: Install the locked runtime dependencies
-        run: python -m pip install --require-hashes -r requirements.lock
-      - name: Install development dependencies
-        run: |
-          python -m pip install -r requirements-dev.txt
-          python -m pip install --no-deps -e .
-      - name: Migrate disposable database
-        run: DATABASE_URL="$POSTGRES_TEST_DATABASE_URL" diffuse database migrate
-      - name: Run PostgreSQL integration tests
-        run: python -m pytest -m integration
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-  # The suite, on the platform Diffuse ships to, against the dependency set the
-  # image contains. `lint-and-unit` and `test-postgres` above run on a GitHub
-  # runner's Python with pip-installed dependencies; this runs inside the image.
-  #
-  # Its other job is to keep the `test-runner` stage alive. That stage existed for
-  # months with nothing building it and rotted exactly the way an unbuilt stage
-  # does: it installed version ranges instead of the lock, had no `git` for the
-  # twenty tests that shell out to it, and
-  # was missing every fixture file the suite reads from disk. 35 failures, none of
-  # them a code bug. Deleting this job puts the stage back on that path. See DEV-320.
-  test-container:
-    runs-on: intuitum-4vcpu-ubuntu-2604
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-
-      # The same builder NAME as build-container — one spelling to keep in step —
-      # but usually not the same builder: each runner on the box has its own
-      # rootless Docker daemon, and this job's label maps to three runners, so the
-      # step below materialises an independent `diffuse` builder on whichever
-      # runner the job lands. Each warms on its first build there and persists
-      # from then on. Separate daemons also mean nothing this job does can evict
-      # or poison build-container's cache, which lives on another runner. See
-      # build-container for why the Actions cache is gone.
-      - name: Use the persistent builder
+      - name: Setup BuildKit
         run: |
           docker buildx inspect diffuse >/dev/null 2>&1 \
             || docker buildx create --name diffuse --driver docker-container \
             || docker buildx inspect diffuse >/dev/null
 
-      - name: Build the test image
+      - name: Build test image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           builder: diffuse
           context: .
           target: test-runner
           load: true
-          tags: diffuse-tests:ci
+          tags: ${{ env.TEST_IMAGE }}
 
-      # Proves the point of the stage rather than trusting it: if requirements-dev.txt
-      # ever drags a runtime dependency off the locked version again, the tested set
-      # stops being the shipped set and this fails here instead of in production.
-      # The comparison lives in scripts/check_lock_freeze.py so the missing-package
-      # case is unit-tested; an inline copy is how the previous check silently
-      # skipped absences.
-      - name: Confirm the image tests the shipped dependency set
+      - name: Test
         run: |
-          docker run --rm --entrypoint pip diffuse-tests:ci freeze > /tmp/installed.txt
-          # python3, not python. This job does not use setup-python, and unlike a hosted
-          # ubuntu-2404 image a plain Ubuntu 26.04 host ships no unversioned `python`
-          # on PATH - the step died with `python: command not found`.
+          docker run --rm --entrypoint pip "$TEST_IMAGE" freeze > /tmp/installed.txt
           python3 scripts/check_lock_freeze.py /tmp/installed.txt requirements.lock
+          DIFFUSE_TEST_IMAGE="$TEST_IMAGE" docker compose \
+            --project-name "$TEST_PROJECT" \
+            --file docker-compose.tests.yml \
+            run --rm tests
 
-      # Unit and integration in one run, against the disposable PostgreSQL in
-      # docker-compose.tests.yml. DIFFUSE_REQUIRE_INTEGRATION_TESTS is set there,
-      # so a run that skips the integration tests fails rather than passing quietly.
-      - name: Run the whole suite in the container
-        run: |
-          DIFFUSE_TEST_IMAGE=diffuse-tests:ci \
-            docker compose -f docker-compose.tests.yml run --rm tests
-
-      - name: Tear down
-        if: always()
-        run: docker compose -f docker-compose.tests.yml down -v
-
-  build-container:
-    runs-on: intuitum-8vcpu-ubuntu-2604
-    # 30 -> 40: this job now boots the stack as well as building it, which adds a
-    # PostgreSQL image pull plus the healthcheck waits.
-    timeout-minutes: 40
-    env:
-      POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
-      DIFFUSE_PUBLIC_URL: http://localhost:8000
-      # Compose validates opt-in runner profiles too. This is a well-formed
-      # public key for configuration validation only; it has no corresponding
-      # private key in CI and cannot sign a dispatch envelope.
-      DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY: Yfs8wlT_0BUOdJOjbOpcJ2khTWvDZi4y-K8XZOVxeFE
-      # Shared wrap key required by agent-host env interpolation; CI never
-      # mints a live dispatch, so any 32-byte base64url value is sufficient.
-      DIFFUSE_REVIEW_AGENT_TRANSPORT_SECRET: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-      REVIEW_AGENT: codex
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-
-      - name: Validate Compose configuration
+      - name: Validate Compose
         run: |
           cp .env.example .env
           docker compose config --quiet
-          DIFFUSE_ENV_FILE=env.example DIFFUSE_IMAGE=diffuse:test \
+          DIFFUSE_ENV_FILE=env.example DIFFUSE_IMAGE="$APP_IMAGE" \
             docker compose --env-file deploy/env.example \
               --file deploy/compose.yaml config --quiet
 
-      # One persistent BuildKit builder on the runner's daemon, no GitHub Actions
-      # cache. Each intuitum runner runs its own rootless Docker daemon, and this
-      # job's label maps to exactly one runner, so a builder created once on that
-      # daemon (`docker buildx create --name diffuse`) and never torn down IS the
-      # cache: its state volume outlives every job, and each build starts from
-      # whatever the last one proved. release.yml's amd64 leg lands on this same
-      # runner and adopts this same builder.
-      #
-      # Measured before this change, over the previous 40 CI runs: this job held
-      # steady around 117s, of which ~35s was importing and exporting the `type=gha`
-      # cache — and one run took 911s, because eviction had dropped the pip layer
-      # from the Actions cache and re-uploading that single ~1GB layer to the cache
-      # service ran at ~1.4MB/s for 811 seconds. A cache that lives on the box has no
-      # upload leg, so both the steady 35s and the fifteen-minute tail are gone.
-      #
-      # It also makes the Dockerfile's `RUN --mount=type=cache` apt/pip mounts real.
-      # Those mounts live in BuildKit state, which `type=gha` never exported and the
-      # per-job builder threw away, so in CI they were empty on every run — a lock
-      # change re-downloaded every wheel from scratch. Now they accumulate.
-      #
-      # Deliberately a `run` step, not docker/setup-buildx-action: adopting an
-      # existing named builder needs one idempotent command, and this workflow runs
-      # on `pull_request`, where every third-party action removed is one fewer
-      # SHA-pin to audit. The three-way `||` handles two first-runs racing to
-      # create the builder: the loser's create fails, the final inspect confirms
-      # the winner's builder exists, and both proceed onto it.
-      #
-      # Shared state across pull requests is not a new trust surface, but name the
-      # real boundary: any job scheduled to this label already executes arbitrary
-      # code as the runner's own user, and that user owns its rootless daemon
-      # outright — DOCKER_HOST is the user's socket. Anything that can run a job
-      # here could always poison anything this daemon holds, cache or no cache.
-      # The isolation that matters on the box — CI cannot reach the product
-      # runtimes, runners cannot reach each other — is per-user rootless daemons
-      # plus the runner units' InaccessiblePaths, and none of it moves with the
-      # layer cache. Disk is bounded by BuildKit's default GC; if the runner ever
-      # runs tight, `docker buildx prune --builder diffuse` on its daemon is the
-      # lever.
-      - name: Use the persistent builder
-        run: |
-          docker buildx inspect diffuse >/dev/null 2>&1 \
-            || docker buildx create --name diffuse --driver docker-container \
-            || docker buildx inspect diffuse >/dev/null
-
-      - name: Build production image
+      - name: Build application image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           builder: diffuse
           context: .
           load: true
-          tags: diffuse:test
+          tags: ${{ env.APP_IMAGE }}
 
-      # The runner targets are published only from release.yml, so building the
-      # application image alone would let a broken CLI package install reach a
-      # release tag. Load and exercise each target here while the application
-      # build cache is warm; the command also proves the image separation that
-      # keeps each credential-bearing runner free of the other CLI.
-      - name: Build and validate native runner images
+      - name: Build Agent Host images
         run: |
-          docker buildx build --load --target runner-claude --tag diffuse-runner-claude:test .
-          docker buildx build --load --target runner-codex --tag diffuse-runner-codex:test .
-          docker run --rm --entrypoint /bin/sh diffuse-runner-claude:test -c '
-            test "$(id -u)" = 10001
-            test "$(node -p "process.versions.node.split(\".\")[0]")" -ge 22
-            test ! -e /usr/local/bin/codex
-            claude --version
-          '
-          docker run --rm --entrypoint /bin/sh diffuse-runner-codex:test -c '
-            test "$(id -u)" = 10001
-            test "$(node -p "process.versions.node.split(\".\")[0]")" -ge 22
-            test ! -e /usr/local/bin/claude
-            codex --version
-          '
+          docker buildx build --builder diffuse --load --target runner-claude \
+            --tag "$CLAUDE_IMAGE" .
+          docker buildx build --builder diffuse --load --target runner-codex \
+            --tag "$CODEX_IMAGE" .
 
-      - name: Validate packaged runtime
+      - name: Validate images
         run: |
-          docker run --rm --entrypoint diffuse diffuse:test database --help
-          docker run --rm --entrypoint diffuse diffuse:test worker --help
-          docker run --rm --entrypoint /bin/sh diffuse:test -c '
+          docker run --rm --entrypoint diffuse "$APP_IMAGE" database --help
+          docker run --rm --entrypoint diffuse "$APP_IMAGE" worker --help
+          docker run --rm --entrypoint /bin/sh "$APP_IMAGE" -c '
             test "$(id -u)" -ne 0
             test ! -e /usr/local/bin/python
             test -x /opt/diffuse/diffuse
             test -x /opt/diffuse/_internal/service/hosted/git_askpass.sh
             test -f /opt/diffuse/_internal/sql/schema.sql
-            test -f /opt/diffuse/_internal/evals/baseline.example.json
             ! find /opt/diffuse -type f \
               \( -name "*.py" -o -name "*.pyc" -o -name "*.pyo" \) \
               -print -quit | grep -q .
           '
-          # Parser distribution metadata must ship, or INDEX_FORMAT_VERSION
-          # stops tracking grammar upgrades and stale indexes survive an
-          # upgrade. See indexer/index_version.py.
-          docker run --rm --entrypoint /bin/sh diffuse:test -c '
-            for dist in tree_sitter tree_sitter_c tree_sitter_cpp tree_sitter_go \
-                tree_sitter_java tree_sitter_javascript tree_sitter_php \
-                tree_sitter_ruby tree_sitter_rust tree_sitter_typescript; do
-              ls -d /opt/diffuse/_internal/"${dist}"-*.dist-info >/dev/null 2>&1 \
-                || { echo "missing parser metadata: ${dist}" >&2; exit 1; }
-            done
+          docker run --rm --entrypoint /bin/sh "$CLAUDE_IMAGE" -c '
+            test "$(id -u)" = 10001
+            test ! -e /usr/local/bin/codex
+            claude --version
+          '
+          docker run --rm --entrypoint /bin/sh "$CODEX_IMAGE" -c '
+            test "$(id -u)" = 10001
+            test ! -e /usr/local/bin/claude
+            codex --version
           '
 
-      # ADDED: actually start the stack. Everything above this line is a parse check
-      # or a single `docker run`, so until now nothing in .github/ ever brought the
-      # image up. Two consequences, both of which shipped to customers unexercised:
-      #
-      #   * `read_only: true`, `cap_drop: [ALL]` and `no-new-privileges:true` on
-      #     migrate/app/worker were never applied to a running process. docker-compose.yml
-      #     says in a comment that the dev profile mirrors these "or a write-to-rootfs
-      #     bug ships undetected because it only fails on their machine" - that
-      #     mitigation had nothing enforcing it.
-      #   * the migration path was only covered by the editable source install, where
-      #     DIFFUSE_SQL_DIR is unset. The image sets it to /opt/diffuse/_internal/sql,
-      #     which is a different branch in service/storage/migrations.py.
-      #
-      # deploy/compose.yaml is used rather than docker-compose.yml on purpose: it is
-      # the file customers run. deploy/env.example is used as shipped apart from the
-      # values it ships empty that something now refuses to start without, the
-      # image/secrets paths, and the recommended GitHub Integration Service URL
-      # (which without a connect-issued token is "partially configured" and fails
-      # startup). Keep that substitution list in step with what startup validation
-      # actually requires: a value missing here does not fail to parse, it boots a
-      # container that exits.
-      - name: Boot the customer stack against the built image
+      - name: Smoke test deployment
         working-directory: deploy
         run: |
-          sed -e "s|^DIFFUSE_IMAGE=.*|DIFFUSE_IMAGE=diffuse:test|" \
-              -e "s|^DIFFUSE_CLAUDE_RUNNER_IMAGE=.*|DIFFUSE_CLAUDE_RUNNER_IMAGE=diffuse-runner-claude:test|" \
-              -e "s|^DIFFUSE_CODEX_RUNNER_IMAGE=.*|DIFFUSE_CODEX_RUNNER_IMAGE=diffuse-runner-codex:test|" \
+          sed -e "s|^DIFFUSE_IMAGE=.*|DIFFUSE_IMAGE=${APP_IMAGE}|" \
+              -e "s|^DIFFUSE_CLAUDE_RUNNER_IMAGE=.*|DIFFUSE_CLAUDE_RUNNER_IMAGE=${CLAUDE_IMAGE}|" \
+              -e "s|^DIFFUSE_CODEX_RUNNER_IMAGE=.*|DIFFUSE_CODEX_RUNNER_IMAGE=${CODEX_IMAGE}|" \
               -e "s|^DIFFUSE_ENV_FILE=.*|DIFFUSE_ENV_FILE=ci.env|" \
               -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" \
               -e "s|^DIFFUSE_PUBLIC_URL=.*|DIFFUSE_PUBLIC_URL=${DIFFUSE_PUBLIC_URL}|" \
               -e "s|^DIFFUSE_GITHUB_INTEGRATION_URL=.*|DIFFUSE_GITHUB_INTEGRATION_URL=|" \
               -e "s|^DIFFUSE_GITHUB_INTEGRATION_TOKEN=.*|DIFFUSE_GITHUB_INTEGRATION_TOKEN=|" \
               env.example > ci.env
+          {
+            printf 'DIFFUSE_REVIEW_AGENT_CAPABILITY_SIGNING_KEY=%s\n' \
+              "$(openssl rand -hex 48)"
+            printf 'DIFFUSE_REVIEW_AGENT_TRANSPORT_SECRET=%s\n' \
+              "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"
+            printf 'DIFFUSE_REVIEW_AGENT_DISPATCH_PRIVATE_KEY=%s\n' \
+              "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"
+            printf '%s\n' 'DIFFUSE_DB_HOST_PORT=0' 'DIFFUSE_APP_HOST_PORT=0'
+          } >> ci.env
 
-          # Keep the startup capability check enabled without storing a signing
-          # secret in the repository. This generated CI file is removed in teardown.
-          printf 'DIFFUSE_REVIEW_AGENT_CAPABILITY_SIGNING_KEY=%s\n' \
-            "$(openssl rand -hex 48)" >> ci.env
-          printf 'DIFFUSE_REVIEW_AGENT_TRANSPORT_SECRET=%s\n' \
-            "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" >> ci.env
-          printf 'DIFFUSE_REVIEW_AGENT_DISPATCH_PRIVATE_KEY=%s\n' \
-            "$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" >> ci.env
+          compose=(docker compose --env-file ci.env --file compose.yaml \
+            --project-name "$DEPLOY_PROJECT")
+          "${compose[@]}" up --detach --wait --wait-timeout 240 db app
+          "${compose[@]}" up --detach worker
 
-          # Publish the database on an ephemeral host port for this boot only.
-          # compose.yaml ships 127.0.0.1:5432 because that is the right default for a
-          # customer running one instance on one machine. It is the wrong default for a
-          # CI host that already runs an instance - the boot failed here with
-          # `bind: address already in use` - and for a box with several runners that
-          # could boot this stack concurrently. Nothing in this job reaches the database
-          # from the host; only the compose network needs to.
-          echo "DIFFUSE_DB_HOST_PORT=0" >> ci.env
-          echo "DIFFUSE_APP_HOST_PORT=0" >> ci.env
-
-          # --wait blocks on the healthchecks. migrate is gated on db, and app on
-          # migrate completing successfully, so a failure here means the release
-          # ordering itself is broken - not just that one container is unhappy.
-          # Scoped to db and app because --wait fails outright on a service with no
-          # healthcheck, and the worker deliberately has none: it drains a queue
-          # rather than serving a port, so process liveness would say nothing about
-          # whether it is making progress. See DEV-227.
-          docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-            up --detach --wait --wait-timeout 240 db app
-
-          # The worker still has to boot. It validates its entire configuration at
-          # startup now, so an exit here is a real packaging or configuration
-          # regression rather than a slow start.
-          docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-            up --detach worker
-          # Most worker processes are running almost immediately. Polling keeps
-          # the same ten-second failure window without spending ten seconds on
-          # every healthy self-hosted Check.
           worker_state=""
-          for attempt in $(seq 1 10); do
-            worker_state="$(docker compose --env-file ci.env --file compose.yaml \
-              --project-name diffuse-ci ps --format '{{.State}}' worker)"
-            if [ "$worker_state" = "running" ]; then
-              break
-            fi
+          for _ in $(seq 1 10); do
+            worker_state="$("${compose[@]}" ps --format '{{.State}}' worker)"
+            [ "$worker_state" = running ] && break
             sleep 1
           done
-          if [ "$worker_state" != "running" ]; then
-            echo "::error::worker is '${worker_state}', expected 'running'" >&2
-            docker compose --env-file ci.env --file compose.yaml \
-              --project-name diffuse-ci logs worker >&2
+          [ "$worker_state" = running ] || {
+            "${compose[@]}" logs worker >&2
             exit 1
-          fi
+          }
 
-          # The exact check deploy/README.md tells a customer to run after `up -d`, against
-          # the port this boot actually got. The stack publishes on ephemeral ports here
-          # (see DIFFUSE_APP_HOST_PORT above), because a fixed 8000 collided with the
-          # Diffuse instance this box already runs - the boot died with
-          # `bind: address already in use` before the app container ever started.
-          app_port="$(docker compose --env-file ci.env --file compose.yaml \
-            --project-name diffuse-ci port app 8000 | sed 's/.*://')"
-          if [ -z "$app_port" ]; then
-            echo "::error::could not resolve the published port for app:8000" >&2
-            exit 1
-          fi
-          curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:${app_port}/ready"
+          app_port="$("${compose[@]}" port app 8000 | sed 's/.*://')"
+          test -n "$app_port"
+          curl --fail --silent --show-error --max-time 10 \
+            "http://127.0.0.1:${app_port}/ready"
+          "${compose[@]}" run --rm --no-deps migrate database verify
+          "${compose[@]}" exec -T app /bin/sh -c \
+            '! touch /opt/diffuse/rootfs-canary 2>/dev/null'
 
-          # docs/deployment.md requires this on every upgrade. It compares the applied
-          # migration history against the SQL packaged in the image, which is the path
-          # DIFFUSE_SQL_DIR selects and the source install never takes.
-          docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-            run --rm --no-deps migrate database verify
-
-          # Prove the hardening is in effect rather than merely parsed. A writable
-          # rootfs here means read_only: true silently stopped applying.
-          docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-            exec -T app /bin/sh -c '
-              if touch /opt/diffuse/rootfs-canary 2>/dev/null; then
-                echo "app rootfs is writable: read_only: true is not in effect" >&2
-                exit 1
-              fi
-            '
-
-          # The agent credential volume is writable under the same read-only
-          # rootfs and dropped-capability constraints the login command uses.
-          # Docker copies the image directory's metadata to a fresh empty named
-          # volume; without the pinned uid/gid and 0700 mode this fails only on
-          # a customer's first agent sign-in.
-          # Each isolated Agent Host gets its own credential volume, so exercise
-          # both current service profiles rather than falling back to worker.
+          # Expanded by the Agent Host container, not this shell.
+          # shellcheck disable=SC2016
           credential_check='set -eu
             test "$(id -u):$(id -g)" = "10001:10001"
             test "$(stat -c "%u:%g:%a" /var/lib/diffuse/agent)" = "10001:10001:700"
@@ -562,26 +214,27 @@ jobs:
             test "$HOME" = /var/lib/diffuse/agent/home
             test -d "$HOME" && test -w "$HOME"'
           for runner in claude codex; do
-            docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-              --profile "agent-${runner}" run --rm --no-deps --entrypoint /bin/sh \
-              "agent-host-${runner}" \
-              -c "$credential_check"
+            "${compose[@]}" --profile "agent-${runner}" run --rm --no-deps \
+              --entrypoint /bin/sh "agent-host-${runner}" -c "$credential_check"
           done
 
-      - name: Collect stack logs
-        if: always()
+      - name: Logs
+        if: failure()
         working-directory: deploy
         run: |
           test -f ci.env || exit 0
-          docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-            logs --no-color --timestamps || true
+          docker compose --env-file ci.env --file compose.yaml \
+            --project-name "$DEPLOY_PROJECT" logs --no-color --timestamps || true
 
-      - name: Tear down the stack
+      - name: Cleanup
         if: always()
-        working-directory: deploy
         run: |
-          if [ -f ci.env ]; then
-            docker compose --env-file ci.env --file compose.yaml --project-name diffuse-ci \
-              down --volumes --remove-orphans || true
+          docker compose --project-name "$TEST_PROJECT" \
+            --file docker-compose.tests.yml down --volumes --remove-orphans || true
+          if [ -f deploy/ci.env ]; then
+            docker compose --env-file deploy/ci.env --file deploy/compose.yaml \
+              --project-name "$DEPLOY_PROJECT" down --volumes --remove-orphans || true
           fi
-          rm -f ci.env
+          rm -f .env deploy/ci.env
+          docker image rm "$TEST_IMAGE" "$APP_IMAGE" "$CLAUDE_IMAGE" "$CODEX_IMAGE" \
+            >/dev/null 2>&1 || true

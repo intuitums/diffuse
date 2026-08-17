@@ -350,6 +350,35 @@ def test_ingest_event_admits_manual_review_comments(monkeypatch):
     )
 
 
+def test_ingest_event_admits_converted_to_draft(monkeypatch):
+    event = object()
+    seen: list[tuple[dict, str, str]] = []
+
+    def normalize(payload, *, delivery_id, action):
+        seen.append((payload, delivery_id, action))
+        return event
+
+    monkeypatch.setattr(delivery_poller, "normalize_pull_request_event", normalize)
+    monkeypatch.setattr(
+        delivery_poller,
+        "enqueue_pull_request",
+        lambda received, body: type(
+            "Result", (), {"accepted": True, "state": "queued"}
+        )(),
+    )
+    payload = {"action": "converted_to_draft", "pull_request": {"draft": True}}
+
+    assert (
+        delivery_poller.ingest_event(
+            delivery_id="delivery-draft",
+            event_name="pull_request",
+            payload=payload,
+        )
+        == "accepted"
+    )
+    assert seen == [(payload, "delivery-draft", "converted_to_draft")]
+
+
 def test_ingest_event_records_review_feedback(monkeypatch):
     feedback = type("Feedback", (), {"repo_full_name": "acme/api", "delivery_id": "d1"})()
     monkeypatch.setattr(

@@ -27,6 +27,7 @@ from repository_policy.resolve import (
     apply_approved_learned_rules,
     evaluate_trigger,
     repository_failure_comment_enabled,
+    resolve_repository_trigger_policy,
     resolve_review_policy,
 )
 from repository_policy.store import load_repository_policy
@@ -1204,7 +1205,7 @@ def _failure_notice_enabled(
     if event is None:
         return True
     try:
-        policy = resolve_review_policy(snapshot, ())
+        policy = resolve_repository_trigger_policy(snapshot)
         decision = _trigger_decision(event, "", policy)
     except (OSError, RuntimeError, ValueError):
         # Narrow deliberately. A broad `except Exception` here hid an
