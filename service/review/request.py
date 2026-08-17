@@ -1,10 +1,8 @@
-"""The inputs a review runtime needs to produce a `ReviewReport`.
+"""Inputs an isolated Review Agent needs to produce a `ReviewReport`.
 
-Callers historically passed a flat argument list shaped for the one-shot API
-runtime (diff + pre-fused contexts + models). Agent-CLI runtimes need a
-worktree, a context plan, and tools instead of a preloaded blob. `ReviewRequest`
-is that richer envelope; `generate_review` still accepts the flat form and
-builds one so existing callers do not all move at once.
+The request carries exact-head review context plus the durable candidate and
+verifier dispatches. Historical model-name fields remain only as persisted
+provenance labels; direct model API execution is retired.
 """
 
 from __future__ import annotations
@@ -24,14 +22,12 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class ReviewRequest:
-    """Everything a runtime may need; unused fields stay None.
+    """Everything an Agent investigation may need; unused fields stay ``None``.
 
-    The one-shot API runtime reads `diff_text`, `contexts`, `policy`, and the
-    model pair. An agent-CLI runtime reads `diff_text`, `policy`, `worktree`,
-    `context_plan`, `tools`, and any worker callback it needs to mint a second
-    durable verifier session, and ignores preloaded `contexts` except as a
-    hint. Provenance routing still supplies `candidate_model` /
-    `verifier_model`; a runtime that does not use API models leaves them unset.
+    The candidate reads the exact diff, policy, workspace artifact, and context
+    plan. The worker callback mints the independent verifier only after accepting
+    the candidate result. `candidate_model` and `verifier_model` are historical
+    storage/provenance labels, not direct model routing inputs.
     """
 
     diff_text: str

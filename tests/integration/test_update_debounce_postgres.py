@@ -239,10 +239,11 @@ def test_a_push_cannot_postpone_a_review_that_was_already_due(
 def test_an_edit_arriving_mid_wait_cancels_it(monkeypatch: pytest.MonkeyPatch) -> None:
     """A non-push decision does not join the burst; it replaces it.
 
-    `edited`, `labeled`, and `ready_for_review` can each change the trigger
-    decision without changing the head, and they are all events an operator just
-    performed and is watching for. Inheriting the pending push's deadline would
-    make a label added to hurry a review along do the opposite.
+    `edited`, `labeled`, `ready_for_review`, and `converted_to_draft` can each
+    change the trigger decision without changing the head, and they are all
+    events an operator just performed and is watching for. Inheriting the pending
+    push's deadline would make a label added to hurry a review along do the
+    opposite.
     """
     monkeypatch.setenv("REVIEW_UPDATE_DEBOUNCE_SECONDS", "3600")
     repository = "store/update-debounce-edited"
@@ -285,6 +286,70 @@ def test_an_edit_arriving_mid_wait_cancels_it(monkeypatch: pytest.MonkeyPatch) -
         claimed = claim_workflow_job(connection, "debounce-worker", lease_seconds=60)
         assert claimed is not None
         assert claimed.id == edited.job_id
+
+
+def test_converting_to_draft_supersedes_a_waiting_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A draft transition replaces the stale ready-for-review job immediately."""
+    monkeypatch.setenv("REVIEW_UPDATE_DEBOUNCE_SECONDS", "3600")
+    repository = "store/update-debounce-converted-to-draft"
+
+    with closing(psycopg2.connect(os.environ["POSTGRES_TEST_DATABASE_URL"])) as connection:
+        _register(connection, repository)
+
+        pushed = enqueue_review_event(
+            connection,
+            _event(
+                repository,
+                action="synchronize",
+                head="9" * 40,
+                delivery="debounce-then-draft-1",
+                updated_at="2026-07-23T21:00:00Z",
+            ),
+            payload_sha256="a" * 64,
+        )
+        draft = enqueue_review_event(
+            connection,
+            PullRequestEvent.from_payload(
+                {
+                    "provider": "github",
+                    "scm_base_url": "https://github.com",
+                    "api_base_url": "https://api.github.com",
+                    "repo_full_name": repository,
+                    "number": 77,
+                    "web_url": f"https://github.com/{repository}/pull/77",
+                    "action": "converted_to_draft",
+                    "head_sha": "9" * 40,
+                    "base_sha": "0" * 40,
+                    "updated_at": "2026-07-23T21:00:01Z",
+                    "delivery_id": "debounce-then-draft-2",
+                    "author": "octocat",
+                    "base_branch": "main",
+                    "head_branch": "feature/draft",
+                    "is_draft": True,
+                    "title": "Pause this review",
+                    "metadata_complete": True,
+                }
+            ),
+            payload_sha256="b" * 64,
+        )
+
+        assert pushed.job_id is not None
+        assert draft.job_id is not None
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT status FROM workflow_jobs WHERE id = %s",
+                (pushed.job_id,),
+            )
+            assert cursor.fetchone()[0] == "superseded"
+
+        claimed = claim_workflow_job(connection, "debounce-worker", lease_seconds=60)
+        assert claimed is not None
+        assert claimed.id == draft.job_id
+        claimed_event = PullRequestEvent.from_payload(claimed.payload)
+        assert claimed_event.action == "converted_to_draft"
+        assert claimed_event.is_draft
 
 
 def test_a_zero_window_reviews_every_push_immediately() -> None:

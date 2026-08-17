@@ -26,10 +26,9 @@ from service.review.workspace import DEFAULT_WORKSPACE_LIMITS, SourceArtifact
 PRIVATE_KEY_VARIABLE = "DIFFUSE_REVIEW_AGENT_DISPATCH_PRIVATE_KEY"
 PUBLIC_KEY_VARIABLE = "DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY"
 ENVELOPE_PREFIX = "diffuse-dispatch"
-# The native runner receives the whole signed dispatch in memory. Keep the diff
-# within the same review window as the API runtime and make the maximum outer
-# envelope explicit, rather than letting one unusually large pull request bypass
-# the source-artifact budget through a second field.
+# The Agent Host receives the whole signed dispatch in memory. Bound the diff
+# separately and cap the outer envelope so one unusually large pull request
+# cannot bypass the source-artifact budget through a second field.
 MAX_DISPATCH_DIFF_CHARS = 400_000
 # 16 MiB source archive -> 22.4 MiB inner base64 -> just under 30 MiB outer
 # base64, plus a 400k diff, candidate verification input, and signed metadata.

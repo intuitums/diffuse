@@ -271,10 +271,9 @@ CLAUDE_CODE = AgentCli(
     upgrade_hint="installing a newer compatible Diffuse runner release",
 )
 
-#: Codex host plumbing is live for login/status/write-policy. The version floor
-#: is empty until U4 empirics measure which settings fail silently on older
-#: builds — any parseable `--version` currently passes. The adapter that would
-#: make `REVIEW_AGENT=codex` selectable is still Phase 5.
+#: Codex host plumbing and isolated review execution are live. The version
+#: floor remains empty until measured CLI compatibility identifies a required
+#: minimum; any parseable `--version` currently passes.
 CODEX = AgentCli(
     runtime=CODEX_RUNTIME,
     executable="codex",
@@ -304,9 +303,8 @@ CODEX = AgentCli(
     refused_login_arguments=("-c", "--config", "-p", "--profile"),
 )
 
-#: Every CLI `diffuse agent` will act on. A name is listed once host plumbing
-#: works (login, status, policy), not once a review adapter is selectable —
-#: `RUNTIME_NAMES` is the gate for `REVIEW_AGENT`.
+#: Every CLI `diffuse agent` can configure and every Agent Host can execute.
+#: `RUNTIME_NAMES` remains the startup-validation gate for `REVIEW_AGENT`.
 AGENT_CLIS: tuple[AgentCli, ...] = (CLAUDE_CODE, CODEX)
 
 #: Inherited verbatim by the agent process. Everything absent from this set is
