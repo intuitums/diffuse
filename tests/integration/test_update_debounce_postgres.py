@@ -328,8 +328,13 @@ def test_converting_to_draft_supersedes_a_waiting_review(
                     "base_branch": "main",
                     "head_branch": "feature/draft",
                     "is_draft": True,
+                    "labels": [],
                     "title": "Pause this review",
+                    "description": "",
+                    "trigger_kind": "automatic",
+                    "trigger_id": "",
                     "metadata_complete": True,
+                    "changed_file_count": 1,
                 }
             ),
             payload_sha256="b" * 64,
