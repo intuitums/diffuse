@@ -27,9 +27,9 @@ if TYPE_CHECKING:
     from service.models.review import ReviewReport
     from service.review.request import ReviewRequest
 
-#: CLI-native agent-runtime name. Matches `diffuse agent login claude` — the
+#: CLI-native Review Agent name. Matches `diffuse agent login claude` — the
 #: short product name, not the `claude-code` binary nickname. Execution belongs
-#: on the isolated agent-host (Gate B/C), not the worker.
+#: on the isolated Agent Host, never the worker.
 CLAUDE_CODE_RUNTIME = "claude"
 CODEX_RUNTIME = "codex"
 
@@ -53,14 +53,11 @@ class ReviewAgent(Protocol):
         """The `REVIEW_AGENT` value that selects this runtime."""
 
     def generate(self, request: ReviewRequest) -> ReviewReport:
-        """Review `request.diff_text` (and whatever else the runtime needs).
+        """Run the exact-head candidate and independent verifier investigations.
 
-        `candidate_model` and `verifier_model` stay on the request rather than
-        being folded into the runtime because provenance routing chooses them
-        per review (`service/review/provenance.py`): an agent-authored diff is
-        deliberately reviewed by an opposing model family, and a runtime that
-        could not express a candidate/verifier pair would lose that. A runtime
-        is free to map the pair onto whatever it drives.
+        The selected Review Agent determines the candidate Agent Host; the
+        opposite supported engine verifies its structured result. Historical
+        model-name fields remain on the request only for durable provenance.
         """
 
 

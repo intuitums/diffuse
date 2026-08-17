@@ -51,6 +51,7 @@ LOGGER = logging.getLogger(__name__)
 
 ACCEPTED_ACTIONS = {
     "closed",
+    "converted_to_draft",
     "edited",
     "labeled",
     "opened",
