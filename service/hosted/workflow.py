@@ -549,9 +549,9 @@ def enqueue_review_event(
         # queued `opened` job that was already due leaves it due.
         #
         # Only a waiting revision has a deadline to clamp. An `edited`,
-        # `labeled`, or `ready_for_review` arriving mid-burst is a fresh decision
-        # someone just made and is watching for, so it cancels the wait rather
-        # than joining it.
+        # `labeled`, `ready_for_review`, or `converted_to_draft` event arriving
+        # mid-burst is a fresh decision someone just made and is watching for,
+        # so it cancels the wait rather than joining it.
         inherited_deadline = (
             min(pending_deadlines)
             if debounce_seconds and pending_deadlines

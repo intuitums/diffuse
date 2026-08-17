@@ -8,7 +8,7 @@
 | GitHub integration | Signed GitHub App webhooks, exact-head review jobs, idempotent review and Check publication. | foundation |
 | Repository context | Immutable mirrors, commit-pinned indexing, and targeted retrieval for a PR review. | foundation |
 | CLI review runners | Isolated Codex and Claude Code runners with independent credential homes, read-only workspaces, private context access, and bounded egress. | foundation |
-| Review investigation | A bounded correctness, security, or integration investigation returns evidence-backed candidates for one exact head. | planned |
+| Review investigation | Exact-head candidate and independent verifier investigations use signed role, budget, workspace, and result contracts. Specialist correctness/security/integration roles remain planned. | foundation |
 | Verification and publication | An independent verifier plus deterministic validation and deduplication decides what reaches GitHub. | foundation |
 | Review modes | A measured `standard` plan and an opt-in bounded `deep` plan, each with explicit time/cost limits. | planned |
 | Root review configuration | One small root configuration for enablement, ignored paths, severity floor, draft behavior, and review plan. | foundation |

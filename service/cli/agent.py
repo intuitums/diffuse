@@ -1,9 +1,9 @@
-"""Sign in and report on the agent CLIs Diffuse can host.
+"""Configure authentication and report on the CLIs an Agent Host can run.
 
-Host plumbing only: configuration directory, sandbox policy, version floor, and
-login/status. Hosted `REVIEW_AGENT=claude|codex` sessions run in their
-isolated matching runner; local review remains on the API runtime until it
-adopts the same session contract. See `docs/agents.md`.
+`REVIEW_AGENT=claude|codex` investigations execute only in their isolated
+matching Agent Host. Local-branch review is unavailable until it can receive
+the same Review Access Grant; there is no direct-model fallback. See
+`docs/agents.md`.
 """
 
 from __future__ import annotations
