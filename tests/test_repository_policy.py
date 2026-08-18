@@ -171,16 +171,11 @@ def test_repository_policy_discovers_tracked_cascading_configuration(tmp_path: P
     assert "docs/security.md" in resolved.prompt_text()
 
 
-def test_nested_disable_and_cursor_glob_are_path_scoped(tmp_path: Path):
+def test_nested_disable_is_path_scoped(tmp_path: Path):
     _write(
         tmp_path,
         "generated/.diffuse/config.json",
         json.dumps({"version": 1, "review": {"enabled": False}}),
-    )
-    _write(
-        tmp_path,
-        ".cursor/rules/python.mdc",
-        "---\nglobs: [src/**/*.py, tests/**/*.py]\n---\nUse explicit transaction boundaries.\n",
     )
     _write(tmp_path, "generated/client.py", "CLIENT = True\n")
     _write(tmp_path, "src/app.py", "APP = True\n")
@@ -195,10 +190,6 @@ def test_nested_disable_and_cursor_glob_are_path_scoped(tmp_path: Path):
     assert not resolved.allows_path("generated/client.py")
     assert resolved.allows_path("src/app.py")
     assert resolved.allows_path("README.md")
-    python_policy = resolved.for_path("src/app.py")
-    readme_policy = resolved.for_path("README.md")
-    assert python_policy is not None and len(python_policy.guidance_documents) == 1
-    assert readme_policy is not None and readme_policy.guidance_documents == ()
 
 
 def test_context_repositories_cascade_per_path_and_affect_policy_identity():

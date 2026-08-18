@@ -282,7 +282,6 @@ def _identity_signal(
     normalized_login = login.strip().casefold()
     exact_identity = {
         "noreply@anthropic.com": ("claude_code", "anthropic"),
-        "cursoragent@cursor.com": ("cursor", None),
         "copilot@github.com": ("github_copilot", None),
         "noreply@openai.com": ("codex", "openai"),
     }
@@ -305,7 +304,6 @@ def _identity_signal(
         identity_kind = "email"
     if tool_family is None:
         exact_names = {
-            "cursor agent": ("cursor", None),
             "github copilot": ("github_copilot", None),
             "openai codex": ("codex", "openai"),
             "gemini code assist": ("gemini", "google"),
@@ -374,8 +372,6 @@ def _trailer_signal(
         "claude": ("claude_code", "anthropic"),
         "claude code": ("claude_code", "anthropic"),
         "anthropic": ("claude_code", "anthropic"),
-        "cursor": ("cursor", None),
-        "cursor agent": ("cursor", None),
         "copilot": ("github_copilot", None),
         "github copilot": ("github_copilot", None),
         "codex": ("codex", "openai"),
