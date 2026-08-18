@@ -3,10 +3,9 @@ httpx>=0.28,<1
 mcp>=1.27,<2
 psycopg2-binary>=2.9,<3
 pydantic>=2.10,<3
-# Direct: service/github/app.py signs GitHub App JWTs with RS256. PyJWT and
-# cryptography are already resolved transitively through mcp, but App
-# authentication must not depend on another package keeping optional crypto
-# support in its dependency tree.
+# Direct: shared protocol sealing and dispatch signatures use cryptography.
+cryptography>=44,<51
+# Direct: packages/server/src/diffuse/github/app.py signs GitHub App JWTs with RS256.
 pyjwt[crypto]>=2.10,<3
 tree-sitter>=0.25,<1
 tree-sitter-c>=0.23,<1

@@ -61,6 +61,18 @@ unbounded swarm.
 - Automatic policy inference or activation, autonomous fixes, or arbitrary
   repository-code execution.
 
+## Repository layout
+
+Diffuse keeps its four runtime boundaries under `packages/`:
+
+- `server` — the self-hosted API, worker, CLI, review flow, and repository data;
+- `host` — credential-isolated Codex and Claude execution;
+- `protocol` — the wire contracts shared by the server and Agent Hosts; and
+- `relay` — the public GitHub event and short-lived credential edge.
+
+Tests live beside the package they protect. Database integration tests remain
+under `tests/integration/` because they exercise the complete server schema.
+
 ## Documentation
 
 Read [the v1 scope](docs/v1-scope.md) first. The current reference map is in

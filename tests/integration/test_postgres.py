@@ -4,16 +4,23 @@ from contextlib import closing
 
 import psycopg2
 import pytest
-
-from indexer.chunker import Chunk, chunk_repo
-from indexer.file_index import IndexedFile
-from indexer.graph import (
+from diffuse.repository.cross_repository import (
+    CrossRepositoryContextError,
+    add_repository_cluster_member,
+    create_repository_cluster,
+    list_repository_clusters,
+    remove_repository_cluster_member,
+    resolve_cross_repository_context_plan,
+)
+from diffuse.repository.indexing.chunker import Chunk, chunk_repo
+from diffuse.repository.indexing.file_index import IndexedFile
+from diffuse.repository.indexing.graph import (
     CodeRelationship,
     CodeSymbol,
     extract_repository_graph,
 )
-from indexer.index_version import INDEX_FORMAT_VERSION
-from indexer.store import (
+from diffuse.repository.indexing.index_version import INDEX_FORMAT_VERSION
+from diffuse.repository.indexing.store import (
     activate_snapshot,
     active_snapshot_id,
     begin_index_snapshot,
@@ -29,23 +36,15 @@ from indexer.store import (
     validate_snapshot_ready,
     write_symbol_graph,
 )
-from repository_policy.models import (
+from diffuse.repository.policy.models import (
     GuidanceDocument,
     PolicyLayer,
     RepositoryConfig,
     RepositoryPolicySnapshot,
 )
-from repository_policy.resolve import resolve_review_policy
-from repository_policy.store import load_repository_policy, write_repository_policy
-from service.cross_repository import (
-    CrossRepositoryContextError,
-    add_repository_cluster_member,
-    create_repository_cluster,
-    list_repository_clusters,
-    remove_repository_cluster_member,
-    resolve_cross_repository_context_plan,
-)
-from service.repositories import register_repository
+from diffuse.repository.policy.resolve import resolve_review_policy
+from diffuse.repository.policy.store import load_repository_policy, write_repository_policy
+from diffuse.repository.registry import register_repository
 
 
 def _symbol(key: str, name: str, start_line: int, end_line: int) -> CodeSymbol:

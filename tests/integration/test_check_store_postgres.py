@@ -1,7 +1,7 @@
-"""PostgreSQL coverage for `service/storage/check.py`.
+"""PostgreSQL coverage for `diffuse.database.check`.
 
 Recovered from `tests/integration/test_workflow_postgres.py`, which was named
-for `service/hosted/workflow.py` but held the only durability assertions for the check
+for the workflow module but held the only durability assertions for the check
 run state machine. The queue assertions are dropped; the check assertions are
 kept verbatim.
 """
@@ -11,12 +11,7 @@ from contextlib import closing
 
 import psycopg2
 import pytest
-
-from service.hosted.workflow import claim_workflow_job, enqueue_review_event
-from service.models.review import ReviewReport
-from service.repositories import register_repository
-from service.scm import PullRequestEvent
-from service.storage.check import (
+from diffuse.database.check import (
     begin_check_run,
     get_check_run_for_workflow_job,
     mark_check_run_completed,
@@ -24,7 +19,11 @@ from service.storage.check import (
     mark_check_run_failed,
     mark_check_run_started,
 )
-from service.storage.review import begin_review_run, persist_review_report
+from diffuse.database.review import begin_review_run, persist_review_report
+from diffuse.repository.registry import register_repository
+from diffuse.repository.scm import PullRequestEvent
+from diffuse.review.workflow import claim_workflow_job, enqueue_review_event
+from diffuse_protocol.review import ReviewReport
 
 
 def _claimed_job(connection, event, *, payload_sha256: str, worker_id: str):

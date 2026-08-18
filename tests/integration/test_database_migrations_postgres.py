@@ -7,9 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import psycopg2
 import pytest
-from psycopg2 import sql
-
-from service.storage.migrations import (
+from diffuse.database.migrations import (
     METADATA_TABLE,
     Migration,
     MigrationDriftError,
@@ -19,6 +17,7 @@ from service.storage.migrations import (
     migration_status,
     verify_database_current,
 )
+from psycopg2 import sql
 
 
 def _database_url(base_url: str, database_name: str) -> str:

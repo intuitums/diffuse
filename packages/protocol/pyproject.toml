@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diffuse-protocol"
+version = "0.1.0"
+description = "Wire contracts shared by Diffuse servers and Agent Hosts"
+requires-python = ">=3.12"
+license = "BUSL-1.1"
+classifiers = ["Private :: Do Not Upload"]
+dependencies = [
+    "cryptography>=44,<51",
+    "pydantic>=2.10,<3",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["diffuse_protocol*"]
