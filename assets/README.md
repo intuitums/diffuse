@@ -18,7 +18,7 @@ Fixed-color variants, for contexts that cannot set `color`:
 | File | Use |
 |---|---|
 | `logo/mark-black.svg` | `#000000` on transparent |
-| `logo/mark-acid.svg` | `#EAFF49` on transparent — for placing on ink |
+| `logo/mark-acid.svg` | `#F0FB28` on transparent — for placing on ink |
 | `logo/mark-black-on-acid.svg` | avatar / social / favicon source |
 | `logo/mark-black-on-acid-rounded.svg` | rounded black-on-acid lockup for the repository README |
 | `logo/mark-acid-on-ink.svg` | inverse, on a dark field |
@@ -40,16 +40,16 @@ duplicates double-composited the antialiased edges and rendered them heavy.
 
 ## Color
 
-**Dark-only, and that is a constraint rather than a preference.** `#EAFF49` has a
-relative luminance of 0.895 — nearly as bright as white:
+**Dark-only, and that is a constraint rather than a preference.** `#F0FB28` has a
+relative luminance of 0.877 — nearly as bright as white:
 
-| `#EAFF49` on… | Contrast | |
+| `#F0FB28` on… | Contrast | |
 |---|---|---|
-| ink `#0C0C11` | 17.6:1 | pass |
-| graphite `#1B1A23` | 15.5:1 | pass |
-| black `#000000` | 18.9:1 | pass |
-| bone `#F2F1EA` | 1.02:1 | **fails — invisible** |
-| white | 1.11:1 | **fails — invisible** |
+| ink `#0C0C11` | 17.2:1 | pass |
+| graphite `#1B1A23` | 15.2:1 | pass |
+| black `#000000` | 18.5:1 | pass |
+| bone `#F2F1EA` | 1.00:1 | **fails — invisible** |
+| white | 1.13:1 | **fails — invisible** |
 
 It can never be a foreground on a light surface. Where it has to appear against
 light it is a *field* with black on top, exactly as the avatar uses it.
@@ -62,27 +62,27 @@ light it is a *field* with black on top, exactly as the avatar uses it.
 | Border | `neutral.border` | `#2C2A37` |
 | Muted text | `neutral.fog` | `#A7A7A3` |
 | Primary text | `neutral.bone` | `#F2F1EA` |
-| **Accent** | `brand.acid` | **`#EAFF49`** |
+| **Accent** | `brand.acid` | **`#F0FB28`** |
 | Logo ink | `brand.logoInk` | `#000000` |
 
-One accent carries brand, primary action, and active status. At 17.6:1 on ink it
+One accent carries brand, primary action, and active status. At 17.2:1 on ink it
 has the headroom for all three.
 
 ### Why the neutrals are violet, not grey
 
-Acid sits at hue 66.9°, so its exact complement is 246.9°. A ground tinted toward
+Acid sits at hue 63.1°, so its exact complement is 243.1°. A ground tinted toward
 the complement makes the accent read as more saturated — the reason a tinted dark
 outperforms flat black under a bright accent. The ramp is built on hue 248.5°,
-which is Intuitum's iris `#806BFF`, landing 1.6° from that complement. So the
-neutral is simultaneously the optimal ground for acid *and* the thread back to the
-parent brand — diffuse inherits Intuitum through its neutral rather than its
-accent.
+which is Intuitum's iris `#806BFF`, landing 5.4° from that complement. So the
+neutral is simultaneously a complementary ground for acid *and* the thread back
+to the parent brand — diffuse inherits Intuitum through its neutral rather than
+its accent.
 
 Two honest limits on the effect. At canvas lightness there are too few 8-bit steps
 to carry a precise hue: `#0C0C11` is R=12, G=12, B=17, which quantizes to 240°
-rather than 248.5°. The raised step `#1B1A23` measures 246.7° — dead on. **The
-tint lives in the surfaces, not the canvas.** And never tint the ground toward the
-accent's own hue; a green-black mutes acid badly.
+rather than 248.5°. The raised step `#1B1A23` measures 246.7°, 3.6° from the
+complement. **The tint lives in the surfaces, not the canvas.** And never tint
+that ground toward the accent's own hue; a green-black mutes acid badly.
 
 `brand.logoInk` is pure `#000000` while `neutral.ink` is `#0C0C11`. They differ by
 intent: the raster avatar locks pure black, and the black mark is never placed on
@@ -94,6 +94,10 @@ diffuse is a sibling sub-brand of Intuitum. It shares the neutral ramp and the
 radius / space / motion scales, and departs on accent:
 
 - `iris #806BFF` / `irisSoft #B7ACFF` — Intuitum's primary accent. Keeping it would ship purple actions beside a lime logo, i.e. two competing accents.
-- `signal #C6FF5E` — Intuitum's accent-to-the-accent, specified there as sparse punctuation ("one disruptive signal", a rim light at ~15% of frame). diffuse's `#EAFF49` has taken that role *and* inverted it into a full-bleed surface, so the two would compete for one semantic slot — on top of sitting only 14° apart in hue at the same maximum green.
+- `signal #C6FF5E` — Intuitum's accent-to-the-accent, specified there as sparse
+  punctuation ("one disruptive signal", a rim light at ~15% of frame). diffuse's
+  `#F0FB28` has taken that role *and* inverted it into a full-bleed surface, so
+  the two would compete for one semantic slot — on top of sitting only 18.1°
+  apart in hue at similar saturation and luminance.
 - `charcoal #242529`, `paper #DEDDD6` — carried zero usages.
 - Light-theme neutrals — they power a light mode the accent cannot appear in.
