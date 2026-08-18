@@ -15,10 +15,9 @@ from contextlib import closing
 
 import psycopg2
 import pytest
-
-from service.hosted.workflow import claim_workflow_job, enqueue_review_event
-from service.repositories import register_repository
-from service.scm import PullRequestEvent
+from diffuse.repository.registry import register_repository
+from diffuse.repository.scm import PullRequestEvent
+from diffuse.review.workflow import claim_workflow_job, enqueue_review_event
 
 
 # One repository per test. The claim query refuses a scope that already has a

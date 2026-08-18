@@ -1,4 +1,4 @@
-"""PostgreSQL coverage for `service/storage/feedback.py`.
+"""PostgreSQL coverage for `diffuse.database.feedback`.
 
 Recovered from `tests/integration/test_workflow_postgres.py`. Nothing in the
 surviving suite exercises `record_review_comment_feedback`,
@@ -14,39 +14,38 @@ import os
 from contextlib import closing
 
 import psycopg2
-
-from service.hosted.workflow import (
-    claim_workflow_job,
-    complete_workflow_job,
-    enqueue_review_event,
-    schedule_due_feedback_sync_jobs,
-)
-from service.models.feedback import ReviewReaction
-from service.models.review import (
-    Category,
-    ReviewFinding,
-    ReviewReport,
-    SecurityClassification,
-    Severity,
-)
-from service.repositories import register_repository
-from service.scm import (
-    FeedbackSyncEvent,
-    PullRequestEvent,
-    ReviewFeedbackCommentEvent,
-)
-from service.storage.feedback import (
+from diffuse.database.feedback import (
     begin_feedback_sync,
     load_repository_feedback_summary,
     reconcile_review_reactions,
     record_review_comment_feedback,
 )
-from service.storage.finding import PublishedFindingComment, record_finding_threads
-from service.storage.review import (
+from diffuse.database.finding import PublishedFindingComment, record_finding_threads
+from diffuse.database.review import (
     begin_publication,
     begin_review_run,
     mark_publication_published,
     persist_review_report,
+)
+from diffuse.github.feedback_models import ReviewReaction
+from diffuse.repository.registry import register_repository
+from diffuse.repository.scm import (
+    FeedbackSyncEvent,
+    PullRequestEvent,
+    ReviewFeedbackCommentEvent,
+)
+from diffuse.review.workflow import (
+    claim_workflow_job,
+    complete_workflow_job,
+    enqueue_review_event,
+    schedule_due_feedback_sync_jobs,
+)
+from diffuse_protocol.review import (
+    Category,
+    ReviewFinding,
+    ReviewReport,
+    SecurityClassification,
+    Severity,
 )
 
 

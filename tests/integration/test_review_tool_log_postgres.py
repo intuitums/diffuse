@@ -1,4 +1,4 @@
-"""PostgreSQL coverage for `service/review/tool_log.py`.
+"""PostgreSQL coverage for `diffuse.review.tool_log`.
 
 The unit suite pins the truncation arithmetic against no database at all. What
 only real PostgreSQL can show is that a run's investigation survives the round
@@ -20,18 +20,17 @@ from datetime import UTC, datetime
 
 import psycopg2
 import pytest
-
-from service.hosted.workflow import claim_workflow_job, enqueue_review_event
-from service.repositories import register_repository
-from service.review.tool_log import (
+from diffuse.database.review import begin_review_run
+from diffuse.repository.registry import register_repository
+from diffuse.repository.scm import PullRequestEvent
+from diffuse.review.tool_log import (
     MAX_RESULT_BYTES,
     TRUNCATION_ENVELOPE_KEY,
     ReviewToolLogError,
     load_review_tool_calls,
     record_review_tool_call,
 )
-from service.scm import PullRequestEvent
-from service.storage.review import begin_review_run
+from diffuse.review.workflow import claim_workflow_job, enqueue_review_event
 
 
 def _claimed_job(connection, event, *, payload_sha256: str, worker_id: str):

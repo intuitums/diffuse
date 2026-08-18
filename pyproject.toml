@@ -16,23 +16,40 @@ classifiers = ["Private :: Do Not Upload"]
 dynamic = ["dependencies"]
 
 [project.scripts]
-diffuse = "service.cli.review:main"
+diffuse = "diffuse.main:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["indexer*", "repository_policy*", "retriever*", "service*"]
+where = [
+    "packages/server/src",
+    "packages/host/src",
+    "packages/protocol/src",
+]
+include = ["diffuse*"]
 exclude = ["tests*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.data-files]
-"share/diffuse/sql" = ["sql/schema.sql"]
-"share/diffuse/sql/migrations" = ["sql/migrations/*.sql", "sql/migrations/README.md"]
+"share/diffuse/sql" = [
+    "packages/server/migrations/*.sql",
+    "packages/server/migrations/README.md",
+]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
+testpaths = [
+    "packages/server/tests",
+    "packages/host/tests",
+    "packages/protocol/tests",
+    "packages/relay/tests",
+    "tests/integration",
+]
+pythonpath = [
+    "packages/server/src",
+    "packages/host/src",
+    "packages/protocol/src",
+    "packages/relay/src",
+]
 markers = [
     "integration: tests that require explicitly configured external services",
 ]

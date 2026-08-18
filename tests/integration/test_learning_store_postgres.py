@@ -1,4 +1,4 @@
-"""PostgreSQL coverage for `service/storage/learning.py`.
+"""PostgreSQL coverage for `diffuse.database.learning`.
 
 Recovered from `tests/integration/test_workflow_postgres.py`. This is the only
 place the learned-rule moderation state machine is driven end to end -- reject,
@@ -16,29 +16,9 @@ from contextlib import closing
 
 import psycopg2
 import pytest
-
-from repository_policy.resolve import ApprovedCustomContext
-from service.hosted.workflow import (
-    claim_workflow_job,
-    complete_workflow_job,
-    enqueue_review_event,
-)
-from service.models.learning import (
-    RuleLearningJobEvent,
-    SuggestedRuleBatch,
-    SuggestedRuleCandidate,
-)
-from service.models.review import (
-    Category,
-    ReviewFinding,
-    ReviewReport,
-    Severity,
-)
-from service.repositories import register_repository
-from service.scm import PullRequestEvent, ReviewFeedbackCommentEvent
-from service.storage.feedback import record_review_comment_feedback
-from service.storage.finding import PublishedFindingComment, record_finding_threads
-from service.storage.learning import (
+from diffuse.database.feedback import record_review_comment_feedback
+from diffuse.database.finding import PublishedFindingComment, record_finding_threads
+from diffuse.database.learning import (
     begin_rule_learning,
     list_learned_rules,
     load_active_learned_rules,
@@ -48,12 +28,31 @@ from service.storage.learning import (
     queue_rule_learning_job,
     schedule_due_rule_learning_jobs,
 )
-from service.storage.review import (
+from diffuse.database.review import (
     begin_publication,
     begin_review_run,
     mark_publication_published,
     mark_review_superseded,
     persist_review_report,
+)
+from diffuse.repository.learning_models import (
+    RuleLearningJobEvent,
+    SuggestedRuleBatch,
+    SuggestedRuleCandidate,
+)
+from diffuse.repository.policy.resolve import ApprovedCustomContext
+from diffuse.repository.registry import register_repository
+from diffuse.repository.scm import PullRequestEvent, ReviewFeedbackCommentEvent
+from diffuse.review.workflow import (
+    claim_workflow_job,
+    complete_workflow_job,
+    enqueue_review_event,
+)
+from diffuse_protocol.review import (
+    Category,
+    ReviewFinding,
+    ReviewReport,
+    Severity,
 )
 
 
