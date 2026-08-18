@@ -4,7 +4,7 @@ services:
   db:
     # Nothing in Diffuse uses pgvector any more: migration 0010 dropped the
     # embedding column and the extension. The image still ships it because
-    # `sql/schema.sql` is the frozen version-1 migration and still runs
+    # `packages/server/migrations/schema.sql` is the frozen version-1 migration and still runs
     # `CREATE EXTENSION IF NOT EXISTS vector` on a fresh install, which stock
     # `postgres:17` cannot satisfy. Swapping this is a one-line change once the
     # version-1 baseline is re-cut.

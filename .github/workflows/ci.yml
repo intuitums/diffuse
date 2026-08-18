@@ -108,8 +108,10 @@ jobs:
           python3 scripts/check_lock_freeze.py /tmp/installed.txt requirements.lock
           DIFFUSE_TEST_IMAGE="$TEST_IMAGE" docker compose \
             --project-name "$TEST_PROJECT" \
-            --file docker-compose.tests.yml \
+            --file compose.tests.yaml \
             run --rm tests
+          docker compose --project-name "$TEST_PROJECT" \
+            --file compose.tests.yaml down --volumes --remove-orphans
 
       - name: Validate Compose
         run: |
@@ -142,7 +144,7 @@ jobs:
             test "$(id -u)" -ne 0
             test ! -e /usr/local/bin/python
             test -x /opt/diffuse/diffuse
-            test -x /opt/diffuse/_internal/service/hosted/git_askpass.sh
+            test -x /opt/diffuse/_internal/diffuse/repository/git_askpass.sh
             test -f /opt/diffuse/_internal/sql/schema.sql
             ! find /opt/diffuse -type f \
               \( -name "*.py" -o -name "*.pyc" -o -name "*.pyo" \) \
@@ -213,9 +215,21 @@ jobs:
             test -w /var/lib/diffuse/agent
             test "$HOME" = /var/lib/diffuse/agent/home
             test -d "$HOME" && test -w "$HOME"'
+          # Compose configuration is validated above. Exercise the same named-volume
+          # ownership directly without allocating five idle profile networks on the
+          # shared CI daemon.
           for runner in claude codex; do
-            "${compose[@]}" --profile "agent-${runner}" run --rm --no-deps \
-              --entrypoint /bin/sh "agent-host-${runner}" -c "$credential_check"
+            case "$runner" in
+              claude) runner_image="$CLAUDE_IMAGE" ;;
+              codex) runner_image="$CODEX_IMAGE" ;;
+            esac
+            runner_volume="${DEPLOY_PROJECT}_${runner}_agent_data"
+            docker volume create "$runner_volume" >/dev/null
+            docker run --rm \
+              --env HOME=/var/lib/diffuse/agent/home \
+              --volume "$runner_volume:/var/lib/diffuse/agent" \
+              --entrypoint /bin/sh "$runner_image" -c "$credential_check"
+            docker volume rm "$runner_volume" >/dev/null
           done
 
       - name: Logs
@@ -230,7 +244,7 @@ jobs:
         if: always()
         run: |
           docker compose --project-name "$TEST_PROJECT" \
-            --file docker-compose.tests.yml down --volumes --remove-orphans || true
+            --file compose.tests.yaml down --volumes --remove-orphans || true
           if [ -f deploy/ci.env ]; then
             docker compose --env-file deploy/ci.env --file deploy/compose.yaml \
               --project-name "$DEPLOY_PROJECT" down --volumes --remove-orphans || true

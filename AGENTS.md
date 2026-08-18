@@ -6,7 +6,8 @@ investigations, verifies their findings, and publishes a review and GitHub
 Check. Python 3.12, FastAPI, PostgreSQL 17. Proprietary under
 [BSL 1.1](LICENSE); no contribution process yet.
 
-> `repository_policy/discovery.py` indexes this file as repo-wide guidance when
+> `packages/server/src/diffuse/repository/policy/discovery.py` indexes this file as
+> repo-wide guidance when
 > Diffuse reviews its own repository. Keep it to durable, project-wide
 > instructions.
 
@@ -57,8 +58,8 @@ sandbox, or the mirror — run the suite inside the shipped image's platform and
 dependency set (CI builds the same image stage; disposable tmpfs database):
 
 ```bash
-docker compose -f docker-compose.tests.yml run --build --rm tests
-docker compose -f docker-compose.tests.yml down -v
+docker compose -f compose.tests.yaml run --build --rm tests
+docker compose -f compose.tests.yaml down -v
 ```
 
 Without `--build`, `compose run` reuses whatever image is cached — a green run
@@ -73,12 +74,14 @@ ruff check .          # CI runs the same check; any finding fails
 `ruff check --fix .` and `ruff format` are fine locally, but keep
 formatting-only churn out of functional PRs.
 
-## Database changes: never edit `sql/schema.sql`
+## Database changes: never edit `packages/server/migrations/schema.sql`
 
-`sql/schema.sql` is the frozen version-1 migration. Its SHA-256 is pinned in
-`service/storage/migrations.py` and verified at catalog load — any edit, even
-whitespace, is a hard failure. Add a numbered migration under `sql/migrations/`
-instead; see [sql/migrations/README.md](sql/migrations/README.md) for the
+`packages/server/migrations/schema.sql` is the frozen version-1 migration. Its
+SHA-256 is pinned in
+`packages/server/src/diffuse/database/migrations.py` and verified at catalog
+load — any edit, even whitespace, is a hard failure. Add a numbered migration
+under `packages/server/migrations/` instead; see the
+[migration README](packages/server/migrations/README.md) for the
 naming and content rules. Never edit a migration after it ships: applied
 migrations are checksum-verified and drift fails closed at startup.
 

@@ -94,7 +94,7 @@ scope.
 
 Diffuse's architecture is control plane + isolated Agent Host: the
 worker never executes a CLI or mounts agent credentials. Session capabilities
-and structured results are defined in `service.agents.contract`. The
+and structured results are defined in `diffuse_protocol`. The
 self-hosted deployment selects `REVIEW_AGENT=claude` or `codex` and dispatches
 it to the matching Agent Host. Local branch review is unavailable until it can
 use that same Review Access Grant contract. The boundaries are:
@@ -155,7 +155,8 @@ passed, and an assertion minted for one profile is not accepted for another. An
 adapter that selects the profile and skips the preflight therefore gets an
 error rather than an unsandboxed review.
 
-The preflight is implemented in `service.review.agent_sandbox`. The runner
+The preflight is implemented in `packages/host/src/diffuse_host/sandbox.py`.
+The Agent Host
 executes it at startup and obtains a fresh profile-matching assertion before
 each CLI session, checking identity, read-only root and agent home, absence of
 control-plane credentials, database isolation, and constrained model egress.

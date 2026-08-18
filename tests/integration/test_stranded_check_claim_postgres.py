@@ -12,27 +12,26 @@ import os
 from contextlib import closing
 
 import psycopg2
-
-from service.hosted.workflow import (
-    claim_stranded_review_jobs,
-    claim_workflow_job,
-    enqueue_review_event,
-)
-from service.models.review import ReviewReport
-from service.repositories import register_repository
-from service.scm import PullRequestEvent
-from service.storage.check import (
+from diffuse.database.check import (
     MAX_COMPLETION_ATTEMPTS,
     begin_check_run,
     begin_check_run_completion,
     mark_check_run_failed,
     mark_check_run_started,
 )
-from service.storage.review import (
+from diffuse.database.review import (
     begin_review_run,
     mark_review_terminal_failed,
     persist_review_report,
 )
+from diffuse.repository.registry import register_repository
+from diffuse.repository.scm import PullRequestEvent
+from diffuse.review.workflow import (
+    claim_stranded_review_jobs,
+    claim_workflow_job,
+    enqueue_review_event,
+)
+from diffuse_protocol.review import ReviewReport
 
 
 def _event(*, number: int, delivery: str) -> PullRequestEvent:

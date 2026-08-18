@@ -35,11 +35,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && python -m pip install --require-hashes -r requirements-build.lock \
     && python -m pip check
 
-COPY indexer ./indexer
-COPY repository_policy ./repository_policy
-COPY retriever ./retriever
-COPY service ./service
-COPY sql ./sql
+COPY packages/server/src ./packages/server/src
+COPY packages/host/src ./packages/host/src
+COPY packages/protocol/src ./packages/protocol/src
+COPY packages/server/migrations ./packages/server/migrations
 
 RUN pyinstaller \
         --noconfirm \
@@ -55,10 +54,12 @@ RUN pyinstaller \
         --collect-submodules uvicorn.lifespan \
         --collect-submodules uvicorn.loops \
         --collect-submodules uvicorn.protocols \
-        --collect-submodules indexer \
-        --collect-submodules repository_policy \
-        --collect-submodules retriever \
-        --collect-submodules service \
+        --paths /src/packages/server/src \
+        --paths /src/packages/host/src \
+        --paths /src/packages/protocol/src \
+        --collect-submodules diffuse \
+        --collect-submodules diffuse_host \
+        --collect-submodules diffuse_protocol \
         --copy-metadata tree-sitter \
         --copy-metadata tree-sitter-c \
         --copy-metadata tree-sitter-cpp \
@@ -69,12 +70,12 @@ RUN pyinstaller \
         --copy-metadata tree-sitter-ruby \
         --copy-metadata tree-sitter-rust \
         --copy-metadata tree-sitter-typescript \
-        --add-data /src/service/hosted/git_askpass.sh:service/hosted \
-        --add-data /src/sql:sql \
-        /src/service/runtime.py \
+        --add-data /src/packages/server/src/diffuse/repository/git_askpass.sh:diffuse/repository \
+        --add-data /src/packages/server/migrations:sql \
+        /src/packages/server/src/diffuse/main.py \
     && test -x /build/diffuse/diffuse \
     && test -f /build/diffuse/_internal/sql/schema.sql \
-    && test -x /build/diffuse/_internal/service/hosted/git_askpass.sh \
+    && test -x /build/diffuse/_internal/diffuse/repository/git_askpass.sh \
     && for dist in tree_sitter tree_sitter_c tree_sitter_cpp tree_sitter_go \
             tree_sitter_java tree_sitter_javascript tree_sitter_php \
             tree_sitter_ruby tree_sitter_rust tree_sitter_typescript; do \
@@ -89,7 +90,8 @@ FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd
 
 # See the builder stage: PIP_NO_CACHE_DIR would make the pip cache mount below inert.
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/src/packages/server/src:/src/packages/host/src:/src/packages/protocol/src:/src/packages/relay/src
 
 WORKDIR /src
 
@@ -124,13 +126,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && python -m pip install -r requirements-dev.txt \
     && python -m pip check
 
-# Source under test.
-COPY indexer ./indexer
-COPY repository_policy ./repository_policy
-COPY retriever ./retriever
-COPY service ./service
-COPY hosted ./hosted
-COPY sql ./sql
+# Source under test. Package-local tests stay beside the boundary they cover;
+# database integration tests remain at the repository root.
+COPY packages ./packages
 COPY tests ./tests
 
 # Files the suite reads as fixtures rather than imports. Each one is load-bearing
@@ -141,9 +139,8 @@ COPY tests ./tests
 # the compartment-boundary assertions, and the workflow definitions for the
 # release-provenance assertions.
 COPY deploy ./deploy
-COPY agents ./agents
 COPY .env.example ./.env.example
-COPY docker-compose.yml ./docker-compose.yml
+COPY compose.yaml ./compose.yaml
 COPY .github ./.github
 # CI helper imported by tests/test_check_lock_freeze.py (and invoked from the
 # host in ci.yml). Without it the container suite fails at collection with
@@ -168,7 +165,7 @@ RUN printf '%s\n' \
     'set -e' \
     'if [ -n "${POSTGRES_TEST_DATABASE_URL}" ]; then' \
     '    DATABASE_URL="${POSTGRES_TEST_DATABASE_URL}" \' \
-    '        python -m service.cli.review database migrate >&2' \
+    '        python -m diffuse.cli.review database migrate >&2' \
     'fi' \
     'exec python -m pytest "$@"' \
     > /usr/local/bin/run-tests \
@@ -190,7 +187,7 @@ LABEL org.opencontainers.image.title="Diffuse" \
       org.opencontainers.image.source="https://github.com/intuitumxyz/Diffuse"
 
 ENV DIFFUSE_SQL_DIR=/opt/diffuse/_internal/sql \
-    DIFFUSE_GIT_ASKPASS=/opt/diffuse/_internal/service/hosted/git_askpass.sh \
+    DIFFUSE_GIT_ASKPASS=/opt/diffuse/_internal/diffuse/repository/git_askpass.sh \
     DEBIAN_FRONTEND=noninteractive \
     PATH=/opt/diffuse:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     PYTHONUNBUFFERED=1
@@ -229,7 +226,7 @@ COPY --from=builder --chown=diffuse:diffuse /build/diffuse/ /opt/diffuse/
 COPY --chown=diffuse:diffuse LICENSE /opt/diffuse/LICENSE
 
 RUN chmod 500 /opt/diffuse/diffuse \
-    && chmod 500 /opt/diffuse/_internal/service/hosted/git_askpass.sh \
+    && chmod 500 /opt/diffuse/_internal/diffuse/repository/git_askpass.sh \
     && test -f /opt/diffuse/LICENSE \
     && ! find /opt/diffuse -type f \
         \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit \
@@ -264,7 +261,7 @@ FROM runner-base AS runner-claude
 LABEL org.opencontainers.image.title="Diffuse Claude Code review runner" \
       xyz.intuitum.diffuse.cli.name="claude-code" \
       xyz.intuitum.diffuse.cli.version="2.1.224"
-COPY agents/claude/package.json agents/claude/package-lock.json /opt/diffuse/agent-cli/
+COPY packages/host/runtimes/claude/package.json packages/host/runtimes/claude/package-lock.json /opt/diffuse/agent-cli/
 # Claude's native executable is installed by this package's lifecycle script.
 # Run that one lockfile-verified script explicitly rather than enabling scripts
 # for every dependency in the npm tree.
@@ -280,7 +277,7 @@ FROM runner-base AS runner-codex
 LABEL org.opencontainers.image.title="Diffuse Codex review runner" \
       xyz.intuitum.diffuse.cli.name="codex" \
       xyz.intuitum.diffuse.cli.version="0.147.0"
-COPY agents/codex/package.json agents/codex/package-lock.json /opt/diffuse/agent-cli/
+COPY packages/host/runtimes/codex/package.json packages/host/runtimes/codex/package-lock.json /opt/diffuse/agent-cli/
 RUN npm ci --prefix /opt/diffuse/agent-cli --omit=dev --ignore-scripts --no-audit --no-fund \
     && ln -s /opt/diffuse/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
     && codex --version

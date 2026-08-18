@@ -35,7 +35,7 @@ regexes = [
 
 [[allowlists]]
 description = """
-`tests/test_review_failure_notice.py` asserts that credential redaction works,
+`packages/server/tests/test_review_failure_notice.py` asserts that credential redaction works,
 which requires a string shaped like a real token to be present in the assertion.
 The sequential alphabet body is what makes it safe.
 """
@@ -46,7 +46,7 @@ regexes = [
 
 [[allowlists]]
 description = """
-`tests/test_repository_policy.py` writes stub PEM/PKCS#8 files to confirm that
+`packages/server/tests/test_repository_policy.py` writes stub PEM/PKCS#8 files to confirm that
 sensitive filenames are excluded from indexing and redacted out of prompts. The
 bodies are short repeated literals (`abc`, `qqq`), not keys. Keyed on the header
 plus that body rather than on the path, so a real key pasted into the same file

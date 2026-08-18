@@ -7,9 +7,8 @@ from contextlib import closing
 
 import psycopg2
 import pytest
-
-from service.hosted.workflow import enqueue_review_conversation_event, enqueue_review_event
-from service.repositories import (
+from diffuse.database.feedback import record_review_comment_feedback
+from diffuse.repository.registry import (
     RepositoryIdentityConflictError,
     get_repository,
     get_repository_by_full_name,
@@ -17,12 +16,12 @@ from service.repositories import (
     resolve_github_repository,
     set_repository_auto_review,
 )
-from service.scm import (
+from diffuse.repository.scm import (
     PullRequestEvent,
     ReviewConversationEvent,
     ReviewFeedbackCommentEvent,
 )
-from service.storage.feedback import record_review_comment_feedback
+from diffuse.review.workflow import enqueue_review_conversation_event, enqueue_review_event
 
 
 def _event(
