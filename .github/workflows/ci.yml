@@ -215,14 +215,21 @@ jobs:
             test -w /var/lib/diffuse/agent
             test "$HOME" = /var/lib/diffuse/agent/home
             test -d "$HOME" && test -w "$HOME"'
+          # Compose configuration is validated above. Exercise the same named-volume
+          # ownership directly without allocating five idle profile networks on the
+          # shared CI daemon.
           for runner in claude codex; do
-            "${compose[@]}" --profile "agent-${runner}" run --rm --no-deps \
-              --entrypoint /bin/sh "agent-host-${runner}" -c "$credential_check"
-            # Each profile adds two private networks. Release them before the
-            # next profile so shared CI daemons do not exhaust Docker's pools.
-            docker network rm \
-              "${DEPLOY_PROJECT}_agent_mcp_${runner}" \
-              "${DEPLOY_PROJECT}_agent_egress_${runner}"
+            case "$runner" in
+              claude) runner_image="$CLAUDE_IMAGE" ;;
+              codex) runner_image="$CODEX_IMAGE" ;;
+            esac
+            runner_volume="${DEPLOY_PROJECT}_${runner}_agent_data"
+            docker volume create "$runner_volume" >/dev/null
+            docker run --rm \
+              --env HOME=/var/lib/diffuse/agent/home \
+              --volume "$runner_volume:/var/lib/diffuse/agent" \
+              --entrypoint /bin/sh "$runner_image" -c "$credential_check"
+            docker volume rm "$runner_volume" >/dev/null
           done
 
       - name: Logs
