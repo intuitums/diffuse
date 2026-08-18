@@ -24,6 +24,8 @@ Elsewhere in the repository:
   authoritative.
 - [`deploy/README.md`](../deploy/README.md) — installing a tagged release from
   published, signature-verified images.
+- [`packages/relay/README.md`](../packages/relay/README.md) — operating the
+  small public event and credential relay.
 
 The old `mcp.md` and `rest-api.md` documents were removed with their public
 product surfaces; they are not supported installation options.

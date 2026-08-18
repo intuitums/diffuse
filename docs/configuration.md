@@ -9,7 +9,8 @@ Separately from configuration, policy discovery indexes guidance documents
 for the review agents: `.diffuse/rules.md`, plus convention-named instruction
 files (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, and
 `.github/copilot-instructions.md`).
-`repository_policy/discovery.py` is authoritative for the exact set.
+`packages/server/src/diffuse/repository/policy/discovery.py` is authoritative
+for the exact set.
 
 ```json
 {
@@ -44,7 +45,7 @@ GitHub Check only. It never authorizes a pull request.
   setup on them until v1 scope admits them. The same caveat applies to other
   fields the schema currently accepts beyond the example above (such as
   `context.repos`, `security.preventative`, and the output-shaping fields);
-  `repository_policy/models.py` is authoritative. Automatic learned rules and
+  `packages/server/src/diffuse/repository/policy/models.py` is authoritative. Automatic learned rules and
   autonomous fixes are not supported v1 configuration.
 - Human-authored guidance and feedback remain part of the roadmap, but feedback
   cannot silently change or suppress correctness/security findings.

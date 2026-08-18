@@ -22,7 +22,7 @@ The production image's `diffuse` entrypoint is a superset of the packaged CLI:
 alongside the subcommands below it takes the service entrypoints Compose uses
 (`serve`, `worker`, `github-delivery-poller`, `agent-host`, `egress-proxy`,
 `context-service`) plus their healthcheck/preflight variants;
-`service/runtime.py` is authoritative. A `pip install` of this package maps
+`packages/server/src/diffuse/main.py` is authoritative. A `pip install` of this package maps
 `diffuse` to the CLI only, so `diffuse serve` outside the image exits with
 `invalid choice: 'serve'`.
 
@@ -160,4 +160,4 @@ credential: connection URLs are shown with the password replaced by `***`. Set
 `DIFFUSE_CLI_TRACEBACK=1` to re-raise the original exception when filing a bug.
 
 The codes are stable and are defined in
-[`service/cli/review.py`](../service/cli/review.py).
+[`packages/server/src/diffuse/cli/review.py`](../packages/server/src/diffuse/cli/review.py).
