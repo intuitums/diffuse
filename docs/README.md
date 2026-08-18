@@ -12,7 +12,6 @@ first pull request. These pages are the reference behind it.
 | [deployment.md](deployment.md) | Current self-hosted deployment and Diffuse GitHub App connection. |
 | [infisical-hosted-production.json.example](infisical-hosted-production.json.example) | Safe placeholder-only import template for GitHub Integration Service production configuration. |
 | [cli.md](cli.md) | Transitional CLI reference. Operator runner authentication remains private configuration, not a product API. |
-| [cursor-cloud.md](cursor-cloud.md) | Cursor Cloud VM environment only — native PostgreSQL, no Docker, that machine's gotchas. |
 
 Elsewhere in the repository:
 

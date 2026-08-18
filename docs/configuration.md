@@ -7,8 +7,8 @@ request behavior, and the bounded review plan.
 
 Separately from configuration, policy discovery indexes guidance documents
 for the review agents: `.diffuse/rules.md`, plus convention-named instruction
-files (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.cursorrules`,
-`.github/copilot-instructions.md`, `.cursor/rules/*.mdc`).
+files (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, and
+`.github/copilot-instructions.md`).
 `repository_policy/discovery.py` is authoritative for the exact set.
 
 ```json
