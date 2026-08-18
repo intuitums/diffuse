@@ -48,15 +48,13 @@ def test_claude_coauthor_trailer_from_repository_history_is_detected():
     assert provenance.signals == ("commit_trailer_co_authored_by:claude_code",)
 
 
-def test_direct_cursor_agent_author_is_detected_without_guessing_its_model():
+def test_direct_devin_agent_author_is_detected_without_guessing_its_model():
     provenance = classify_pull_request_provenance(
         PullRequestCommits(
             commits=(
                 _commit(
-                    author_name="Cursor Agent",
-                    author_email="cursoragent@cursor.com",
-                    committer_name="Cursor Agent",
-                    committer_email="cursoragent@cursor.com",
+                    author_login="devin-ai-integration[bot]",
+                    author_type="Bot",
                     message=(
                         "Fix review retries\n\n"
                         "Co-authored-by: Fischer <developer@example.com>"
@@ -69,13 +67,12 @@ def test_direct_cursor_agent_author_is_detected_without_guessing_its_model():
 
     assert provenance.classification == "agent_unknown_family"
     assert provenance.model_family is None
-    assert provenance.tool == "cursor"
-    # Unverified Git author email; see UNVERIFIED_IDENTITY_MAX_STRENGTH.
-    assert provenance.confidence == 0.7
+    assert provenance.tool == "devin"
+    assert provenance.confidence == 0.98
     assert provenance.ai_commit_ratio == 1
 
 
-def test_merged_claude_and_cursor_history_is_classified_as_ambiguous():
+def test_merged_claude_and_devin_history_is_classified_as_ambiguous():
     provenance = classify_pull_request_provenance(
         PullRequestCommits(
             commits=(
@@ -83,7 +80,7 @@ def test_merged_claude_and_cursor_history_is_classified_as_ambiguous():
                     message=(
                         "Fix review retries\n\n"
                         "Co-authored-by: Claude <noreply@anthropic.com>\n"
-                        "Co-authored-by: Cursor Agent <cursoragent@cursor.com>"
+                        "Co-authored-by: Devin"
                     )
                 ),
             ),
@@ -196,7 +193,10 @@ def test_provenance_routing_is_always_a_permutation_of_the_configured_pair():
                 "Co-authored-by: Codex <noreply@openai.com>"
             ),
         },
-        "unknown_family_agent": {"author_email": "cursoragent@cursor.com"},
+        "unknown_family_agent": {
+            "author_login": "devin-ai-integration[bot]",
+            "author_type": "Bot",
+        },
         "human": {},
     }
 
@@ -444,13 +444,13 @@ def test_a_product_named_trailer_without_an_email_is_still_detected():
     assert provenance.confidence == 0.7
 
 
-def test_unknown_cursor_origin_uses_cross_family_candidate_and_verifier():
+def test_unknown_devin_origin_uses_cross_family_candidate_and_verifier():
     provenance = classify_pull_request_provenance(
         PullRequestCommits(
             commits=(
                 _commit(
-                    author_name="Cursor Agent",
-                    author_email="cursoragent@cursor.com",
+                    author_login="devin-ai-integration[bot]",
+                    author_type="Bot",
                 ),
             ),
             complete=True,

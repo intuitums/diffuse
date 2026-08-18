@@ -8,7 +8,7 @@ Check. Python 3.12, FastAPI, PostgreSQL 17. Proprietary under
 
 > `repository_policy/discovery.py` indexes this file as repo-wide guidance when
 > Diffuse reviews its own repository. Keep it to durable, project-wide
-> instructions; machine-specific setup lives in [docs/cursor-cloud.md](docs/cursor-cloud.md).
+> instructions.
 
 ## Setup
 
@@ -123,5 +123,3 @@ pip-compile requirements.txt --output-file=requirements.lock \
 - [docs/README.md](docs/README.md) — index of the remaining reference docs.
 - [.env.example](.env.example) — environment variables, documented inline.
 - [SECURITY.md](SECURITY.md) — vulnerability reporting and the security model.
-- [docs/cursor-cloud.md](docs/cursor-cloud.md) — Cursor Cloud VM only: native
-  PostgreSQL, no Docker, and that machine's gotchas.
