@@ -18,7 +18,6 @@ from .models import (
     RepositoryConfig,
     RepositoryPolicySnapshot,
     is_sensitive_repo_path,
-    validate_repo_glob,
     validate_repo_path,
 )
 
@@ -28,7 +27,7 @@ MAX_POLICY_SOURCE_BYTES = 128 * 1024
 MAX_CONTEXT_FILE_BYTES = 128 * 1024
 MAX_TOTAL_POLICY_BYTES = 1024 * 1024
 COMMON_INSTRUCTION_NAMES = frozenset(
-    {"AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", ".cursorrules"}
+    {"AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"}
 )
 
 
@@ -108,12 +107,6 @@ def _directory_for_diffuse_file(path: PurePosixPath) -> str:
 def _directory_for_common_instruction(path: PurePosixPath) -> str:
     if path.name == "copilot-instructions.md" and path.parent.name == ".github":
         directory = path.parent.parent
-    elif (
-        path.suffix == ".mdc"
-        and path.parent.name == "rules"
-        and path.parent.parent.name == ".cursor"
-    ):
-        directory = path.parent.parent.parent
     else:
         directory = path.parent
     value = directory.as_posix()
@@ -123,37 +116,7 @@ def _directory_for_common_instruction(path: PurePosixPath) -> str:
 def _is_common_instruction(path: PurePosixPath) -> bool:
     if path.name in COMMON_INSTRUCTION_NAMES:
         return True
-    if path.name == "copilot-instructions.md" and path.parent.name == ".github":
-        return True
-    return (
-        path.suffix == ".mdc"
-        and path.parent.name == "rules"
-        and path.parent.parent.name == ".cursor"
-    )
-
-
-def _cursor_globs(content: str) -> tuple[str, ...]:
-    """Read common one-line Cursor MDC globs without accepting YAML features."""
-    lines = content.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return ("**",)
-    try:
-        end = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
-    except StopIteration:
-        return ("**",)
-    for line in lines[1:end]:
-        key, separator, raw_value = line.partition(":")
-        if separator and key.strip() == "globs":
-            raw_value = raw_value.strip()
-            if raw_value.startswith("[") and raw_value.endswith("]"):
-                raw_value = raw_value[1:-1]
-            values = tuple(
-                validate_repo_glob(item.strip().strip("\"'"))
-                for item in raw_value.split(",")
-                if item.strip().strip("\"'")
-            )
-            return values or ("**",)
-    return ("**",)
+    return path.name == "copilot-instructions.md" and path.parent.name == ".github"
 
 
 def _join_relative(directory: str, path: str) -> str:
@@ -242,7 +205,7 @@ def discover_repository_policy(root: Path) -> RepositoryPolicySnapshot:
                     directory_path=_directory_for_common_instruction(path),
                     source_path=source_path,
                     kind="instructions",
-                    applies_to=_cursor_globs(content) if path.suffix == ".mdc" else ("**",),
+                    applies_to=("**",),
                     content=content,
                     content_hash=hashlib.sha256(content.encode()).hexdigest(),
                     priority=10,
