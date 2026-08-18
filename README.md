@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo/mark-black-on-acid-rounded.svg" width="120" height="120" alt="Diffuse">
+  <img src="assets/logo/logo.svg" width="120" height="120" alt="Diffuse">
 </p>
 
 <h1 align="center">Diffuse</h1>
