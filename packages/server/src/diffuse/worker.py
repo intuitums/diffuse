@@ -74,7 +74,7 @@ from diffuse.database.learning import (
     schedule_due_rule_learning_jobs,
 )
 from diffuse.database.migrations import verify_database_current
-from diffuse.database.review import (
+from diffuse.database.review_store import (
     PublicationHandle,
     ReviewRunHandle,
     begin_publication,
@@ -101,7 +101,7 @@ from diffuse.github.check import (
 )
 from diffuse.github.feedback import fetch_github_review_reactions
 from diffuse.github.repository import fetch_github_repository_metadata
-from diffuse.github.review import (
+from diffuse.github.review_publish import (
     PublishedReview,
     post_github_review_failure_notice,
     publish_github_review,

@@ -1,8 +1,7 @@
 """Durable operator-managed custom context.
 
-Mutation APIs (create/update/delete) were part of the removed public MCP/REST
-surface. Active contexts loaded for review still apply; operators manage rows
-out of band until a supported v1 path lands.
+Active contexts loaded for review still apply; operators manage rows out of
+band until a supported v1 path lands.
 """
 
 from __future__ import annotations

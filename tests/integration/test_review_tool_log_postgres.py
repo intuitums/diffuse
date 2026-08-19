@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 
 import psycopg2
 import pytest
-from diffuse.database.review import begin_review_run
+from diffuse.database.review_store import begin_review_run
 from diffuse.repository.registry import register_repository
 from diffuse.repository.scm import PullRequestEvent
 from diffuse.review.tool_log import (

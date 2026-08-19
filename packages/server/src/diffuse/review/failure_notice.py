@@ -28,9 +28,8 @@ REDACTION_PLACEHOLDER = "[redacted]"
 _CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Credentials embedded in a connection string or clone URL.
     re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^\s/@]+:[^\s/@]+@"),
-    # Provider access tokens. The glpat- rule is kept deliberately: redaction is
-    # defence in depth, and an operator migrating off GitLab may still have a
-    # stale GITLAB_TOKEN in the environment when a failure is rendered.
+    # Provider access tokens, including GitLab `glpat-` and GitHub `gh*` forms.
+    # Redaction is defence in depth so secrets never reach a rendered notice.
     # GitHub's 2026 stateless installation tokens are ~520-character
     # `ghs_`-prefixed JWTs with dots, hyphens, and additional underscores.
     # The wider character class also keeps covering the classic opaque forms.

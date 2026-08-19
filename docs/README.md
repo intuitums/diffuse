@@ -5,6 +5,7 @@ first pull request. These pages are the reference behind it.
 
 | Document | What it is |
 | --- | --- |
+| [architecture.md](architecture.md) | Component map, the review lifecycle, and where each responsibility lives (resolves the repeated `review`/`context` nouns). |
 | [v1-scope.md](v1-scope.md) | The active product boundary and delivery order. Read this first when a legacy plan or capability claim conflicts with current v1 decisions. |
 | [agents.md](agents.md) | The active CLI review-runner boundary and investigation contract. |
 | [capabilities.md](capabilities.md) | The concise v1 shipping ledger. |
