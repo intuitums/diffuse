@@ -83,19 +83,29 @@ def _new_local_secret_values() -> dict[str, str]:
 def generate_local_secrets(env_path: Path | str) -> dict[str, str]:
     """Fill any missing local deployment secrets into the env file.
 
-    Only absent keys are written, so re-running is a no-op and does not rotate a
-    value a running deployment already depends on. Returns the values that were
+    Keys with no value (an empty placeholder copied from `.env.example`) and
+    keys absent entirely are both filled, so re-running never leaves a secret
+    undefined and never appends a duplicate definition of an existing key.
+    Non-empty values already present are left untouched, so re-running does not
+    rotate a value a running deployment depends on. Returns the values that were
     written (empty when the file was already complete).
     """
     env_path = Path(env_path).expanduser()
 
     existing_text = env_path.read_text() if env_path.exists() else ""
     existing: dict[str, str] = {}
+    kept: list[str] = []
     for line in existing_text.splitlines():
         key, separator, value = line.partition("=")
         normalized = key.strip()
         if separator and normalized and value.strip():
             existing.setdefault(normalized, value)
+        # Drop empty placeholder lines for our secret keys (e.g. copied from
+        # `.env.example`) so the generated value is not appended as a second,
+        # duplicate definition of the same key.
+        if separator and normalized in _LOCAL_SECRET_KEYS and not value.strip():
+            continue
+        kept.append(line)
 
     candidates = _new_local_secret_values()
     missing = [key for key in _LOCAL_SECRET_KEYS if key not in existing]
@@ -103,7 +113,7 @@ def generate_local_secrets(env_path: Path | str) -> dict[str, str]:
         return {}
     additions = {key: candidates[key] for key in missing}
 
-    output = existing_text
+    output = "\n".join(kept)
     if output and not output.endswith("\n"):
         output += "\n"
     for key, value in additions.items():
@@ -207,14 +217,21 @@ def _logout(args: argparse.Namespace) -> None:
 
 
 def _status(args: argparse.Namespace) -> None:
-    github_code = 0
+    github_ready = True
     try:
         github_cli._status(argparse.Namespace(url=args.url))
-    except SystemExit as error:
-        github_code = int(error.code or "1")
+    except SystemExit:
+        # `github status` raises only when the link is not ready; treat that as
+        # a not-ready result rather than letting it abort before the agent check.
+        github_ready = False
+    except (ValueError, RuntimeError) as error:
+        # Not connected / unreachable / bad response: report it cleanly instead
+        # of dumping a traceback, but still fail closed.
+        print(f"GitHub Integration Service: {error}", file=sys.stderr)
+        github_ready = False
     agent_cli._status(argparse.Namespace())
-    if github_code:
-        raise SystemExit(github_code)
+    if not github_ready:
+        raise SystemExit(1)
 
 
 def configure_parser(
