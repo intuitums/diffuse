@@ -10,7 +10,7 @@ Determine context from the conversation history first.
 
 Rules for context detection:
 - If the conversation already mentions a GitHub issue or pull request, use that existing context.
-- If the work came from `/is` or `/pr`, assume that context is already known from the conversation and from the analysis work already done.
+- If the work came from `/is` or `/skill:pr`, assume that context is already known from the conversation and from the analysis work already done.
 - If there is no issue or PR in the conversation history, treat this as untracked wrap-up.
 
 Unless I explicitly override something in this request, do the following in order:
