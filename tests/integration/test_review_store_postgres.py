@@ -1,4 +1,4 @@
-"""PostgreSQL coverage for `diffuse.database.review`.
+"""PostgreSQL coverage for `diffuse.database.review_store`.
 
 These assertions used to live in `tests/integration/test_workflow_postgres.py`,
 which was named for the workflow module but was in fact the only durability
@@ -15,7 +15,7 @@ import os
 from contextlib import closing
 
 import psycopg2
-from diffuse.database.review import (
+from diffuse.database.review_store import (
     begin_publication,
     begin_review_run,
     load_review_report,

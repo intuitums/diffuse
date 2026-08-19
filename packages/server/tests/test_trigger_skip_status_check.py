@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 from diffuse.database.check import CheckRunHandle
-from diffuse.database.review import ReviewRunHandle
+from diffuse.database.review_store import ReviewRunHandle
 from diffuse.repository.policy.models import (
     PolicyLayer,
     RepositoryConfig,

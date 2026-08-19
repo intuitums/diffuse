@@ -301,10 +301,6 @@ class PullRequestEvent:
             "source_merged_at": self.source_merged_at,
             "additions": self.additions,
             "deletions": self.deletions,
-            # Retired GitLab-shaped fields kept as constants so trigger
-            # fingerprints stay stable across the payload-schema cutover.
-            "source_project_id": 0,
-            "start_sha": self.base_sha,
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -361,22 +357,12 @@ class PullRequestEvent:
             "source_closed_at",
             "source_merged_at",
         }
-        # metadata_v4/v5 carried retired GitLab-shaped fields. Still accepted so
-        # in-flight queue payloads deserialize across the deploy that drops them.
-        metadata_v4 = metadata_v3 | {
-            "source_project_id",
-        }
-        metadata_v5 = metadata_v4 | {
-            "start_sha",
-        }
         payload_keys = frozenset(payload)
         supported = {
             frozenset(required),
             frozenset(required | metadata_v1),
             frozenset(required | metadata_v2),
             frozenset(required | metadata_v3),
-            frozenset(required | metadata_v4),
-            frozenset(required | metadata_v5),
         }
         if payload_keys not in supported | {
             keys | {"github_repository_id"} for keys in supported
@@ -536,16 +522,10 @@ class ReviewConversationEvent:
             "side",
             "diff_hunk",
         }
-        required_v2 = required_v1 | {"thread_id"}
-        required_v3 = required_v1 | {"github_repository_id"}
-        required_v4 = required_v3 | {"thread_id"}
-        # required_v2 carried a retired GitLab-shaped thread_id. Still accepted so
-        # in-flight conversation jobs deserialize across the deploy that drops it.
+        required_v2 = required_v1 | {"github_repository_id"}
         if frozenset(payload) not in {
             frozenset(required_v1),
             frozenset(required_v2),
-            frozenset(required_v3),
-            frozenset(required_v4),
         }:
             raise ValueError(
                 "Workflow payload does not match the review-conversation event schema"

@@ -70,6 +70,10 @@ Diffuse keeps its four runtime boundaries under `packages/`:
 - `protocol` — the wire contracts shared by the server and Agent Hosts; and
 - `relay` — the public GitHub event and short-lived credential edge.
 
+The server's importable package is `diffuse` (not `diffuse_server`); the other
+three follow the `diffuse_*` prefix. See [docs/architecture.md](docs/architecture.md)
+for how responsibilities are laid out within `server`.
+
 Tests live beside the package they protect. Database integration tests remain
 under `tests/integration/` because they exercise the complete server schema.
 

@@ -195,36 +195,6 @@ def test_push_event_rejects_nested_namespaces():
         )
 
 
-def test_pull_request_event_ignores_retired_gitlab_shaped_payload_fields():
-    event = PullRequestEvent.from_payload(
-        {
-            **_payload(),
-            "state": "open",
-            "source_created_at": "2026-07-22T15:30:00Z",
-            "source_closed_at": "",
-            "source_merged_at": "",
-            "additions": 1,
-            "deletions": 0,
-            "source_project_id": 99,
-            "start_sha": "c" * 40,
-        }
-    )
-
-    assert "source_project_id" not in event.to_payload()
-    assert "start_sha" not in event.to_payload()
-    assert event.trigger_fingerprint == PullRequestEvent.from_payload(
-        {
-            **_payload(),
-            "state": "open",
-            "source_created_at": "2026-07-22T15:30:00Z",
-            "source_closed_at": "",
-            "source_merged_at": "",
-            "additions": 1,
-            "deletions": 0,
-        }
-    ).trigger_fingerprint
-
-
 def test_feedback_events_have_scoped_safe_identities():
     comment = ReviewFeedbackCommentEvent(
         provider="github",
