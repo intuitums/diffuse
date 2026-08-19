@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 
+import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
 )
@@ -99,6 +100,37 @@ def test_dispatch_public_key_derives_from_the_generated_private_key(tmp_path):
     assert derived.public_bytes_raw() == public
 
 
+def test_generate_local_secrets_fills_empty_placeholders_without_duplicating(tmp_path):
+    # Mirrors `cp .env.example .env`: the secret keys ship as empty placeholders.
+    env = tmp_path / ".env"
+    env.write_text(
+        "POSTGRES_PASSWORD=\n"
+        "DATABASE_URL=postgresql://diffuse:diffuse-dev@localhost:5432/diffuse\n"
+        "DIFFUSE_REVIEW_AGENT_DISPATCH_PRIVATE_KEY=\n"
+        "DIFFUSE_REVIEW_AGENT_DISPATCH_PUBLIC_KEY=\n"
+        "DIFFUSE_REVIEW_AGENT_CAPABILITY_SIGNING_KEY=\n"
+        "DIFFUSE_REVIEW_AGENT_TRANSPORT_SECRET=\n"
+    )
+    env.chmod(0o600)
+
+    login_cli.generate_local_secrets(env)
+
+    text = env.read_text()
+    values = {
+        line.partition("=")[0]: line.partition("=")[2]
+        for line in text.splitlines()
+        if "=" in line
+    }
+    for key in login_cli._LOCAL_SECRET_KEYS:
+        # Defined exactly once and with a real (non-empty) value.
+        assert text.count(f"{key}=") == 1
+        assert values[key].strip()
+    # Unrelated configuration is preserved verbatim.
+    assert (
+        "DATABASE_URL=postgresql://diffuse:diffuse-dev@localhost:5432/diffuse" in text
+    )
+
+
 def test_login_github_writes_local_and_integration_secrets(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(github_cli.httpx, "post", lambda *a, **k: _ConnectResponse())
     env = tmp_path / "deploy.env"
@@ -169,6 +201,31 @@ def test_status_reports_github_and_agent(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert '"ready": true' in out
     assert "agent: ok" in out
+
+
+def test_status_fails_closed_without_traceback_when_github_unreachable(
+    monkeypatch, capsys
+):
+    # `github status` raises on a missing/invalid token or an unreachable
+    # service; the top-level command must report that cleanly and exit non-zero
+    # rather than dumping a traceback.
+    def _raise(ns):
+        raise ValueError("DIFFUSE_GITHUB_INTEGRATION_TOKEN is not set")
+
+    monkeypatch.setattr(github_cli, "_status", _raise)
+    agent_called: list[object] = []
+    monkeypatch.setattr(
+        login_cli.agent_cli, "_status", lambda ns: agent_called.append(ns)
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        login_cli._status(argparse.Namespace(url=None))
+
+    assert exc.value.code == 1
+    assert agent_called  # agent readiness is still reported
+    err = capsys.readouterr().err
+    assert "GitHub Integration Service:" in err
+    assert "Traceback" not in err
 
 
 def test_login_subcommand_parses_agent_positionarg():
