@@ -1,6 +1,6 @@
 ---
 name: pr
-description: File or update a GitHub pull request following repository conventions. Use when creating, updating, repairing, or deciding to open a pull request — inspect the branch and full diff, never create a duplicate PR, ensure the submitted change is complete, push without force, and write a clear problem-first title and description.
+description: File or update a GitHub pull request.
 ---
 
 # File PR
