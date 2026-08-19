@@ -29,7 +29,7 @@ from diffuse.database.finding import (
     mark_thread_operation_published,
     record_finding_threads,
 )
-from diffuse.database.review import (
+from diffuse.database.review_store import (
     begin_publication,
     begin_review_run,
     mark_publication_published,
