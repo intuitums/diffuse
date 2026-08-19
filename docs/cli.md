@@ -32,18 +32,30 @@ Install the CLI into a local Python environment with `uv pip install -e .` (or
 an equivalent Python installer) to manage a self-hosted server:
 
 ```bash
+cd <deployment>
+cp .env.example .env
+diffuse login                 # link GitHub App + generate local secrets
+# sign in the model provider Diffuse runs reviews with:
+diffuse login claude          # subscription (account), API key, or third-party
+# or: diffuse login codex -- --device-auth
+diffuse status                # readiness: GitHub + model providers
 diffuse repository list
-diffuse repo list  # equivalent shorthand
-diffuse repo settings show acme/api
-diffuse repo settings set acme/api --auto-review off
-diffuse maintenance reindex acme/api
-diffuse cluster list
-diffuse learning list 1
-diffuse agent status
-diffuse github connect
-diffuse github status
-diffuse github disconnect
 ```
+
+`diffuse login` is the primary onboarding command. With no provider name it
+opens a browser against the GitHub Integration Service, authorizes your GitHub
+account, binds an App installation, and **generates the local deployment
+secrets** (Postgres password, Agent Dispatch keypair, and access-grant keys)
+into `./.env` (mode `0600`) - values an operator should never have to invent.
+Give it a provider name (`claude` or `codex`) to sign in that Agent Host's CLI
+instead: Diffuse runs the vendor's own interactive login, which offers your
+account (Claude.ai / ChatGPT), an API key, or a third-party gateway - Diffuse
+never collects the key itself. `diffuse status` reports readiness across the
+GitHub link and both model providers. `diffuse logout` revokes the GitHub
+integration, or `diffuse logout <provider>` signs out a provider. The lower
+level `diffuse github connect` / `github status` / `github disconnect` and
+`diffuse agent login` / `agent status` / `agent logout` remain available as the
+canonical subcommand surface.
 
 `diffuse github connect` opens a browser against the GitHub Integration Service,
 authorizes your GitHub account, and binds an App installation (install the App

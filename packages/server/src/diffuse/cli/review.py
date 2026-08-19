@@ -37,6 +37,9 @@ from diffuse.cli import (
     learning as learning_cli,
 )
 from diffuse.cli import (
+    login as login_cli,
+)
+from diffuse.cli import (
     maintenance as maintenance_cli,
 )
 from diffuse.cli import (
@@ -115,8 +118,10 @@ exit codes:
 TOP_LEVEL_EPILOG = (
     """\
 examples:
+  diffuse login
+  diffuse status
+  diffuse logout
   diffuse repository list
-  diffuse github connect
   diffuse database status
 
 """
@@ -933,6 +938,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
     )
     github_cli.configure_parser(github)
 
+    login_commands = login_cli.configure_parser(subparsers)
+
     # Every subparser must appear here, or an unknown flag typed on that
     # subcommand is reported against the top-level parser and prints the wrong
     # usage block -- the defect this mapping exists to fix.
@@ -947,6 +954,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argumen
         "agent": agent,
         "github": github,
     }
+    commands.update(login_commands)
     return parser, commands
 
 
