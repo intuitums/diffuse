@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # RepositoryPolicySnapshot.__post_init__ raises, and that ValueError is
 # classified non-retryable -- so every configured repository's next review fails
 # terminally instead of taking the documented reindex path.
-POLICY_SCHEMA_VERSION = "repository-policy-v15-mcp-auto-approval-excised"
+POLICY_SCHEMA_VERSION = "repository-policy-v15"
 REVIEW_PASS_NAMES = ("correctness", "security", "performance", "tests")
 ReviewPassName = Literal["correctness", "security", "performance", "tests"]
 SeverityName = Literal["critical", "high", "medium", "low"]

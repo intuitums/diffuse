@@ -19,7 +19,7 @@ from diffuse.database.check import (
     mark_check_run_failed,
     mark_check_run_started,
 )
-from diffuse.database.review import begin_review_run, persist_review_report
+from diffuse.database.review_store import begin_review_run, persist_review_report
 from diffuse.repository.registry import register_repository
 from diffuse.repository.scm import PullRequestEvent
 from diffuse.review.workflow import claim_workflow_job, enqueue_review_event

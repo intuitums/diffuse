@@ -21,7 +21,7 @@ from diffuse.database.feedback import (
     record_review_comment_feedback,
 )
 from diffuse.database.finding import PublishedFindingComment, record_finding_threads
-from diffuse.database.review import (
+from diffuse.database.review_store import (
     begin_publication,
     begin_review_run,
     mark_publication_published,

@@ -3,7 +3,7 @@ import re
 
 import httpx
 import pytest
-from diffuse.github.review import (
+from diffuse.github.review_publish import (
     _finding_comment,
     format_review_body,
     publish_github_review,

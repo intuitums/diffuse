@@ -875,10 +875,6 @@ def schedule_due_feedback_sync_jobs(
               ON repository.id = pull_request.repository_id
             WHERE state.next_sync_at <= now()
               AND repository.enabled = TRUE
-              -- Diffuse is GitHub-only, but the scm_provider CHECK constraint
-              -- still admits legacy rows written before the GitLab removal.
-              -- Excluded here rather than in Python: a skipped row would keep
-              -- its due next_sync_at and consume a LIMIT slot on every pass.
               AND repository.scm_provider = 'github'
             ORDER BY state.next_sync_at, state.finding_thread_id
             FOR UPDATE OF state SKIP LOCKED
@@ -888,11 +884,6 @@ def schedule_due_feedback_sync_jobs(
         )
         rows = cursor.fetchall()
         for row in rows:
-            # Diffuse is GitHub-only, but the `scm_provider` CHECK constraint
-            # still admits legacy rows written before the GitLab removal. Skip
-            # them rather than routing them at a GitHub API base.
-            if row["scm_provider"] != "github":
-                continue
             if row["scm_base_url"] == github_scm_base_url:
                 provider_api_base_url = api_base_url
             elif row["scm_base_url"] == "https://github.com":

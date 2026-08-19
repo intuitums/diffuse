@@ -8,7 +8,7 @@ but the guard they protect is in a module the rebuild keeps, and
 path.
 """
 
-from diffuse.database import review as review_store
+from diffuse.database import review_store as review_store
 
 
 class _ScriptedCursor:

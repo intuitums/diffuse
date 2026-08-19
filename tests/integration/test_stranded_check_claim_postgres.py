@@ -19,7 +19,7 @@ from diffuse.database.check import (
     mark_check_run_failed,
     mark_check_run_started,
 )
-from diffuse.database.review import (
+from diffuse.database.review_store import (
     begin_review_run,
     mark_review_terminal_failed,
     persist_review_report,

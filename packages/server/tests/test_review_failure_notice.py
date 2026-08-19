@@ -3,7 +3,7 @@ from dataclasses import replace
 import httpx
 import pytest
 from diffuse.github.api import normalize_manual_review_request
-from diffuse.github.review import post_github_review_failure_notice
+from diffuse.github.review_publish import post_github_review_failure_notice
 from diffuse.repository.policy.models import (
     PolicyLayer,
     RepositoryConfig,
