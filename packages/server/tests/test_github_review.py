@@ -804,3 +804,85 @@ async def test_continuity_publishes_only_new_inline_findings(monkeypatch):
     assert "1 new · 1 still open · 0 reopened · 1 addressed" in review_payloads[0]["body"]
     assert "Remove the stale bypass" in review_payloads[0]["body"]
     assert published.finding_comments[0].external_id == "114"
+
+
+@pytest.mark.anyio
+async def test_publish_fails_closed_when_review_dedupe_scan_hits_its_cap(
+    monkeypatch,
+):
+    """A reviews list that never drops below a full page past the scan cap must
+    abort publication instead of assuming no review exists.
+
+    The marker search is the only dedupe guard before POSTing a new review:
+    returning None after a capped scan can publish a second review onto a pull
+    request that already carries one for this exact head.
+    """
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path.endswith("/reviews"):
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": i, "body": "unrelated review"}
+                    for i in range(100)
+                ],
+            )
+        raise AssertionError(f"Unexpected request: {request.method}")
+
+    report = _report().model_copy(
+        update={"findings": [], "summary_comment_enabled": False}
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError, match="pagination cap"):
+            await publish_github_review(
+                _event(),
+                review_run_id=42,
+                report=report,
+                client=client,
+            )
+
+    # 20 full pages were fetched and nothing was posted.
+    assert len(requests) == 20
+    assert all(method == "GET" for method, _ in requests)
+
+
+@pytest.mark.anyio
+async def test_publish_fails_closed_when_visibility_scan_hits_its_cap(monkeypatch):
+    """A review-comment scan past its cap must abort even after the review POST.
+
+    The scan decides which inline comments are already visible for this head;
+    an incomplete scan must not be treated as ground truth for the next retry.
+    """
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    posted = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal posted
+        if request.method == "POST" and request.url.path.endswith("/reviews"):
+            posted += 1
+            return httpx.Response(201, json={"id": 100})
+        if request.url.path.endswith("/reviews/100/comments"):
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": i, "body": "unrelated comment"}
+                    for i in range(100)
+                ],
+            )
+        if request.method == "GET" and request.url.path.endswith("/reviews"):
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"Unexpected request: {request.method}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError, match="pagination cap"):
+            await publish_github_review(
+                _event(),
+                review_run_id=42,
+                report=_report(),
+                client=client,
+            )
+
+    assert posted == 1

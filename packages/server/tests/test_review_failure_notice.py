@@ -370,3 +370,40 @@ class _NullConn:
 
     def __exit__(self, *_exc):
         return False
+
+
+@pytest.mark.anyio
+async def test_failure_notice_dedupe_scan_fails_closed_at_pagination_cap(
+    monkeypatch,
+):
+    """A capped issue-comment scan must not post a second notice.
+
+    The marker lookup is the guard against appending a duplicate terminal
+    notice; after a capped scan the answer is unknown, not 'no notice exists'.
+    """
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path.endswith("/comments"):
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": i, "body": "unrelated comment"}
+                    for i in range(100)
+                ],
+            )
+        raise AssertionError(f"Unexpected request: {request.method}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError, match="pagination cap"):
+            await post_github_review_failure_notice(
+                _github_event(),
+                failure=terminal_review_failure(4821, retries_exhausted=True),
+                client=client,
+            )
+
+    # 20 full pages were fetched and nothing was posted.
+    assert len(requests) == 20
+    assert all(method == "GET" for method, _ in requests)
