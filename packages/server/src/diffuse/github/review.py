@@ -349,6 +349,14 @@ async def _find_existing_review(
                 )
         if len(reviews) < 100:
             break
+    else:
+        # A full page on the cap page means the list may continue past the
+        # scan. Publishing after an incomplete dedupe scan can duplicate a
+        # review that already exists, so fail closed instead.
+        raise RuntimeError(
+            "GitHub review scan reached its 20-page pagination cap; "
+            "refusing to publish without a complete dedupe scan"
+        )
     return None
 
 
@@ -432,6 +440,11 @@ async def _published_finding_comments(
             )
         if len(value) < 100:
             break
+    else:
+        raise RuntimeError(
+            "GitHub review-comment scan reached its 10-page pagination cap; "
+            "refusing to publish without a complete visibility scan"
+        )
     return tuple(comments[key] for key in sorted(comments))
 
 
@@ -468,6 +481,11 @@ async def _find_existing_issue_comment(
                 return str(external_id)
         if len(comments) < 100:
             break
+    else:
+        raise RuntimeError(
+            "GitHub issue-comment scan reached its 20-page pagination cap; "
+            "refusing to publish without a complete dedupe scan"
+        )
     return None
 
 
