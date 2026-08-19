@@ -1,13 +1,12 @@
 ---
-description: File one or more concise pull requests
-argument-hint: "[instructions]"
+name: pr
+description: File or update a GitHub pull request following repository conventions. Use when creating, updating, repairing, or deciding to open a pull request — inspect the branch and full diff, never create a duplicate PR, ensure the submitted change is complete, push without force, and write a clear problem-first title and description.
 ---
 
 # File PR
 
-Follow these request-specific instructions:
-
-${ARGUMENTS:-Create or update the pull request for the current branch.}
+Follow any request-specific instructions provided when this skill is invoked. If
+none are given, create or update the pull request for the current branch.
 
 When multiple PRs are requested, split the changes into coherent, independently
 reviewable sections and apply the guidance below to each PR.
