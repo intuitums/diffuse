@@ -246,7 +246,7 @@ CMD ["serve"]
 
 # Claude Code 2.1.224 requires Node 22 or newer. Keep Node separate from the
 # application image, and pin it just like the Debian and Python bases above.
-FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS runner-node
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS runner-node
 
 # Each runner is a separately selected final target so a credential-isolated
 # Claude process never carries the Codex executable (or vice versa). The CLI
@@ -256,6 +256,15 @@ FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0
 FROM runtime-base AS runner-base
 USER root
 COPY --from=runner-node /usr/local/ /usr/local/
+
+# Node 25's bookworm-slim base no longer ships libatomic.so.1, which the Node
+# binary needs at load time, so the Claude/Codex executables fail to start.
+# Install it here, scoped to the runner images (the application image does not
+# run Node, so it stays out of `runtime-base`).
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && apt-get install -y --no-install-recommends libatomic1
 
 FROM runner-base AS runner-claude
 LABEL org.opencontainers.image.title="Diffuse Claude Code review runner" \
