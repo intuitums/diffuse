@@ -1,5 +1,5 @@
 -r requirements.txt
-pytest==9.0.2
+pytest==9.1.1
 ruff>=0.12,<1
 pip-tools>=7.5,<8
 pip-audit>=2.10,<3
