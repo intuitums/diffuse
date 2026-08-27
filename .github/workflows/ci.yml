@@ -22,7 +22,7 @@ env:
   DEPLOY_PROJECT: diffuse-ci-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
-  guard:
+  static-checks:
     runs-on: intuitum-4vcpu-ubuntu-2604
     timeout-minutes: 20
     steps:
@@ -73,7 +73,7 @@ jobs:
           ./gitleaks git . --config .gitleaks.toml --redact --no-banner
 
   test:
-    needs: guard
+    needs: static-checks
     runs-on: intuitum-8vcpu-ubuntu-2604
     timeout-minutes: 45
     env:
