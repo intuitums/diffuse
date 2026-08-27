@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Keep this short. Write in your own voice.
+        Keep this short. Write in your own voice. Check docs/v1-scope.md first — it is the active product boundary.
 
   - type: textarea
     id: what
