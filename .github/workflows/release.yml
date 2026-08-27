@@ -167,7 +167,7 @@ jobs:
 
       - name: Set up Buildx
         if: matrix.builder == ''
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       # Empty builder/cache inputs are treated as unset. The amd64 leg therefore
       # adopts the persistent builder without exporting it, while arm64 gives each
@@ -293,7 +293,7 @@ jobs:
 
       # This job builds nothing: all image work below is registry-side manifest
       # assembly, so it declares no cache and needs no target architecture support.
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       # Assemble exactly one digest from each native architecture into the app manifest.
       - name: Create multi-arch app manifest
