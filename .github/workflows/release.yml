@@ -64,7 +64,7 @@ jobs:
     outputs:
       created: ${{ steps.build-time.outputs.created }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # the ancestry check below needs full history
 
@@ -143,7 +143,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Sign in to GHCR
         uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
@@ -265,7 +265,7 @@ jobs:
       # release identity and write to the repository. See `distribute`.
     steps:
       # Needed for deploy/ and docs/ in the bundle.
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download digests
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
