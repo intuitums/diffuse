@@ -107,8 +107,6 @@ GitHub Issues are the backlog. Report vulnerabilities to
 - If these instructions conflict with the user's request, ask before
   overriding.
 
-Project Pi prompts live in `.pi/prompts` (`/wr`, `/is`, `/pr`, `/review`).
-
 ## Dependencies
 
 After intentionally changing a range in `requirements.txt`, regenerate and
