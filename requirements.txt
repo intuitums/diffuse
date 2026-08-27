@@ -1,6 +1,6 @@
 fastapi>=0.115,<1
 httpx>=0.28,<1
-mcp>=1.27,<2
+mcp>=2.0.0,<3
 psycopg2-binary>=2.9,<3
 pydantic>=2.13.4,<3
 # Direct: shared protocol sealing and dispatch signatures use cryptography.
