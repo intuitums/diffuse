@@ -372,7 +372,7 @@ class PullRequestEvent:
             if (
                 not isinstance(payload["is_draft"], bool)
                 or not isinstance(payload["metadata_complete"], bool)
-                or not isinstance(payload["labels"], (list, tuple))
+                or not isinstance(payload["labels"], list | tuple)
                 or not isinstance(payload["changed_file_count"], int)
                 or isinstance(payload["changed_file_count"], bool)
             ):
