@@ -2,7 +2,7 @@ fastapi>=0.115,<1
 httpx>=0.28,<1
 mcp>=1.27,<2
 psycopg2-binary>=2.9,<3
-pydantic>=2.10,<3
+pydantic>=2.13.4,<3
 # Direct: shared protocol sealing and dispatch signatures use cryptography.
 cryptography>=44,<51
 # Direct: packages/server/src/diffuse/github/app.py signs GitHub App JWTs with RS256.
