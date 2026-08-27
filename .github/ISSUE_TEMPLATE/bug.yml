@@ -29,3 +29,11 @@ body:
       label: Expected behavior
     validations:
       required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Diffuse version or image tag, how you deploy it (compose or other), and your Postgres version.
+    validations:
+      required: true
