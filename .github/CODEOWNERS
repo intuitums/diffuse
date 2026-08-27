@@ -1,0 +1,12 @@
+# Every change needs the maintainer's eyes; these paths are the trust boundary —
+# credentials, the sandbox, the policy engine, and CI itself. Branch protection
+# requires code-owner review, so a PR touching them cannot merge on green checks alone.
+
+*                                                  @fschrhunt
+
+/packages/server/src/diffuse/repository/policy/   @fschrhunt
+/packages/host/src/diffuse_host/                  @fschrhunt
+/Dockerfile                                       @fschrhunt
+/deploy/                                          @fschrhunt
+/.github/                                         @fschrhunt
+/.gitleaks.toml                                   @fschrhunt

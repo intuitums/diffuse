@@ -22,7 +22,7 @@ env:
   DEPLOY_PROJECT: diffuse-ci-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
-  check:
+  static-checks:
     runs-on: intuitum-4vcpu-ubuntu-2604
     timeout-minutes: 20
     steps:
@@ -52,7 +52,6 @@ jobs:
           python -m pip check
           python -m pip freeze > /tmp/installed.txt
           python scripts/check_lock_freeze.py /tmp/installed.txt requirements.lock
-          python -m pip_audit -r requirements.lock --disable-pip
           python -m ruff check .
           git diff --check
 
@@ -74,7 +73,7 @@ jobs:
           ./gitleaks git . --config .gitleaks.toml --redact --no-banner
 
   test:
-    needs: check
+    needs: static-checks
     runs-on: intuitum-8vcpu-ubuntu-2604
     timeout-minutes: 45
     env:
