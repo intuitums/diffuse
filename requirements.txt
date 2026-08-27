@@ -7,7 +7,7 @@ pydantic>=2.13.4,<3
 cryptography>=44,<51
 # Direct: packages/server/src/diffuse/github/app.py signs GitHub App JWTs with RS256.
 pyjwt[crypto]>=2.10,<3
-tree-sitter>=0.25,<1
+tree-sitter>=0.26.0,<1
 tree-sitter-c>=0.23,<1
 tree-sitter-cpp>=0.23.4,<1
 tree-sitter-go>=0.23,<1
