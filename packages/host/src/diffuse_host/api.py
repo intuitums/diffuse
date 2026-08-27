@@ -195,7 +195,7 @@ def _host_error_code(error: Exception, *, cancelled: bool = False) -> str:
         return "cancelled"
     if isinstance(error, AgentInvestigationAuthRequired):
         return "auth_required"
-    if isinstance(error, (AgentInvestigationOutputError, ResultValidationError)):
+    if isinstance(error, AgentInvestigationOutputError | ResultValidationError):
         return "invalid_result"
     if isinstance(error, SourceArtifactError):
         return "invalid_workspace"

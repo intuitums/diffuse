@@ -180,7 +180,7 @@ def _classify_pydantic_error(error: dict[str, Any]) -> ResultValidationFailureCo
 
 
 def _loaded_result_payload(payload: str | bytes | dict[str, Any]) -> dict[str, Any]:
-    if isinstance(payload, (str, bytes)):
+    if isinstance(payload, str | bytes):
         try:
             loaded: Any = json.loads(payload)
         except (json.JSONDecodeError, UnicodeDecodeError) as error:

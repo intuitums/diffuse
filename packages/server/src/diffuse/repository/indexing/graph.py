@@ -328,10 +328,10 @@ def extract_python_file_graph(path: Path, repo_root: Path) -> FileGraph:
     visitor.top_level_names.update(
         node.name
         for node in tree.body
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
     )
     for node in tree.body:
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        if isinstance(node, ast.Assign | ast.AnnAssign):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             visitor.top_level_names.update(
                 target.id for target in targets if isinstance(target, ast.Name)

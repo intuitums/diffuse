@@ -245,12 +245,12 @@ def main(arguments: Sequence[str] | None = None) -> None:
             format_cli_error,
         )
 
-        if isinstance(error, (SystemExit, KeyboardInterrupt)):
+        if isinstance(error, SystemExit | KeyboardInterrupt):
             raise
         if isinstance(error, psycopg2.Error):
             sys.stderr.write(format_cli_error(database_error_message(error)))
             raise SystemExit(EXIT_CONFIG) from error
-        if isinstance(error, (OSError, RuntimeError, ValueError)):
+        if isinstance(error, OSError | RuntimeError | ValueError):
             sys.stderr.write(format_cli_error(str(error)))
             raise SystemExit(EXIT_CONFIG) from error
         sys.stderr.write(
