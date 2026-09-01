@@ -1,6 +1,6 @@
 # Diffuse documentation
 
-Start with the [project README](../README.md) to install Diffuse and review a
+Start with the [project README](../README) to understand Diffuse and review a
 first pull request. These pages are the reference behind it.
 
 | Document | What it is |
