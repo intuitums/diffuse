@@ -1,0 +1,35 @@
+■ INTUITUM
+PROJECT: DIFFUSE
+
+///
+
+CONTACT: SUPPORT@INTUITUM.SH
+LOCATION: USA
+STATUS: ONLINE
+
+///
+
+OVERVIEW:
+ - Self-hosted GitHub pull-request review.
+ - Pins the exact pull-request head and repository context.
+ - Runs bounded, read-only Codex and Claude Code CLI investigations.
+ - Verifies candidate findings before publishing a review and GitHub Check.
+
+///
+
+V1 BOUNDARY:
+ - Diffuse is a review product, not a general-purpose agent platform.
+ - It does not auto-approve, mutate branches, or promise to find every defect.
+ - The repository still contains transitional code from an earlier direction.
+
+FLOW:
+ PULL REQUEST -> CONTEXT -> INVESTIGATION -> VERIFICATION -> REVIEW + CHECK
+
+///
+
+REFERENCE:
+ - [V1 scope](./docs/v1-scope.md)
+ - [Documentation](./docs/README.md)
+ - [Deployment](./deploy/README.md)
+ - [Security](./SECURITY.md)
+ - [Agent guide](./AGENTS.md)
