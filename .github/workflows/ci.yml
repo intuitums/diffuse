@@ -23,7 +23,10 @@ env:
 
 jobs:
   static-checks:
-    runs-on: intuitum-4vcpu-ubuntu-2604
+    # GitHub-hosted runners: the self-hosted intuitum fleet was retired from
+    # this repository after dispatch silently stopped matching jobs to its
+    # idle, online runners. Keep the runner labels out of this file.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -74,7 +77,7 @@ jobs:
 
   test:
     needs: static-checks
-    runs-on: intuitum-8vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
