@@ -19,7 +19,7 @@ permissions:
 jobs:
   audit:
     name: pip-audit
-    runs-on: intuitum-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout
