@@ -27,9 +27,17 @@ FLOW:
 
 ///
 
+LICENSE:
+ Source-available under BSL 1.1; free to use, modify, and self-host.
+ Do not offer Diffuse itself as a hosted or managed service.
+ Converts to Apache-2.0 in 2030 (see LICENSE).
+
+///
+
 REFERENCE:
  - [V1 scope](./docs/v1-scope.md)
  - [Documentation](./docs/README.md)
+ - [Contributing](./CONTRIBUTING.md)
  - [Deployment](./deploy/README.md)
  - [Security](./SECURITY.md)
  - [Agent guide](./AGENTS.md)
