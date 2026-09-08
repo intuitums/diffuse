@@ -101,7 +101,7 @@ def test_delivery_signature_covers_the_complete_envelope():
         )
 
 
-def test_delivery_poller_requires_all_connection_values(monkeypatch):
+def test_delivery_poller_config_requires_complete_configuration(monkeypatch):
     for name in (
         delivery_poller.GITHUB_INTEGRATION_URL_VARIABLE,
         delivery_poller.GITHUB_INTEGRATION_TOKEN_VARIABLE,
@@ -117,11 +117,53 @@ def test_delivery_poller_requires_all_connection_values(monkeypatch):
         delivery_poller.configuration()
 
 
+def test_delivery_poller_config_accepts_loopback_http_for_a_local_relay(monkeypatch):
+    monkeypatch.delenv("DIFFUSE_ALLOW_PLAINTEXT_ORIGINS", raising=False)
+    monkeypatch.setenv(delivery_poller.GITHUB_INTEGRATION_URL_VARIABLE, "http://localhost:8787")
+    monkeypatch.setenv(delivery_poller.GITHUB_INTEGRATION_TOKEN_VARIABLE, "token")
+    monkeypatch.setenv(delivery_poller.GITHUB_DELIVERY_SIGNING_KEY_VARIABLE, "key")
+
+    assert delivery_poller.configuration().url == "http://localhost:8787"
+
+
+def test_delivery_poller_config_rejects_plaintext_non_loopback(monkeypatch):
+    monkeypatch.delenv("DIFFUSE_ALLOW_PLAINTEXT_ORIGINS", raising=False)
+    monkeypatch.setenv(delivery_poller.GITHUB_INTEGRATION_URL_VARIABLE, "http://relay.example.com")
+    monkeypatch.setenv(delivery_poller.GITHUB_INTEGRATION_TOKEN_VARIABLE, "token")
+    monkeypatch.setenv(delivery_poller.GITHUB_DELIVERY_SIGNING_KEY_VARIABLE, "key")
+
+    with pytest.raises(ValueError, match="https"):
+        delivery_poller.configuration()
+
+
 def test_hosted_database_url_uses_vercel_neon_value_when_no_override(monkeypatch):
     monkeypatch.delenv("DIFFUSE_GITHUB_INTEGRATION_DATABASE_URL", raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql://neon.example/diffuse")
 
     assert hosted_config.database_url() == "postgresql://neon.example/diffuse"
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
+def test_public_url_accepts_loopback_http_for_a_local_relay(monkeypatch, host):
+    monkeypatch.setenv("DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL", f"http://{host}:8787")
+
+    assert hosted_config.public_url() == f"http://{host}:8787"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://relay.example.com",
+        "https://api.diffuse.website/v1",
+        "ftp://api.diffuse.website",
+        "https://",
+    ],
+)
+def test_public_url_rejects_non_origins(monkeypatch, value):
+    monkeypatch.setenv("DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL", value)
+
+    with pytest.raises(hosted_config.IntegrationConfigurationError):
+        hosted_config.public_url()
 
 
 def test_delivery_signing_key_is_sealed_at_rest_with_legacy_dual_read(monkeypatch):
