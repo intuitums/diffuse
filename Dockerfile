@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.11
 
-FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS builder
+FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS builder
 
 # PIP_NO_CACHE_DIR is deliberately NOT set here. Every pip invocation below runs
 # under `--mount=type=cache,target=/root/.cache/pip`, and the two directly
@@ -86,7 +86,7 @@ RUN pyinstaller \
         \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit \
         | grep -q .
 
-FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS test-runner
+FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS test-runner
 
 # See the builder stage: PIP_NO_CACHE_DIR would make the pip cache mount below inert.
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
