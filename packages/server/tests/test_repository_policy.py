@@ -825,7 +825,7 @@ def test_default_policy_reaches_finding_lineage_on_a_pushed_revision():
     previously reviewed head and the new one, and that branch is guarded by
     `decision.eligible`. While `review_updates` defaulted to `False` the guard was
     closed on every default install, so finding lineage, addressed-detection, and
-    the indexes DEV-202 added for their join were built, tested, and never
+    the indexes added for their join were built, tested, and never
     executed. This asserts the reachability directly: if the default flips back, or
     a new filter starts dropping pushed revisions, the whole continuity subsystem
     goes dormant again and only this test says so.
