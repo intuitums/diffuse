@@ -1,8 +1,7 @@
 # Release — tag-driven publish of a signed, immutable multi-arch image plus the
 # self-host deployment bundle.
 #
-# Naming convention shared with intuitumxyz/leo: ci.yml gates changes, release.yml
-# publishes them.
+# Convention: ci.yml gates changes, release.yml publishes them.
 #
 # STRUCTURE CHANGED for Blacksmith. The previous single job built linux/amd64 and
 # linux/arm64 together on one amd64 runner, so the arm64 leg ran under QEMU emulation -
@@ -48,13 +47,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/intuitumxyz/diffuse
-  CLAUDE_RUNNER_IMAGE: ghcr.io/intuitumxyz/diffuse-runner-claude
-  CODEX_RUNNER_IMAGE: ghcr.io/intuitumxyz/diffuse-runner-codex
+  IMAGE: ghcr.io/intuitums/diffuse
+  CLAUDE_RUNNER_IMAGE: ghcr.io/intuitums/diffuse-runner-claude
+  CODEX_RUNNER_IMAGE: ghcr.io/intuitums/diffuse-runner-codex
   # The self-host bundle is published as a public OCI artifact next to the image.
   # GHCR package visibility is configured outside Actions. The anonymous-access
   # gate below fails the release if either package is not actually public.
-  BUNDLE_ARTIFACT: ghcr.io/intuitumxyz/diffuse-self-host
+  BUNDLE_ARTIFACT: ghcr.io/intuitums/diffuse-self-host
 
 jobs:
   # Split out so a bad tag fails in seconds instead of after two image builds.
@@ -475,9 +474,9 @@ jobs:
             --annotation "org.opencontainers.image.version=${RELEASE_TAG}" \
             --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --annotation "xyz.intuitum.diffuse.image=${IMAGE}@${DIGEST}" \
-            --annotation "xyz.intuitum.diffuse.runner.claude=${CLAUDE_RUNNER_IMAGE}@${CLAUDE_DIGEST}" \
-            --annotation "xyz.intuitum.diffuse.runner.codex=${CODEX_RUNNER_IMAGE}@${CODEX_DIGEST}" \
+            --annotation "sh.intuitum.diffuse.image=${IMAGE}@${DIGEST}" \
+            --annotation "sh.intuitum.diffuse.runner.claude=${CLAUDE_RUNNER_IMAGE}@${CLAUDE_DIGEST}" \
+            --annotation "sh.intuitum.diffuse.runner.codex=${CODEX_RUNNER_IMAGE}@${CODEX_DIGEST}" \
             "${BUNDLE_ARTIFACT}:${RELEASE_TAG}" \
             diffuse-self-host.tar.gz:application/gzip \
             diffuse-self-host.tar.gz.sha256:text/plain

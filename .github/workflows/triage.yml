@@ -1,0 +1,50 @@
+name: Triage
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  paths:
+    name: Label changed areas
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Apply maintained path labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')
+          add_label() {
+            name=$1 color=$2 description=$3
+            gh label create "$name" --repo "$REPO" --color "$color" \
+              --description "$description" --force
+            gh pr edit "$PR" --repo "$REPO" --add-label "$name"
+          }
+          # `|| true` on every probe: a non-matching grep must read as
+          # "no label", not fail the run; the final statement's status is
+          # the script's exit code under `set -eu`.
+          echo "$files" | grep -q '^packages/server/' && \
+            add_label area:server 1d76db 'API, worker, CLI, review flow, and repository context' || true
+          echo "$files" | grep -q '^packages/host/' && \
+            add_label area:host 5319e7 'Agent host, sandbox, and runner runtimes' || true
+          echo "$files" | grep -q '^packages/protocol/' && \
+            add_label area:protocol 0e8a16 'Wire contracts shared by server and hosts' || true
+          echo "$files" | grep -q '^packages/relay/' && \
+            add_label area:relay d93f0b 'Public GitHub event and credential edge' || true
+          echo "$files" | grep -Eq '^(docs/|README$|SECURITY.md|CONTRIBUTING.md)' && \
+            add_label documentation 0075ca 'Documentation changes' || true
+          echo "$files" | grep -Eq '^(\.github/|scripts/|Dockerfile$|compose\.|x$)' && \
+            add_label area:infra 6f42c1 'Build, CI, release, or repository automation' || true
+          echo "$files" | grep -Eq '^(requirements|\.github/dependabot\.yml)' && \
+            add_label dependencies 0366d6 'Dependency or toolchain changes' || true
+          echo "$files" | grep -Eq '^(packages/host/src/diffuse_host/sandbox\.py|packages/server/src/diffuse/repository/policy/|packages/relay/|Dockerfile$|\.github/|\.gitleaks\.toml)' && \
+            add_label security-surface b60205 'Touches a reviewed trust boundary' || true
