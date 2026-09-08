@@ -63,7 +63,7 @@ services:
       POSTGRES_TEST_DATABASE_URL: postgresql://diffuse:diffuse-test@testdb:5432/diffuse_test
       # Turns a green run that silently skipped every integration test into a
       # failure. Without it, a typo in the URL above reports success having
-      # asserted nothing. See tests/integration/conftest.py and DEV-238.
+      # asserted nothing. See tests/integration/conftest.py.
       DIFFUSE_REQUIRE_INTEGRATION_TESTS: "1"
     tmpfs:
       - /tmp:size=512m,mode=1777

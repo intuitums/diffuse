@@ -4,8 +4,7 @@ Diffuse's control plane (API + worker) and the isolated agent-host share these
 modules. The worker mints session capabilities and validates structured results;
 the runner is the only process that executes a CLI or mounts agent credentials.
 
-See `docs/agents.md` and the Linear document
-"CLI-native agent operation plan".
+See `docs/agents.md` for the active CLI review-runner boundary.
 """
 
 from diffuse_protocol.access import (

@@ -6,8 +6,14 @@ import base64
 import os
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 _INSTALLATION_ID = re.compile(r"^[0-9]{1,20}$")
+
+# Mirrors LOOPBACK_HOSTS in diffuse/repository/scm.py: the same three parsed-hostname
+# forms. The relay cannot import the server package, so the set is copied; if a
+# fourth loopback spelling ever matters, change both.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 class IntegrationConfigurationError(ValueError):
@@ -31,12 +37,28 @@ def optional(name: str) -> str | None:
 
 
 def public_url() -> str:
+    """The relay's browser-reachable origin.
+
+    Production requires an HTTPS origin. Plain http is accepted only for
+    loopback hosts with no path, query, or fragment, so a locally running
+    relay can drive the connect flow end to end.
+    """
     value = required("DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL").rstrip("/")
-    if not value.startswith("https://") or "/" in value[len("https://") :]:
-        raise IntegrationConfigurationError(
-            "DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL must be an HTTPS origin"
-        )
-    return value
+    parsed = urlsplit(value)
+    if parsed.scheme == "https" and parsed.netloc and "/" not in value[len("https://") :]:
+        return value
+    if (
+        parsed.scheme == "http"
+        and parsed.hostname in _LOOPBACK_HOSTS
+        and parsed.path in ("", "/")
+        and not parsed.query
+        and not parsed.fragment
+    ):
+        return value
+    raise IntegrationConfigurationError(
+        "DIFFUSE_GITHUB_INTEGRATION_PUBLIC_URL must be an HTTPS origin; "
+        "http is accepted only for localhost, 127.0.0.1, or ::1 (local testing)"
+    )
 
 
 def github_app_id() -> str:

@@ -29,7 +29,7 @@ adapter must always pass `--strict-mcp-config` and why Diffuse's own MCP server
 must never execute repository-supplied content.
 
 On the self-hosted Linux profile, Bubblewrap cannot create a user namespace in
-the review container (DEV-327). `CONTAINER_COMPARTMENT_PROFILE` therefore does
+the review container. `CONTAINER_COMPARTMENT_PROFILE` therefore does
 not try to weaken Docker until Bubblewrap happens to work: it turns the CLI
 sandbox off and makes the later review-compartment preflight the boundary. That
 requirement is enforced rather than documented -- rendering the profile needs a
@@ -156,7 +156,7 @@ LOCAL_CLI_SANDBOX_PROFILE = SandboxProfile(
 
 #: Bubblewrap cannot create a user namespace inside the measured self-hosted
 #: container profile. The agent compartment owns the replacement boundary; its
-#: preflight must pass before an adapter selects this profile (DEV-327/DEV-331).
+#: preflight must pass before an adapter selects this profile.
 CONTAINER_COMPARTMENT_PROFILE = SandboxProfile(
     name="container-compartment",
     cli_sandbox_enabled=False,

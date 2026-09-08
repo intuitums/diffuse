@@ -78,9 +78,11 @@ def configuration() -> DeliveryPollerConfiguration | None:
             f"{GITHUB_INTEGRATION_URL_VARIABLE}, {GITHUB_INTEGRATION_TOKEN_VARIABLE}, and "
             f"{GITHUB_DELIVERY_SIGNING_KEY_VARIABLE}."
         )
+    # normalize_base_url enforces the repository-wide origin policy: https
+    # everywhere, with plain http accepted only for loopback hosts (or under an
+    # explicit DIFFUSE_ALLOW_PLAINTEXT_ORIGINS=1), so a locally running relay
+    # can drive the poll loop end to end without a tunnel.
     url = normalize_base_url(url, field_name=GITHUB_INTEGRATION_URL_VARIABLE)
-    if not url.startswith("https://"):
-        raise ValueError(f"{GITHUB_INTEGRATION_URL_VARIABLE} must be an HTTPS origin")
     poll_seconds = float(os.environ.get(GITHUB_DELIVERY_POLL_SECONDS_VARIABLE, "15"))
     if not 1 <= poll_seconds <= 300:
         raise ValueError(f"{GITHUB_DELIVERY_POLL_SECONDS_VARIABLE} must be between 1 and 300")

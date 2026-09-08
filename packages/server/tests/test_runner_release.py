@@ -25,5 +25,5 @@ def test_runner_manifests_are_assembled_from_native_architecture_builds():
     assert "--platform linux/amd64,linux/arm64" not in publish
     assert 'files=("${runtime}-${architecture}-"*)' in publish
     assert 'cosign sign --yes "${image}@${digest}"' in publish
-    assert "xyz.intuitum.diffuse.runner.claude=" in publish
-    assert "xyz.intuitum.diffuse.runner.codex=" in publish
+    assert "sh.intuitum.diffuse.runner.claude=" in publish
+    assert "sh.intuitum.diffuse.runner.codex=" in publish

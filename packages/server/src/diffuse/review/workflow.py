@@ -1344,7 +1344,7 @@ def claim_stranded_review_jobs(
 
     A check row is reclaimable until it is `completed` or out of completion
     attempts, and its `status` deliberately does not gate that. `failed` used to
-    be the exit, which is what made DEV-313 possible: the PATCH raised once, the
+    be the exit: the PATCH raised once, the
     row went `failed`, the sweep skipped it from then on, and GitHub was left
     holding an `in_progress` required check forever. `completion_attempts` is
     the exit instead, so a transient provider failure is retried and an

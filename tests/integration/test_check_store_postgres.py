@@ -108,7 +108,7 @@ def test_check_run_creation_resumes_after_every_failure_and_completes_once():
         assert first_check.external_id is None
         mark_check_run_failed(connection, first_check.id)
 
-        # DEV-289: stranded recovery may persist a rediscovered remote id from a
+        # Stranded recovery may persist a rediscovered remote id from a
         # failed row that never got external_id, without re-entering begin().
         mark_check_run_started(
             connection,

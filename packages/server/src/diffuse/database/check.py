@@ -14,10 +14,10 @@ VALID_CONCLUSIONS = frozenset(
 
 #: How many times Diffuse will try to terminalize one check run before it stops.
 #:
-#: The reclaim predicate deliberately does not use `status` as its exit: DEV-313
-#: is exactly the bug where a `failed` row was the exit, and a single transient
-#: PATCH failure therefore stranded a required check permanently. So the bound
-#: has to be a count of attempts instead.
+#: The reclaim predicate deliberately does not use `status` as its exit: a
+#: `failed` row used to be the exit, and a single transient PATCH failure then
+#: stranded a required check permanently. The bound is a count of attempts
+#: instead.
 #:
 #: Eight is chosen against the sweep interval rather than the failure: at one
 #: attempt per 300s pass, an unrecoverable check leaves the queue after roughly

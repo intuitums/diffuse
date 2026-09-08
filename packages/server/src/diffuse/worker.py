@@ -1585,7 +1585,7 @@ async def _complete_native_check(
     if attempts > MAX_COMPLETION_ATTEMPTS:
         # Every retry from here would take the same oldest-first slot in the
         # stranded sweep and keep newer jobs waiting behind it, so stop and say
-        # so durably rather than retrying forever (DEV-313).
+        # so durably rather than retrying forever.
         await anyio.to_thread.run_sync(
             partial(_mark_native_check_completion_exhausted, handle.id)
         )
@@ -1622,7 +1622,7 @@ async def _complete_native_check(
     except Exception:
         # `failed` records why this attempt did not land, and is no longer the
         # thing that makes a row unreclaimable -- `completion_attempts` is. That
-        # separation is the DEV-313 fix: the sweep retries this row on its next
+        # separation is deliberate: the sweep retries this row on its next
         # pass, and the error code still tells an operator what happened.
         await anyio.to_thread.run_sync(
             partial(_mark_native_check_failed, handle.id)
@@ -1889,7 +1889,7 @@ async def process_review_job(job: WorkflowJob, worker_id: str) -> None:
 
     # Status checks follow the review-run head, including intentional skips.
     # Gating creation on eligibility left branch protection hanging forever when
-    # synchronize / draft / label filters produced a skipped report (DEV-306).
+    # synchronize / draft / label filters produced a skipped report.
     check_run = None
     if policy.triggers.status_check:
         check_run = await _ensure_native_check(event, review_run.id)

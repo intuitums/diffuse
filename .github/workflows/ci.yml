@@ -50,12 +50,15 @@ jobs:
           python -m pip install -r requirements-dev.txt
           python -m pip install --no-deps -e .
 
+      # ./x is the repository's one definition of green (ruff + unit suite);
+      # keep the environment provenance and secret scans here because they only
+      # make sense against the locked CI environment.
       - name: Check
         run: |
           python -m pip check
           python -m pip freeze > /tmp/installed.txt
           python scripts/check_lock_freeze.py /tmp/installed.txt requirements.lock
-          python -m ruff check .
+          ./x check
           git diff --check
 
       - name: Install gitleaks
