@@ -5,7 +5,7 @@
 **Do not report security vulnerabilities in a pull request, an issue, or any
 other channel that a third party can read.**
 
-Email **security@intuitum.xyz**. Include:
+Email **security@intuitum.sh**. Include:
 
 - the affected release version or image digest;
 - the deployment shape (bundled Compose profile, external PostgreSQL, other);

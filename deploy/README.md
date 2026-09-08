@@ -3,13 +3,16 @@
 This bundle installs a tagged Diffuse release from published images. It
 contains the deployment manifest and operational documentation; the application
 source lives in the Diffuse repository under the
-[Business Source License 1.1](https://github.com/intuitumxyz/diffuse/blob/main/LICENSE).
+[Business Source License 1.1](https://github.com/intuitums/diffuse/blob/main/LICENSE).
 
-Diffuse is proprietary, source-available software, not open source. You may run
-it in production and inside a commercial organization; you may not offer it to
-third parties as a hosted, managed, or embedded service, or otherwise sell
-access to its functionality. Permitted self-hosted use requires no separate
-commercial agreement, license key, entitlement file, or registry credential.
+Diffuse is source-available under the
+[Business Source License 1.1](https://github.com/intuitums/diffuse/blob/main/LICENSE).
+You may use it, modify it, and run it anywhere, including inside a commercial
+organization; the one thing the license does not permit is offering Diffuse
+itself to third parties as a hosted, managed, or embedded service, or selling
+access to it. Permitted self-hosted use requires no separate commercial
+agreement, license key, entitlement file, or registry credential. The license
+converts to Apache-2.0 in 2030.
 
 ## Install
 
@@ -28,7 +31,7 @@ commercial agreement, license key, entitlement file, or registry credential.
    for image_ref in $(sed -n -E 's/^DIFFUSE(_[A-Z_]+)?_IMAGE=//p' .env); do
      cosign verify \
        --certificate-identity-regexp \
-         '^https://github.com/intuitumxyz/Diffuse/.github/workflows/release.yml@refs/tags/v' \
+         '^https://github.com/intuitums/diffuse/.github/workflows/release.yml@refs/tags/v' \
        --certificate-oidc-issuer https://token.actions.githubusercontent.com \
        "$image_ref"
    done
@@ -104,17 +107,17 @@ and configured Agent Host, not through a local branch command. The former
 Every release publishes this bundle as an OCI artifact alongside the image:
 
 ```bash
-oras pull ghcr.io/intuitumxyz/diffuse-self-host:vX.Y.Z
+oras pull ghcr.io/intuitums/diffuse-self-host:vX.Y.Z
 sha256sum --check diffuse-self-host.tar.gz.sha256
 tar -xzf diffuse-self-host.tar.gz
 ```
 
 Artifacts are immutable and are not garbage collected, so an older release
 stays retrievable at its own tag; the `DIFFUSE_IMAGE` digest each bundle pins
-is also recorded in the artifact's `xyz.intuitum.diffuse.image` annotation:
+is also recorded in the artifact's `sh.intuitum.diffuse.image` annotation:
 
 ```bash
-oras manifest fetch --pretty ghcr.io/intuitumxyz/diffuse-self-host:vX.Y.Z
+oras manifest fetch --pretty ghcr.io/intuitums/diffuse-self-host:vX.Y.Z
 ```
 
 Upgrade by pulling the new bundle, re-running the signature verification above
