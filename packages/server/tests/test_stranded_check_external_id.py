@@ -1,4 +1,4 @@
-"""DEV-289: stranded reconcile must terminalize a check created without a persisted id."""
+"""Stranded reconcile must terminalize a check created without a persisted id."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def _creating_handle(*, status: str = "creating") -> CheckRunHandle:
 
 @pytest.fixture(autouse=True)
 def _count_completion_attempts(monkeypatch):
-    """Keep the DEV-289 recovery tests off a database.
+    """Keep the stranded-recovery tests off a database.
 
     `_complete_native_check` records an attempt before it resolves a missing
     remote id, because rediscovery is itself a network call that can fail

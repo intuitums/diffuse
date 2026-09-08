@@ -1,4 +1,4 @@
-"""DEV-306: trigger-skipped reviews must still publish a terminal status check."""
+"""Trigger-skipped reviews must still publish a terminal status check."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""DEV-313: transient check completion failure must stay reclaimable.
+"""A transient check completion failure must stay reclaimable.
 
 The pairing these tests exist to pin: a failure is *recorded* on the row and the
 row is still *retried*. Those used to be the same decision -- writing `failed`
@@ -139,7 +139,7 @@ async def test_unresolvable_remote_id_is_recorded_without_becoming_terminal(monk
     The row is marked `failed` with a null `external_id`, which the store
     deliberately allows to recover via `mark_check_run_started`. Excluding that
     shape from the sweep would make the recovery path unreachable and reproduce
-    DEV-313 one step earlier in the sequence.
+    the stranded-check bug one step earlier in the sequence.
     """
 
     store = _Store().install(monkeypatch)

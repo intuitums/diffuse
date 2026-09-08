@@ -1,6 +1,6 @@
 """PostgreSQL coverage for which check rows the stranded sweep reclaims.
 
-DEV-313: a check whose provider PATCH failed must still be selected by
+A check whose provider PATCH failed must still be selected by
 `claim_stranded_review_jobs`, whatever `status` that failure left behind --
 and a check that can never be completed must eventually stop being selected,
 because the sweep is ordered oldest-first and limited.
@@ -149,12 +149,13 @@ def test_claim_stranded_includes_failed_check_with_external_id():
 
 
 def test_claim_stranded_includes_failed_check_without_external_id():
-    """A null-id failed row is where DEV-289 recovery has to run, not a dead end.
+    """A null-id failed row is where stranded recovery has to run, not a dead end.
 
     `mark_check_run_started` deliberately accepts `failed` + null id so a check
     that GitHub created but Diffuse never recorded can be rediscovered. If the
     sweep skipped this shape, that recovery would have no caller and the remote
-    check would stay `in_progress` forever -- DEV-313, one step earlier.
+    check would stay `in_progress` forever, the same stranded-check bug one
+    step earlier in the sequence.
     """
 
     event = _event(number=314, delivery="stranded-failed-without-id")

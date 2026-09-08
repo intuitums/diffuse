@@ -19,7 +19,7 @@ import pytest
 # for CI: `pytest -m integration` with the variable unset exits 0 having asserted
 # nothing, so a renamed variable or a service container that never bound its port
 # reports success. Anywhere the suite is *expected* to run, set this and a missing
-# database becomes an error instead of a green skip. See DEV-238.
+# database becomes an error instead of a green skip.
 REQUIRE_VARIABLE = "DIFFUSE_REQUIRE_INTEGRATION_TESTS"
 DATABASE_VARIABLE = "POSTGRES_TEST_DATABASE_URL"
 
