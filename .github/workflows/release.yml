@@ -3,12 +3,8 @@
 #
 # Convention: ci.yml gates changes, release.yml publishes them.
 #
-# STRUCTURE CHANGED for Blacksmith. The previous single job built linux/amd64 and
-# linux/arm64 together on one amd64 runner, so the arm64 leg ran under QEMU emulation -
-# that is where most of the measured 28m20s went. Blacksmith has native arm64 runners, so
-# each architecture now builds on its own machine in parallel and the two are merged into
-# one manifest afterwards. This is the pattern Blacksmith's docs prescribe; they note a
-# future `platforms` input will do it natively, at which point this collapses back.
+# Build each architecture on a native GitHub-hosted runner, then merge the
+# digests into one multi-architecture manifest.
 #
 # UNCHANGED and load-bearing - do not simplify these away:
 #   * semver validation and the check that the tag descends from main
@@ -58,7 +54,7 @@ env:
 jobs:
   # Split out so a bad tag fails in seconds instead of after two image builds.
   validate-tag:
-    runs-on: intuitum-2vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       created: ${{ steps.build-time.outputs.created }}
@@ -97,45 +93,12 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          # amd64 builds on the self-hosted runner build-container uses — the label
-          # maps to exactly one runner, whose rootless daemon holds the persistent
-          # `diffuse` builder — so it starts from the layers the merge's own CI
-          # run just proved, locally, with no cache import leg at all. See
-          # build-container for the measurements that retired the GitHub Actions
-          # cache on the box.
           - platform: linux/amd64
             architecture: amd64
-            runner: intuitum-8vcpu-ubuntu-2604
-            builder: diffuse
-            app_cache_from: ""
-            app_cache_to: ""
-            claude_cache_from: ""
-            claude_cache_to: ""
-            codex_cache_from: ""
-            codex_cache_to: ""
-          # arm64 STAYS on Blacksmith, and this is the only thing still holding that
-          # account open. intuitumserver-1 is x86_64 with no qemu handlers registered;
-          # the expensive step in this Dockerfile is PyInstaller, which cannot
-          # cross-compile and has to execute on the target architecture, so emulating it
-          # would turn a 45-minute build into hours. Moving this leg needs native arm64
-          # hardware, not a config change.
-          #
-          # This leg also KEEPS the GitHub Actions cache: Blacksmith's runners are
-          # ephemeral VMs in Blacksmith's datacenter, so there is no persistent daemon
-          # to adopt a builder from, and its path to the cache service is not the
-          # self-hosted upload leg that made `type=gha` untenable on the box. Its own
-          # scope, because a GitHub Actions cache scope is not partitioned by
-          # architecture and an amd64 export would poison an arm64 restore.
+            runner: ubuntu-latest
           - platform: linux/arm64
             architecture: arm64
-            runner: blacksmith-8vcpu-ubuntu-2404-arm
-            builder: ""
-            app_cache_from: type=gha,scope=diffuse/Dockerfile-arm64
-            app_cache_to: type=gha,scope=diffuse/Dockerfile-arm64,mode=max
-            claude_cache_from: type=gha,scope=diffuse/Dockerfile-runner-claude-arm64
-            claude_cache_to: type=gha,scope=diffuse/Dockerfile-runner-claude-arm64,mode=max
-            codex_cache_from: type=gha,scope=diffuse/Dockerfile-runner-codex-arm64
-            codex_cache_to: type=gha,scope=diffuse/Dockerfile-runner-codex-arm64,mode=max
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
@@ -151,35 +114,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # amd64 adopts its runner's persistent builder — the same idempotent command as
-      # ci.yml's container jobs; keep the two spellings identical. arm64 is on an
-      # ephemeral Blacksmith VM, so it provisions a throwaway buildx the ordinary way
-      # and leans on the `type=gha` cache declared in the matrix. Attestations below
-      # (`sbom`, `provenance`) need the docker-container driver on both paths; the
-      # persistent builder was created with it, and setup-buildx-action defaults to it.
-      - name: Use the persistent builder
-        if: matrix.builder != ''
-        run: |
-          docker buildx inspect diffuse >/dev/null 2>&1 \
-            || docker buildx create --name diffuse --driver docker-container \
-            || docker buildx inspect diffuse >/dev/null
-
+      # Both architectures use disposable builders and separate cache scopes.
       - name: Set up Buildx
-        if: matrix.builder == ''
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      # Empty builder/cache inputs are treated as unset. The amd64 leg therefore
-      # adopts the persistent builder without exporting it, while arm64 gives each
-      # final target its own cache scope so one target cannot overwrite another's.
       - name: Build and push app by digest
         id: app
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
-          builder: ${{ matrix.builder }}
           context: .
           platforms: ${{ matrix.platform }}
-          cache-from: ${{ matrix.app_cache_from }}
-          cache-to: ${{ matrix.app_cache_to }}
+          cache-from: type=gha,scope=diffuse/Dockerfile-${{ matrix.architecture }}
+          cache-to: type=gha,scope=diffuse/Dockerfile-${{ matrix.architecture }},mode=max
           build-args: |
             DIFFUSE_VERSION=${{ github.ref_name }}
             DIFFUSE_REVISION=${{ github.sha }}
@@ -195,12 +141,11 @@ jobs:
         id: claude
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
-          builder: ${{ matrix.builder }}
           context: .
           target: runner-claude
           platforms: ${{ matrix.platform }}
-          cache-from: ${{ matrix.claude_cache_from }}
-          cache-to: ${{ matrix.claude_cache_to }}
+          cache-from: type=gha,scope=diffuse/Dockerfile-runner-claude-${{ matrix.architecture }}
+          cache-to: type=gha,scope=diffuse/Dockerfile-runner-claude-${{ matrix.architecture }},mode=max
           build-args: |
             DIFFUSE_VERSION=${{ github.ref_name }}
             DIFFUSE_REVISION=${{ github.sha }}
@@ -213,12 +158,11 @@ jobs:
         id: codex
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
-          builder: ${{ matrix.builder }}
           context: .
           target: runner-codex
           platforms: ${{ matrix.platform }}
-          cache-from: ${{ matrix.codex_cache_from }}
-          cache-to: ${{ matrix.codex_cache_to }}
+          cache-from: type=gha,scope=diffuse/Dockerfile-runner-codex-${{ matrix.architecture }}
+          cache-to: type=gha,scope=diffuse/Dockerfile-runner-codex-${{ matrix.architecture }},mode=max
           build-args: |
             DIFFUSE_VERSION=${{ github.ref_name }}
             DIFFUSE_REVISION=${{ github.sha }}
@@ -248,7 +192,7 @@ jobs:
 
   publish:
     needs: [validate-tag, build]
-    runs-on: intuitum-2vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
       digest: ${{ steps.manifest.outputs.digest }}
@@ -414,7 +358,7 @@ jobs:
   #      later without needing a registry client.
   distribute:
     needs: [publish]
-    runs-on: intuitum-2vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write   # the only reason this job exists as a separate job
