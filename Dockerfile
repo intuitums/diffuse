@@ -246,7 +246,7 @@ CMD ["serve"]
 
 # Claude Code 2.1.224 requires Node 22 or newer. Keep Node separate from the
 # application image, and pin it just like the Debian and Python bases above.
-FROM node:26-bookworm-slim@sha256:367679cf9792759492a486e4aa4b421764d71a9546a6dae8aab81a99eb797b3e AS runner-node
+FROM node:26-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS runner-node
 
 # Each runner is a separately selected final target so a credential-isolated
 # Claude process never carries the Codex executable (or vice versa). The CLI
